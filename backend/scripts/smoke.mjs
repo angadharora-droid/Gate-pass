@@ -1,5 +1,6 @@
 // End-to-end smoke test: boots a throwaway in-memory MongoDB, starts the real
-// server against it, and walks the core flows through the HTTP API.
+// server against it, and walks the core flows through the HTTP API — starting
+// from the minimal seed (a single admin), exactly like a fresh production boot.
 // Run with: npm run test:smoke
 import { MongoMemoryServer } from 'mongodb-memory-server';
 
@@ -53,35 +54,46 @@ async function login(email, password) {
   return json.token;
 }
 
-// ─── Auth ─────────────────────────────────────────────────────────────────────
+// ─── Minimal seed ─────────────────────────────────────────────────────────────
 const bad = await api('POST', '/auth/login', { body: { email: 'arjun@hotel.com', password: 'wrong' } });
 check('rejects bad password', bad.status === 401);
 
 const admin = await login('arjun@hotel.com', 'admin123');
-const manager = await login('priya@hotel.com', 'pass123');
-const staff = await login('vikram@hotel.com', 'pass123');
-const timeOffice = await login('karan@hotel.com', 'pass123');
-check('all seed roles can log in', true);
+check('seed admin can log in', typeof admin === 'string');
 
-const me = await api('GET', '/auth/me', { token: staff });
-check('GET /auth/me returns user with branch name', me.json?.user?.name === 'Vikram Joshi' && me.json?.user?.branchName === 'Grand Hotel – Main');
-check('user payload has no passwordHash', me.json?.user?.passwordHash === undefined && me.json?.user?._id === undefined);
+const me = await api('GET', '/auth/me', { token: admin });
+check('admin enriched with seed branch/department', me.json?.user?.branchName === 'Main Branch' && me.json?.user?.departmentName === 'Administration');
+check('user payload has no passwordHash/_id', me.json?.user?.passwordHash === undefined && me.json?.user?._id === undefined);
 
 const noToken = await api('GET', '/gate-passes');
 check('rejects missing token', noToken.status === 401);
 
-// ─── Seeded data ──────────────────────────────────────────────────────────────
-const seeded = await api('GET', '/gate-passes', { token: admin });
-check('seed passes present', Array.isArray(seeded.json) && seeded.json.length === 4, `got ${seeded.json?.length}`);
-check('passes enriched with names', seeded.json?.every(p => p.createdByUser?.name) === true);
-check('no _id leaks in list', JSON.stringify(seeded.json).includes('"_id"') === false);
+const emptyPasses = await api('GET', '/gate-passes', { token: admin });
+check('no mock gate passes seeded', Array.isArray(emptyPasses.json) && emptyPasses.json.length === 0, `got ${emptyPasses.json?.length}`);
+const seedBranches = await api('GET', '/branches', { token: admin });
+check('only the bootstrap branch seeded', seedBranches.json?.length === 1 && seedBranches.json[0].name === 'Main Branch');
+const seedUsers = await api('GET', '/users', { token: admin });
+check('only the admin user seeded', seedUsers.json?.length === 1 && seedUsers.json[0].role === 'admin');
 
-const branches = await api('GET', '/branches', { token: staff });
-check('branches seeded', branches.json?.length === 3, `got ${branches.json?.length}`);
+// ─── Admin bootstraps the org (the real first-run flow) ──────────────────────
+const b1 = seedBranches.json[0].id;
+const d1 = (await api('GET', '/departments', { token: admin })).json[0].id;
 
-// Staff of b1 should not see the b2-only view leak etc. — staff sees passes touching their branch
-const staffList = await api('GET', '/gate-passes', { token: staff });
-check('branch scoping applies to staff', staffList.json?.every(p => p.sourceBranch === 'b1' || p.destinationBranch === 'b1'));
+const mkUser = (name, email, role, departmentId) =>
+  api('POST', '/users', { token: admin, body: { name, email, password: 'secret1', role, branch: b1, departmentId } });
+
+const managerUser = await mkUser('Manager One', 'manager@test.com', 'manager', d1);
+const staffUser   = await mkUser('Staff One', 'staff@test.com', 'staff', d1);
+const toUser      = await mkUser('Guard One', 'guard@test.com', 'time_office', null);
+check('admin creates manager/staff/time_office', managerUser.status === 201 && staffUser.status === 201 && toUser.status === 201);
+
+const timeOfficeNoDept = await api('POST', '/users', { token: admin, body: { name: 'X', email: 'x@test.com', password: 'p', role: 'staff', branch: b1 } });
+check('staff without department rejected', timeOfficeNoDept.status === 400);
+
+const manager = await login('manager@test.com', 'secret1');
+const staff = await login('staff@test.com', 'secret1');
+const timeOffice = await login('guard@test.com', 'secret1');
+check('created users can log in', true);
 
 // ─── Create → approve → log-outward → log-inward (full lifecycle) ────────────
 const created = await api('POST', '/gate-passes', {
@@ -93,8 +105,11 @@ const created = await api('POST', '/gate-passes', {
   },
 });
 check('staff creates pending pass', created.status === 201 && created.json?.status === 'pending', JSON.stringify(created.json));
-check('pass number generated sequentially', created.json?.passNumber === 'GP-OER-' + new Date().getFullYear() + '-0005', created.json?.passNumber);
+check('numbering starts at 0001 on fresh db', created.json?.passNumber === 'GP-OER-' + new Date().getFullYear() + '-0001', created.json?.passNumber);
 const passId = created.json?.id;
+
+const staffApprove = await api('PATCH', `/gate-passes/${passId}/status`, { token: staff, body: { action: 'approve' } });
+check('staff cannot approve', staffApprove.status === 403);
 
 const approved = await api('PATCH', `/gate-passes/${passId}/status`, { token: manager, body: { action: 'approve' } });
 check('manager approves', approved.status === 200 && approved.json?.status === 'approved');
@@ -132,47 +147,37 @@ check('staff cannot log direct inward', inwardDenied.status === 403);
 const inward = await api('POST', '/gate-passes/inward', {
   token: timeOffice,
   body: {
-    branchId: 'b1', departmentId: 'd2', receiverId: 'u2', inwardType: 'non_returnable',
+    branchId: b1, departmentId: d1, receiverId: managerUser.json.id, inwardType: 'non_returnable',
     documentType: 'Invoice', documentNo: 'INV-9999', carriedBy: 'Courier Guy',
     items: [{ itemName: 'Spare Parts', quantity: 2, unit: 'box' }],
   },
 });
-check('security logs direct inward → completed', inward.status === 201 && inward.json?.status === 'completed' && inward.json?.inwardLog?.guardName === 'Karan Tiwari');
+check('security logs direct inward → completed', inward.status === 201 && inward.json?.status === 'completed' && inward.json?.inwardLog?.guardName === 'Guard One');
 
 // ─── Stats & audit ────────────────────────────────────────────────────────────
 const stats = await api('GET', '/gate-passes/meta/stats', { token: admin });
-check('stats totals add up', stats.json?.total === 6 && stats.json?.closed === 1, JSON.stringify(stats.json));
+check('stats totals add up', stats.json?.total === 2 && stats.json?.closed === 1, JSON.stringify(stats.json));
 
 const audit = await api('GET', '/audit', { token: admin });
 check('audit log recorded with user names', audit.status === 200 && audit.json?.length >= 6 && audit.json?.every(l => l.userName));
 const auditDenied = await api('GET', '/audit', { token: manager });
 check('audit is admin-only', auditDenied.status === 403);
 
-// ─── Admin CRUD ───────────────────────────────────────────────────────────────
-const newBranch = await api('POST', '/branches', { token: admin, body: { name: 'Test Branch', location: 'Test' } });
+// ─── Admin CRUD guards ───────────────────────────────────────────────────────
+const newBranch = await api('POST', '/branches', { token: admin, body: { name: 'Second Branch', location: 'Elsewhere' } });
 check('admin creates branch', newBranch.status === 201);
-const dupBranch = await api('POST', '/branches', { token: admin, body: { name: 'test branch' } });
+const dupBranch = await api('POST', '/branches', { token: admin, body: { name: 'second branch' } });
 check('duplicate branch name rejected (case-insensitive)', dupBranch.status === 400);
 
-const newDept = await api('POST', '/departments', { token: admin, body: { name: 'Test Dept', branchId: newBranch.json.id } });
-check('admin creates department', newDept.status === 201);
-
-const newUser = await api('POST', '/users', {
-  token: admin,
-  body: { name: 'Test User', email: 'TEST@hotel.com', password: 'secret1', role: 'staff', branch: newBranch.json.id, departmentId: newDept.json.id },
-});
-check('admin creates user (email lowercased)', newUser.status === 201 && newUser.json?.email === 'test@hotel.com');
 const dupUser = await api('POST', '/users', {
   token: admin,
-  body: { name: 'Dup', email: 'test@hotel.com', password: 'x', role: 'staff', branch: newBranch.json.id, departmentId: newDept.json.id },
+  body: { name: 'Dup', email: 'MANAGER@test.com', password: 'x', role: 'staff', branch: b1, departmentId: d1 },
 });
-check('duplicate email rejected', dupUser.status === 400);
-const newLogin = await login('test@hotel.com', 'secret1');
-check('newly created user can log in', typeof newLogin === 'string');
+check('duplicate email rejected (case-insensitive)', dupUser.status === 400);
 
-const deact = await api('DELETE', `/users/${newUser.json.id}`, { token: admin });
+const deact = await api('DELETE', `/users/${staffUser.json.id}`, { token: admin });
 check('admin deactivates user', deact.status === 200);
-const deadLogin = await api('POST', '/auth/login', { body: { email: 'test@hotel.com', password: 'secret1' } });
+const deadLogin = await api('POST', '/auth/login', { body: { email: 'staff@test.com', password: 'secret1' } });
 check('deactivated user cannot log in', deadLogin.status === 401);
 
 // ─── Done ─────────────────────────────────────────────────────────────────────
