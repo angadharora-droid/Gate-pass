@@ -970,12 +970,6 @@ a.pass-number:hover { text-decoration: underline; text-underline-offset: 3px; }
   color: var(--text3);
   margin-bottom: 24px;
 }
-.demo-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-}
-
 /* ─── ITEMS LIST IN PASS ───────────────────── */
 .items-list { display: flex; flex-direction: column; gap: 8px; }
 .item-row {
