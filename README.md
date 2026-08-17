@@ -11,7 +11,7 @@ A full-stack system for tracking item movements across branches. Every item leav
 ```
 gatepass/
 ├── backend/          # Express.js REST API (Node.js)
-│   ├── data/db.js    # In-memory data store + seed data
+│   ├── data/db.js    # MongoDB (Atlas) data layer + seed data
 │   ├── middleware/   # Auth middleware
 │   ├── routes/       # API routes
 │   └── server.js     # Entry point (port 4000)

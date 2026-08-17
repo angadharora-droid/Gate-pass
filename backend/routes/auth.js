@@ -1,7 +1,8 @@
 import { Router } from 'express';
-import { db, logAudit } from '../data/db.js';
+import { dbc, NO_ID, logAudit } from '../data/db.js';
 import { verifyPassword, signToken } from '../lib/security.js';
 import { authMiddleware } from '../middleware/auth.js';
+import { asyncHandler } from '../lib/asyncHandler.js';
 
 const router = Router();
 
@@ -31,22 +32,21 @@ function recordFailure(ip) {
   else rec.count += 1;
 }
 
-function safeUserView(user) {
+async function safeUserView(user) {
   const { passwordHash, password, ...safe } = user;
-  const branch = db.branches.find(b => b.id === user.branch);
-  const dept = user.departmentId ? db.departments.find(d => d.id === user.departmentId) : null;
+  const branch = user.branch ? await dbc('branches').findOne({ id: user.branch }, NO_ID) : null;
+  const dept = user.departmentId ? await dbc('departments').findOne({ id: user.departmentId }, NO_ID) : null;
   return { ...safe, branchName: branch?.name, departmentName: dept?.name || null };
 }
 
 // POST /api/auth/login
-router.post('/login', rateLimitLogin, (req, res) => {
+router.post('/login', rateLimitLogin, asyncHandler(async (req, res) => {
   const { email, password } = req.body || {};
   const user = typeof email === 'string'
-    ? db.users.find(u => u.email === email.toLowerCase().trim())
+    ? await dbc('users').findOne({ email: email.toLowerCase().trim() }, NO_ID)
     : null;
 
-  // Always run a verification (even with a dummy hash) to keep timing uniform,
-  // and never reveal whether it was the email or the password that was wrong.
+  // Never reveal whether it was the email or the password that was wrong.
   const ok = user && user.active !== false && verifyPassword(password, user.passwordHash);
   if (!ok) {
     recordFailure(req._loginIp);
@@ -55,13 +55,13 @@ router.post('/login', rateLimitLogin, (req, res) => {
 
   attempts.delete(req._loginIp); // clear throttle on success
   const token = signToken(user.id);
-  logAudit('LOGIN', user.id, user.id, { email: user.email });
-  res.json({ token, user: safeUserView(user) });
-});
+  await logAudit('LOGIN', user.id, user.id, { email: user.email });
+  res.json({ token, user: await safeUserView(user) });
+}));
 
 // GET /api/auth/me  (requires a valid token)
-router.get('/me', authMiddleware, (req, res) => {
-  res.json({ user: safeUserView(req.user) });
-});
+router.get('/me', authMiddleware, asyncHandler(async (req, res) => {
+  res.json({ user: await safeUserView(req.user) });
+}));
 
 export default router;
