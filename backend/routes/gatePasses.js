@@ -1,7 +1,8 @@
 import { Router } from 'express';
 import { v4 as uuidv4 } from 'uuid';
-import { db, generatePassNumber, logAudit, INWARD_TYPES, DOCUMENT_TYPES, UNITS } from '../data/db.js';
+import { dbc, NO_ID, generatePassNumber, logAudit, INWARD_TYPES, DOCUMENT_TYPES, UNITS } from '../data/db.js';
 import { authMiddleware, requireRole } from '../middleware/auth.js';
+import { asyncHandler } from '../lib/asyncHandler.js';
 
 const router = Router();
 router.use(authMiddleware);
@@ -16,10 +17,22 @@ function scopePasses(passes, user) {
   );
 }
 
+// Reference data used to enrich passes with user/branch/department names —
+// fetched once per request, not once per pass.
+async function getRefs() {
+  const [users, branches, departments] = await Promise.all([
+    dbc('users').find({}, NO_ID).toArray(),
+    dbc('branches').find({}, NO_ID).toArray(),
+    dbc('departments').find({}, NO_ID).toArray(),
+  ]);
+  return { users, branches, departments };
+}
+
 // ─── GET ALL GATE PASSES ──────────────────────────────────────────────────────
-router.get('/', (req, res) => {
+router.get('/', asyncHandler(async (req, res) => {
   const { type, status, branch, direction, passNumber, departmentId } = req.query;
-  let passes = db.gatePasses.map(enrichPass);
+  const [allPasses, refs] = await Promise.all([dbc('gatePasses').find({}, NO_ID).toArray(), getRefs()]);
+  let passes = allPasses.map(p => enrichPass(p, refs));
 
   if (type)      passes = passes.filter(p => p.type === type);
   if (status)    passes = passes.filter(p => p.status === status);
@@ -35,25 +48,25 @@ router.get('/', (req, res) => {
 
   passes = scopePasses(passes, req.user);
   res.json(passes.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)));
-});
+}));
 
 // ─── GET SINGLE ───────────────────────────────────────────────────────────────
-router.get('/:id', (req, res) => {
+router.get('/:id', asyncHandler(async (req, res) => {
   if (req.params.id === 'meta') return res.status(404).json({ error: 'Not found' });
-  const pass = db.gatePasses.find(p => p.id === req.params.id);
+  const pass = await dbc('gatePasses').findOne({ id: req.params.id }, NO_ID);
   if (!pass) return res.status(404).json({ error: 'Gate pass not found' });
   // Enforce the same branch scoping as the list view. Return 404 (not 403) so a
   // user can't probe which pass ids exist outside their branch.
   if (!scopePasses([pass], req.user).length) {
     return res.status(404).json({ error: 'Gate pass not found' });
   }
-  res.json(enrichPass(pass));
-});
+  res.json(enrichPass(pass, await getRefs()));
+}));
 
 // ─── CREATE (OUTWARD ONLY) ────────────────────────────────────────────────────
 // Staff/managers create OUTWARD passes only. Inward is not a request flow:
 // Security (time_office) logs it directly at the gate via POST /inward below.
-router.post('/', requireRole('admin', 'manager', 'staff'), (req, res) => {
+router.post('/', requireRole('admin', 'manager', 'staff'), asyncHandler(async (req, res) => {
   const {
     type, direction, sourceBranch, destinationBranch,
     destinationPerson, returnable, purpose, items,
@@ -79,7 +92,7 @@ router.post('/', requireRole('admin', 'manager', 'staff'), (req, res) => {
 
   const newPass = {
     id: uuidv4(),
-    passNumber: generatePassNumber({ type, direction, returnable: returnable ?? false }),
+    passNumber: await generatePassNumber({ type, direction, returnable: returnable ?? false }),
     type,
     direction,
     status: isManagerOrAdmin ? 'approved' : 'pending',
@@ -119,19 +132,19 @@ router.post('/', requireRole('admin', 'manager', 'staff'), (req, res) => {
     remarks: remarks?.trim() || '',
   };
 
-  db.gatePasses.push(newPass);
-  logAudit('CREATE_PASS', req.user.id, newPass.id, {
+  await dbc('gatePasses').insertOne({ ...newPass });
+  await logAudit('CREATE_PASS', req.user.id, newPass.id, {
     passNumber:   newPass.passNumber,
     autoApproved: newPass.autoApproved,
   });
-  res.status(201).json(enrichPass(newPass));
-});
+  res.status(201).json(enrichPass(newPass, await getRefs()));
+}));
 
 // ─── SECURITY: LOG NEW INWARD DIRECTLY ────────────────────────────────────────
 // When goods arrive at the gate, Security (time_office) logs the inward on the
 // spot — no request, no approval. The record is created already 'completed'
 // with the inwardLog stamped, exactly like a physical gate register entry.
-router.post('/inward', requireRole('time_office', 'admin'), (req, res) => {
+router.post('/inward', requireRole('time_office', 'admin'), asyncHandler(async (req, res) => {
   const {
     branchId, departmentId, receiverId, inwardType,
     documentType, documentNo, barcodeRef,
@@ -145,15 +158,15 @@ router.post('/inward', requireRole('time_office', 'admin'), (req, res) => {
   if (!carriedBy?.trim())
     return res.status(400).json({ error: 'Carried by (person who brought the items) is required' });
 
-  const branch = db.branches.find(b => b.id === branchId && b.active !== false);
+  const branch = await dbc('branches').findOne({ id: branchId, active: { $ne: false } }, NO_ID);
   if (!branch) return res.status(400).json({ error: 'Select a valid receiving branch' });
 
-  const dept = db.departments.find(d => d.id === departmentId && d.active !== false);
+  const dept = await dbc('departments').findOne({ id: departmentId, active: { $ne: false } }, NO_ID);
   if (!dept) return res.status(400).json({ error: 'Select a valid receiving department' });
   if (dept.branchId !== branch.id)
     return res.status(400).json({ error: 'Department must belong to the selected branch' });
 
-  const receiver = db.users.find(u => u.id === receiverId && u.active !== false);
+  const receiver = await dbc('users').findOne({ id: receiverId, active: { $ne: false } }, NO_ID);
   if (!receiver) return res.status(400).json({ error: 'Select a valid receiver' });
   if (receiver.branch !== branch.id)
     return res.status(400).json({ error: 'Receiver must belong to the selected branch' });
@@ -173,7 +186,7 @@ router.post('/inward', requireRole('time_office', 'admin'), (req, res) => {
 
   const newPass = {
     id: uuidv4(),
-    passNumber: generatePassNumber({ type: 'inward', direction: 'external', returnable }),
+    passNumber: await generatePassNumber({ type: 'inward', direction: 'external', returnable }),
     type: 'inward',
     direction: 'external',
     status: 'completed',
@@ -225,18 +238,18 @@ router.post('/inward', requireRole('time_office', 'admin'), (req, res) => {
     remarks: remarks?.trim() || '',
   };
 
-  db.gatePasses.push(newPass);
-  logAudit('LOG_INWARD_DIRECT', req.user.id, newPass.id, {
+  await dbc('gatePasses').insertOne({ ...newPass });
+  await logAudit('LOG_INWARD_DIRECT', req.user.id, newPass.id, {
     passNumber: newPass.passNumber,
     inwardType,
     receiverId: receiver.id,
   });
-  res.status(201).json(enrichPass(newPass));
-});
+  res.status(201).json(enrichPass(newPass, await getRefs()));
+}));
 
 // ─── APPROVE / REJECT ─────────────────────────────────────────────────────────
-router.patch('/:id/status', requireRole('manager', 'admin'), (req, res) => {
-  const pass = db.gatePasses.find(p => p.id === req.params.id);
+router.patch('/:id/status', requireRole('manager', 'admin'), asyncHandler(async (req, res) => {
+  const pass = await dbc('gatePasses').findOne({ id: req.params.id }, NO_ID);
   if (!pass) return res.status(404).json({ error: 'Gate pass not found' });
 
   const { action } = req.body;
@@ -254,17 +267,18 @@ router.patch('/:id/status', requireRole('manager', 'admin'), (req, res) => {
   pass.approvedAt = new Date().toISOString();
   pass.autoApproved = false;
 
-  logAudit(action.toUpperCase(), req.user.id, pass.id, { passNumber: pass.passNumber });
-  res.json(enrichPass(pass));
-});
+  await dbc('gatePasses').replaceOne({ id: pass.id }, pass);
+  await logAudit(action.toUpperCase(), req.user.id, pass.id, { passNumber: pass.passNumber });
+  res.json(enrichPass(pass, await getRefs()));
+}));
 
 // ─── MANAGER/ADMIN: REVISE A PENDING PASS ────────────────────────────────────
 // Before approving, the branch manager can correct anything on the request —
 // items, destination, outward type, dates, purpose. Only while status is
 // 'pending'; once approved (or rejected) the pass is locked. The pass number
 // never changes on revision — it is the printed/quoted identifier.
-router.patch('/:id/revise', requireRole('manager', 'admin'), (req, res) => {
-  const pass = db.gatePasses.find(p => p.id === req.params.id);
+router.patch('/:id/revise', requireRole('manager', 'admin'), asyncHandler(async (req, res) => {
+  const pass = await dbc('gatePasses').findOne({ id: req.params.id }, NO_ID);
   if (!pass) return res.status(404).json({ error: 'Gate pass not found' });
   if (pass.status !== 'pending')
     return res.status(400).json({ error: 'Only pending passes can be edited; this one is already ' + pass.status });
@@ -320,13 +334,14 @@ router.patch('/:id/revise', requireRole('manager', 'admin'), (req, res) => {
   pass.editedBy = req.user.id;
   pass.editedAt = new Date().toISOString();
 
-  logAudit('REVISE_PASS', req.user.id, pass.id, { passNumber: pass.passNumber });
-  res.json(enrichPass(pass));
-});
+  await dbc('gatePasses').replaceOne({ id: pass.id }, pass);
+  await logAudit('REVISE_PASS', req.user.id, pass.id, { passNumber: pass.passNumber });
+  res.json(enrichPass(pass, await getRefs()));
+}));
 
 // ─── ADMIN: EDIT PASS (for reports corrections) ─────────────────────────────
-router.patch('/:id', requireRole('admin'), (req, res) => {
-  const pass = db.gatePasses.find(p => p.id === req.params.id);
+router.patch('/:id', requireRole('admin'), asyncHandler(async (req, res) => {
+  const pass = await dbc('gatePasses').findOne({ id: req.params.id }, NO_ID);
   if (!pass) return res.status(404).json({ error: 'Gate pass not found' });
 
   const { purpose, remarks, expectedReturnDate } = req.body;
@@ -349,17 +364,18 @@ router.patch('/:id', requireRole('admin'), (req, res) => {
     changed.expectedReturnDate = true;
   }
 
-  logAudit('EDIT_PASS', req.user.id, pass.id, { passNumber: pass.passNumber, changed });
-  res.json(enrichPass(pass));
-});
+  await dbc('gatePasses').replaceOne({ id: pass.id }, pass);
+  await logAudit('EDIT_PASS', req.user.id, pass.id, { passNumber: pass.passNumber, changed });
+  res.json(enrichPass(pass, await getRefs()));
+}));
 
 // ─── TIME OFFICE: LOG OUTWARD (item leaves premises) ─────────────────────────
 // Allowed on: type=outward passes in status=approved
 // Effect:
 //   non-returnable  → status becomes 'completed' (movement done)
 //   returnable      → status becomes 'in_transit' (waiting for return)
-router.patch('/:id/log-outward', requireRole('time_office', 'admin'), (req, res) => {
-  const pass = db.gatePasses.find(p => p.id === req.params.id);
+router.patch('/:id/log-outward', requireRole('time_office', 'admin'), asyncHandler(async (req, res) => {
+  const pass = await dbc('gatePasses').findOne({ id: req.params.id }, NO_ID);
   if (!pass) return res.status(404).json({ error: 'Gate pass not found' });
 
   if (pass.type !== 'outward')
@@ -379,9 +395,10 @@ router.patch('/:id/log-outward', requireRole('time_office', 'admin'), (req, res)
   };
   pass.status = pass.returnable ? 'in_transit' : 'completed';
 
-  logAudit('LOG_OUTWARD', req.user.id, pass.id, { passNumber: pass.passNumber, returnable: pass.returnable });
-  res.json(enrichPass(pass));
-});
+  await dbc('gatePasses').replaceOne({ id: pass.id }, pass);
+  await logAudit('LOG_OUTWARD', req.user.id, pass.id, { passNumber: pass.passNumber, returnable: pass.returnable });
+  res.json(enrichPass(pass, await getRefs()));
+}));
 
 // ─── TIME OFFICE: LOG RETURN (return leg of a returnable outward) ────────────
 // Pure inward entries are logged directly via POST /inward and never pass
@@ -390,8 +407,8 @@ router.patch('/:id/log-outward', requireRole('time_office', 'admin'), (req, res)
 // Effect:
 //   all returned  → 'completed'
 //   partial       → 'partial_return'
-router.patch('/:id/log-inward', requireRole('time_office', 'admin'), (req, res) => {
-  const pass = db.gatePasses.find(p => p.id === req.params.id);
+router.patch('/:id/log-inward', requireRole('time_office', 'admin'), asyncHandler(async (req, res) => {
+  const pass = await dbc('gatePasses').findOne({ id: req.params.id }, NO_ID);
   if (!pass) return res.status(404).json({ error: 'Gate pass not found' });
 
   if (pass.type === 'inward')
@@ -464,23 +481,24 @@ router.patch('/:id/log-inward', requireRole('time_office', 'admin'), (req, res) 
       }
     }
 
-    logAudit('LOG_INWARD', req.user.id, pass.id, {
+    await dbc('gatePasses').replaceOne({ id: pass.id }, pass);
+    await logAudit('LOG_INWARD', req.user.id, pass.id, {
       passNumber: pass.passNumber,
       type:       'return_leg',
       status:     pass.status,
       returns,
       closures:   closureRecords,
     });
-    return res.json(enrichPass(pass));
+    return res.json(enrichPass(pass, await getRefs()));
   }
 
   return res.status(400).json({ error: 'Cannot log inward for this pass type/status' });
-});
+}));
 
 // ─── STATS ────────────────────────────────────────────────────────────────────
-router.get('/meta/stats', (req, res) => {
+router.get('/meta/stats', asyncHandler(async (req, res) => {
   const now = new Date();
-  let passes = db.gatePasses;
+  let passes = await dbc('gatePasses').find({}, NO_ID).toArray();
   passes = scopePasses(passes, req.user);
 
   const overdue = passes.filter(p =>
@@ -511,13 +529,14 @@ router.get('/meta/stats', (req, res) => {
     outward:         passes.filter(p => p.type === 'outward').length,
     inward:          passes.filter(p => p.type === 'inward').length,
   });
-});
+}));
 
 // ─── ENRICH ───────────────────────────────────────────────────────────────────
-function enrichPass(pass) {
-  const u  = id => id ? db.users.find(u => u.id === id) : null;
-  const b  = id => id ? db.branches.find(b => b.id === id) : null;
-  const d  = id => id ? db.departments.find(d => d.id === id) : null;
+// `refs` = { users, branches, departments } pre-fetched via getRefs().
+function enrichPass(pass, refs) {
+  const u  = id => id ? refs.users.find(u => u.id === id) : null;
+  const b  = id => id ? refs.branches.find(b => b.id === id) : null;
+  const d  = id => id ? refs.departments.find(d => d.id === id) : null;
 
   const createdByUser   = u(pass.createdBy);
   const approvedByUser  = u(pass.approvedBy);

@@ -1,10 +1,12 @@
+import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import authRouter from './routes/auth.js';
 import gatePassRouter from './routes/gatePasses.js';
 import { branchesRouter, usersRouter, metaRouter, departmentsRouter } from './routes/misc.js';
-import { db } from './data/db.js';
+import { connectDb, pingDb, dbc, NO_ID } from './data/db.js';
 import { authMiddleware, requireRole } from './middleware/auth.js';
+import { asyncHandler } from './lib/asyncHandler.js';
 
 const app = express();
 const PORT = Number(process.env.PORT) || 4000;
@@ -49,18 +51,26 @@ app.use('/api/users', usersRouter);
 app.use('/api/meta', metaRouter);
 
 // Audit log (admin only)
-app.get('/api/audit', authMiddleware, requireRole('admin'), (req, res) => {
-  const logs = db.auditLog
-    .map(l => {
-      const user = db.users.find(u => u.id === l.userId);
-      return { ...l, userName: user?.name || l.userId };
-    })
-    .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
-    .slice(0, 100);
+app.get('/api/audit', authMiddleware, requireRole('admin'), asyncHandler(async (req, res) => {
+  const [entries, users] = await Promise.all([
+    dbc('auditLog').find({}, NO_ID).sort({ timestamp: -1 }).limit(100).toArray(),
+    dbc('users').find({}, NO_ID).toArray(),
+  ]);
+  const logs = entries.map(l => {
+    const user = users.find(u => u.id === l.userId);
+    return { ...l, userName: user?.name || l.userId };
+  });
   res.json(logs);
-});
+}));
 
-app.get('/api/health', (_, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
+app.get('/api/health', asyncHandler(async (_, res) => {
+  const dbOk = await pingDb();
+  res.status(dbOk ? 200 : 503).json({
+    status: dbOk ? 'ok' : 'degraded',
+    db: dbOk ? 'connected' : 'unreachable',
+    timestamp: new Date().toISOString(),
+  });
+}));
 
 // Unknown routes → JSON 404 (not an HTML stack page).
 app.use((req, res) => res.status(404).json({ error: 'Not found' }));
@@ -77,6 +87,16 @@ app.use((err, req, res, next) => {
   console.error('Unhandled error:', err);
   res.status(500).json({ error: 'Internal server error' });
 });
+
+// Connect to MongoDB Atlas (and seed an empty database) BEFORE accepting
+// requests — if the database is unreachable, fail fast with a clear error.
+try {
+  await connectDb();
+  console.log('✓ Connected to MongoDB');
+} catch (err) {
+  console.error('✗ MongoDB connection failed:', err.message);
+  process.exit(1);
+}
 
 app.listen(PORT, () => {
   console.log(`\n🚀 GatePass API running on http://localhost:${PORT}`);
