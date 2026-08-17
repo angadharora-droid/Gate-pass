@@ -26,8 +26,10 @@ app.use((req, res, next) => {
 });
 
 // Production frontend origin(s), comma-separated — e.g. https://gatepass.vercel.app
+// Tolerant of trailing slashes and case: a browser Origin header is always
+// lowercase with no trailing slash, so normalise what the operator configured.
 const ALLOWED_ORIGINS = (process.env.FRONTEND_ORIGIN || '')
-  .split(',').map(s => s.trim()).filter(Boolean);
+  .split(',').map(s => s.trim().replace(/\/+$/, '').toLowerCase()).filter(Boolean);
 
 app.use(cors({
   origin(origin, cb) {
@@ -35,7 +37,7 @@ app.use(cors({
     if (!origin) return cb(null, true);
     // Allow any localhost port for local dev (Vite may auto-pick 3001, etc.)
     if (/^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin)) return cb(null, true);
-    if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
+    if (ALLOWED_ORIGINS.includes(origin.toLowerCase())) return cb(null, true);
     return cb(null, false);
   },
 }));
@@ -93,6 +95,11 @@ app.use((err, req, res, next) => {
 try {
   await connectDb();
   console.log('✓ Connected to MongoDB');
+  if (ALLOWED_ORIGINS.length) {
+    console.log(`✓ CORS allowed origins: ${ALLOWED_ORIGINS.join(', ')} (+ localhost)`);
+  } else {
+    console.warn('⚠  FRONTEND_ORIGIN not set — only localhost origins allowed; deployed frontends will hit CORS errors.');
+  }
 } catch (err) {
   console.error('✗ MongoDB connection failed:', err.message);
   process.exit(1);
