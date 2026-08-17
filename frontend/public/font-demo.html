@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GatePass — Font Demo</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Space+Mono:wght@400;700&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&family=Outfit:wght@400;500;600;700;800&family=Fira+Mono:wght@400;500&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #f8fafc;
+      min-height: 100vh;
+      padding: 40px 32px;
+      color: #0f172a;
+    }
+    .page-title {
+      font-family: system-ui, sans-serif;
+      font-size: 13px;
+      font-weight: 600;
+      color: #64748b;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      margin-bottom: 28px;
+      text-align: center;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+      max-width: 1100px;
+      margin: 0 auto;
+    }
+    .combo {
+      background: #fff;
+      border: 1px solid #e2e8f0;
+      border-radius: 14px;
+      overflow: hidden;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.07);
+    }
+    .combo-header {
+      background: #0f172a;
+      padding: 14px 20px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .combo-dot {
+      width: 8px; height: 8px;
+      background: #3b82f6;
+      border-radius: 50%;
+    }
+    .combo-label {
+      font-family: system-ui, sans-serif;
+      font-size: 11px;
+      font-weight: 600;
+      color: #94a3b8;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+    }
+    .combo-name {
+      font-family: system-ui, sans-serif;
+      font-size: 12px;
+      color: #f1f5f9;
+      margin-left: auto;
+      font-weight: 500;
+    }
+
+    /* ── sidebar preview ── */
+    .combo-inner {
+      display: flex;
+      height: 340px;
+    }
+    .demo-sidebar {
+      width: 170px;
+      min-width: 170px;
+      background: #111827;
+      display: flex;
+      flex-direction: column;
+      padding: 16px 12px;
+      gap: 2px;
+    }
+    .demo-logo {
+      font-size: 16px;
+      font-weight: 800;
+      color: #fff;
+      padding: 4px 8px 12px;
+      border-bottom: 1px solid rgba(255,255,255,0.07);
+      margin-bottom: 10px;
+    }
+    .demo-logo span {
+      display: block;
+      font-size: 9px;
+      font-weight: 400;
+      color: #4b5563;
+      margin-top: 2px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    .demo-nav-item {
+      padding: 8px 10px;
+      border-radius: 7px;
+      font-size: 12.5px;
+      font-weight: 500;
+      color: #9ca3af;
+      cursor: default;
+    }
+    .demo-nav-item.active {
+      background: rgba(59,130,246,0.18);
+      color: #60a5fa;
+      box-shadow: inset 3px 0 0 #3b82f6;
+    }
+
+    /* ── main content preview ── */
+    .demo-main {
+      flex: 1;
+      padding: 18px 18px 14px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+    .demo-page-title {
+      font-size: 22px;
+      font-weight: 800;
+      color: #0f172a;
+      line-height: 1.2;
+    }
+    .demo-page-sub {
+      font-size: 12.5px;
+      color: #94a3b8;
+      margin-top: 2px;
+    }
+    .demo-stats {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+    }
+    .demo-stat {
+      background: #fff;
+      border: 1px solid #e2e8f0;
+      border-radius: 10px;
+      padding: 10px 11px 9px;
+      position: relative;
+      overflow: hidden;
+    }
+    .demo-stat::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 3px;
+    }
+    .demo-stat.a::before { background: linear-gradient(90deg,#2563eb,#60a5fa); }
+    .demo-stat.b::before { background: linear-gradient(90deg,#f97316,#fdba74); }
+    .demo-stat.c::before { background: linear-gradient(90deg,#16a34a,#4ade80); }
+    .demo-stat-num {
+      font-size: 22px;
+      font-weight: 800;
+      line-height: 1;
+      margin-top: 3px;
+      margin-bottom: 3px;
+    }
+    .demo-stat.a .demo-stat-num { color: #2563eb; }
+    .demo-stat.b .demo-stat-num { color: #f97316; }
+    .demo-stat.c .demo-stat-num { color: #16a34a; }
+    .demo-stat-lbl { font-size: 10px; color: #64748b; font-weight: 500; }
+    .demo-table {
+      background: #fff;
+      border: 1px solid #e2e8f0;
+      border-radius: 10px;
+      overflow: hidden;
+      flex: 1;
+    }
+    .demo-th-row {
+      background: #f1f5f9;
+      display: flex;
+      border-bottom: 1px solid #e2e8f0;
+    }
+    .demo-tr {
+      display: flex;
+      border-bottom: 1px solid #f1f5f9;
+    }
+    .demo-tr:last-child { border-bottom: none; }
+    .demo-th, .demo-td { flex: 1; padding: 7px 10px; font-size: 10px; }
+    .demo-th { color: #94a3b8; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; }
+    .demo-td { font-size: 11.5px; color: #334155; }
+    .demo-pass { color: #2563eb; font-weight: 600; }
+    .demo-badge {
+      display: inline-block;
+      padding: 2px 7px;
+      border-radius: 20px;
+      font-size: 10px;
+      font-weight: 600;
+    }
+    .demo-badge.p { background: rgba(249,115,22,0.12); color: #ea580c; border: 1px solid rgba(249,115,22,0.25); }
+    .demo-badge.a { background: rgba(37,99,235,0.1); color: #2563eb; border: 1px solid rgba(37,99,235,0.25); }
+
+    /* ── font assignment per combo ── */
+    .f1 .demo-logo, .f1 .demo-nav-item, .f1 .demo-page-title, .f1 .demo-page-sub,
+    .f1 .demo-stat-num, .f1 .demo-stat-lbl, .f1 .demo-th, .f1 .demo-td { font-family: 'Space Grotesk', sans-serif; }
+    .f1 .demo-pass, .f1 .demo-badge, .f1 .demo-logo span, .f1 .demo-th { font-family: 'Space Mono', monospace; }
+
+    .f2 .demo-logo, .f2 .demo-nav-item, .f2 .demo-page-title, .f2 .demo-page-sub,
+    .f2 .demo-stat-num, .f2 .demo-stat-lbl, .f2 .demo-th, .f2 .demo-td { font-family: 'IBM Plex Sans', sans-serif; }
+    .f2 .demo-pass, .f2 .demo-badge, .f2 .demo-logo span, .f2 .demo-th { font-family: 'IBM Plex Mono', monospace; }
+
+    .f3 .demo-logo, .f3 .demo-nav-item, .f3 .demo-page-title, .f3 .demo-page-sub,
+    .f3 .demo-stat-num, .f3 .demo-stat-lbl, .f3 .demo-th, .f3 .demo-td { font-family: 'Plus Jakarta Sans', sans-serif; }
+    .f3 .demo-pass, .f3 .demo-badge, .f3 .demo-logo span, .f3 .demo-th { font-family: 'DM Mono', monospace; }
+
+    .f4 .demo-logo, .f4 .demo-nav-item, .f4 .demo-page-title, .f4 .demo-page-sub,
+    .f4 .demo-stat-num, .f4 .demo-stat-lbl, .f4 .demo-th, .f4 .demo-td { font-family: 'Outfit', sans-serif; }
+    .f4 .demo-pass, .f4 .demo-badge, .f4 .demo-logo span, .f4 .demo-th { font-family: 'Fira Mono', monospace; }
+
+    @media (max-width: 800px) { .grid { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <p class="page-title">GatePass — Font Combination Demo · Open in browser to compare</p>
+
+  <div class="grid">
+
+    <!-- Combo 1: Space Grotesk + Space Mono -->
+    <div class="combo f1">
+      <div class="combo-header">
+        <div class="combo-dot"></div>
+        <span class="combo-label">Option A</span>
+        <span class="combo-name">Space Grotesk + Space Mono</span>
+      </div>
+      <div class="combo-inner">
+        <div class="demo-sidebar">
+          <div class="demo-logo">GatePass<span>Movement Control</span></div>
+          <div class="demo-nav-item active">Dashboard</div>
+          <div class="demo-nav-item">Gate Passes</div>
+          <div class="demo-nav-item">Time Office</div>
+          <div class="demo-nav-item">Reports</div>
+        </div>
+        <div class="demo-main">
+          <div>
+            <div class="demo-page-title">Dashboard</div>
+            <div class="demo-page-sub">Welcome back, Arjun · Main Branch</div>
+          </div>
+          <div class="demo-stats">
+            <div class="demo-stat a">
+              <div class="demo-stat-num">24</div>
+              <div class="demo-stat-lbl">Total Passes</div>
+            </div>
+            <div class="demo-stat b">
+              <div class="demo-stat-num">5</div>
+              <div class="demo-stat-lbl">Pending</div>
+            </div>
+            <div class="demo-stat c">
+              <div class="demo-stat-num">18</div>
+              <div class="demo-stat-lbl">Completed</div>
+            </div>
+          </div>
+          <div class="demo-table">
+            <div class="demo-th-row">
+              <div class="demo-th">Pass #</div>
+              <div class="demo-th">Purpose</div>
+              <div class="demo-th">Status</div>
+            </div>
+            <div class="demo-tr">
+              <div class="demo-td demo-pass">GP-0041</div>
+              <div class="demo-td">Kitchen supplies</div>
+              <div class="demo-td"><span class="demo-badge p">Pending</span></div>
+            </div>
+            <div class="demo-tr">
+              <div class="demo-td demo-pass">GP-0040</div>
+              <div class="demo-td">Linen transfer</div>
+              <div class="demo-td"><span class="demo-badge a">Approved</span></div>
+            </div>
+            <div class="demo-tr">
+              <div class="demo-td demo-pass">GP-0039</div>
+              <div class="demo-td">Equipment loan</div>
+              <div class="demo-td"><span class="demo-badge a">Approved</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Combo 2: IBM Plex Sans + IBM Plex Mono -->
+    <div class="combo f2">
+      <div class="combo-header">
+        <div class="combo-dot"></div>
+        <span class="combo-label">Option B</span>
+        <span class="combo-name">IBM Plex Sans + IBM Plex Mono</span>
+      </div>
+      <div class="combo-inner">
+        <div class="demo-sidebar">
+          <div class="demo-logo">GatePass<span>Movement Control</span></div>
+          <div class="demo-nav-item active">Dashboard</div>
+          <div class="demo-nav-item">Gate Passes</div>
+          <div class="demo-nav-item">Time Office</div>
+          <div class="demo-nav-item">Reports</div>
+        </div>
+        <div class="demo-main">
+          <div>
+            <div class="demo-page-title">Dashboard</div>
+            <div class="demo-page-sub">Welcome back, Arjun · Main Branch</div>
+          </div>
+          <div class="demo-stats">
+            <div class="demo-stat a">
+              <div class="demo-stat-num">24</div>
+              <div class="demo-stat-lbl">Total Passes</div>
+            </div>
+            <div class="demo-stat b">
+              <div class="demo-stat-num">5</div>
+              <div class="demo-stat-lbl">Pending</div>
+            </div>
+            <div class="demo-stat c">
+              <div class="demo-stat-num">18</div>
+              <div class="demo-stat-lbl">Completed</div>
+            </div>
+          </div>
+          <div class="demo-table">
+            <div class="demo-th-row">
+              <div class="demo-th">Pass #</div>
+              <div class="demo-th">Purpose</div>
+              <div class="demo-th">Status</div>
+            </div>
+            <div class="demo-tr">
+              <div class="demo-td demo-pass">GP-0041</div>
+              <div class="demo-td">Kitchen supplies</div>
+              <div class="demo-td"><span class="demo-badge p">Pending</span></div>
+            </div>
+            <div class="demo-tr">
+              <div class="demo-td demo-pass">GP-0040</div>
+              <div class="demo-td">Linen transfer</div>
+              <div class="demo-td"><span class="demo-badge a">Approved</span></div>
+            </div>
+            <div class="demo-tr">
+              <div class="demo-td demo-pass">GP-0039</div>
+              <div class="demo-td">Equipment loan</div>
+              <div class="demo-td"><span class="demo-badge a">Approved</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Combo 3: Plus Jakarta Sans + DM Mono (current) -->
+    <div class="combo f3" style="border-color: #3b82f6; box-shadow: 0 0 0 2px rgba(59,130,246,0.2);">
+      <div class="combo-header" style="background: #1e3a5f;">
+        <div class="combo-dot"></div>
+        <span class="combo-label">Option C · Current</span>
+        <span class="combo-name">Plus Jakarta Sans + DM Mono</span>
+      </div>
+      <div class="combo-inner">
+        <div class="demo-sidebar">
+          <div class="demo-logo">GatePass<span>Movement Control</span></div>
+          <div class="demo-nav-item active">Dashboard</div>
+          <div class="demo-nav-item">Gate Passes</div>
+          <div class="demo-nav-item">Time Office</div>
+          <div class="demo-nav-item">Reports</div>
+        </div>
+        <div class="demo-main">
+          <div>
+            <div class="demo-page-title">Dashboard</div>
+            <div class="demo-page-sub">Welcome back, Arjun · Main Branch</div>
+          </div>
+          <div class="demo-stats">
+            <div class="demo-stat a">
+              <div class="demo-stat-num">24</div>
+              <div class="demo-stat-lbl">Total Passes</div>
+            </div>
+            <div class="demo-stat b">
+              <div class="demo-stat-num">5</div>
+              <div class="demo-stat-lbl">Pending</div>
+            </div>
+            <div class="demo-stat c">
+              <div class="demo-stat-num">18</div>
+              <div class="demo-stat-lbl">Completed</div>
+            </div>
+          </div>
+          <div class="demo-table">
+            <div class="demo-th-row">
+              <div class="demo-th">Pass #</div>
+              <div class="demo-th">Purpose</div>
+              <div class="demo-th">Status</div>
+            </div>
+            <div class="demo-tr">
+              <div class="demo-td demo-pass">GP-0041</div>
+              <div class="demo-td">Kitchen supplies</div>
+              <div class="demo-td"><span class="demo-badge p">Pending</span></div>
+            </div>
+            <div class="demo-tr">
+              <div class="demo-td demo-pass">GP-0040</div>
+              <div class="demo-td">Linen transfer</div>
+              <div class="demo-td"><span class="demo-badge a">Approved</span></div>
+            </div>
+            <div class="demo-tr">
+              <div class="demo-td demo-pass">GP-0039</div>
+              <div class="demo-td">Equipment loan</div>
+              <div class="demo-td"><span class="demo-badge a">Approved</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Combo 4: Outfit + Fira Mono -->
+    <div class="combo f4">
+      <div class="combo-header">
+        <div class="combo-dot"></div>
+        <span class="combo-label">Option D</span>
+        <span class="combo-name">Outfit + Fira Mono</span>
+      </div>
+      <div class="combo-inner">
+        <div class="demo-sidebar">
+          <div class="demo-logo">GatePass<span>Movement Control</span></div>
+          <div class="demo-nav-item active">Dashboard</div>
+          <div class="demo-nav-item">Gate Passes</div>
+          <div class="demo-nav-item">Time Office</div>
+          <div class="demo-nav-item">Reports</div>
+        </div>
+        <div class="demo-main">
+          <div>
+            <div class="demo-page-title">Dashboard</div>
+            <div class="demo-page-sub">Welcome back, Arjun · Main Branch</div>
+          </div>
+          <div class="demo-stats">
+            <div class="demo-stat a">
+              <div class="demo-stat-num">24</div>
+              <div class="demo-stat-lbl">Total Passes</div>
+            </div>
+            <div class="demo-stat b">
+              <div class="demo-stat-num">5</div>
+              <div class="demo-stat-lbl">Pending</div>
+            </div>
+            <div class="demo-stat c">
+              <div class="demo-stat-num">18</div>
+              <div class="demo-stat-lbl">Completed</div>
+            </div>
+          </div>
+          <div class="demo-table">
+            <div class="demo-th-row">
+              <div class="demo-th">Pass #</div>
+              <div class="demo-th">Purpose</div>
+              <div class="demo-th">Status</div>
+            </div>
+            <div class="demo-tr">
+              <div class="demo-td demo-pass">GP-0041</div>
+              <div class="demo-td">Kitchen supplies</div>
+              <div class="demo-td"><span class="demo-badge p">Pending</span></div>
+            </div>
+            <div class="demo-tr">
+              <div class="demo-td demo-pass">GP-0040</div>
+              <div class="demo-td">Linen transfer</div>
+              <div class="demo-td"><span class="demo-badge a">Approved</span></div>
+            </div>
+            <div class="demo-tr">
+              <div class="demo-td demo-pass">GP-0039</div>
+              <div class="demo-td">Equipment loan</div>
+              <div class="demo-td"><span class="demo-badge a">Approved</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <p style="text-align:center; margin-top:28px; font-family:system-ui,sans-serif; font-size:12px; color:#94a3b8;">
+    Tell me which option (A, B, C, D) you want applied — or mix (e.g. "Space Grotesk headings + IBM Plex Mono")
+  </p>
+</body>
+</html>

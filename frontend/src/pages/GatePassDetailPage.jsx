@@ -1,0 +1,766 @@
+import { useEffect, useState } from 'react';
+import { useParams, Link, useNavigate } from 'react-router-dom';
+import { api } from '../utils/api';
+import { useAuth } from '../context/AuthContext';
+import { StatusBadge, TypeBadge, ReturnableBadge, DirectionBadge } from '../components/Badges';
+import { LogOutwardModal, LogInwardModal } from './TimeOfficePage';
+import {
+  ArrowLeft, Check, X, RotateCcw, Printer, Pencil,
+  AlertTriangle, CheckCircle2,
+  FileText, ArrowUpRight, Truck, ArrowDownLeft, PackageCheck,
+  Zap, Clock,
+} from 'lucide-react';
+
+function fmt(dateStr) {
+  if (!dateStr) return '—';
+  return new Date(dateStr).toLocaleString('en-IN', {
+    day: '2-digit', month: 'short', year: 'numeric',
+    hour: '2-digit', minute: '2-digit',
+  });
+}
+
+function fmtDate(dateStr) {
+  if (!dateStr) return '—';
+  return new Date(dateStr).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+}
+
+// Mirrors INWARD_TYPES in backend/data/db.js
+const INWARD_TYPE_LABELS = {
+  returnable: 'Returnable',
+  non_returnable: 'Non-Returnable',
+};
+
+const fmtMoney = (n) => n == null ? null : `₹ ${Number(n).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+export default function GatePassDetailPage() {
+  const { id } = useParams();
+  const { user } = useAuth();
+
+  const [pass, setPass] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [actionLoading, setActionLoading] = useState(false);
+  // Which Time Office logging modal is open: 'outward' (departure) or 'inward' (arrival/return)
+  const [logModal, setLogModal] = useState(null);
+
+  const load = () => {
+    api.getPass(id).then(p => { setPass(p); setLoading(false); }).catch(() => setLoading(false));
+  };
+
+  useEffect(() => { load(); }, [id]);
+
+  const canApprove = ['manager', 'admin'].includes(user?.role);
+
+  const handleAction = async (action) => {
+    setError('');
+    setActionLoading(true);
+    try {
+      const updated = await api.approvePass(id, action);
+      setPass(updated);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleLogDone = () => { setLogModal(null); load(); };
+
+  if (loading) return <div className="loading-page"><div className="spinner" /><span>Loading pass…</span></div>;
+
+  if (!pass) return (
+    <div>
+      <Link to="/passes" className="btn btn-ghost btn-sm" style={{ marginBottom: 24 }}>
+        <ArrowLeft size={14} /> Back
+      </Link>
+      <div className="empty-state">
+        <div className="empty-icon"><FileText size={24} strokeWidth={1.75} /></div>
+        <div className="empty-title">Pass not found</div>
+      </div>
+    </div>
+  );
+
+  // Logging physical movement is a Time Office function — backend restricts
+  // /log-outward and /log-inward to time_office + admin. Managers/staff cannot log.
+  const canLog = ['time_office', 'admin'].includes(user?.role);
+  const canLogDeparture = canLog && pass.type === 'outward' && pass.status === 'approved' && !pass.outwardLog;
+  // Inward entries are logged directly at the gate (born completed) — the only
+  // arrival left to log is the return leg of a returnable outward pass.
+  const canLogReturn    = canLog && pass.type === 'outward' && pass.returnable && ['in_transit', 'partial_return'].includes(pass.status);
+  const isOverdue = pass.isOverdue;
+  const isDirectInward = pass.type === 'inward';
+
+  return (
+    <div>
+      {/* Back breadcrumb */}
+      <div style={{ marginBottom: 20 }}>
+        <Link to="/passes" className="back-link">
+          <ArrowLeft size={13} /> All Passes
+        </Link>
+      </div>
+
+      {/* Header */}
+      <div className="page-header">
+        <div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8, flexWrap: 'wrap' }}>
+            <span className="pass-number" style={{ fontSize: 18 }}>{pass.passNumber}</span>
+            <StatusBadge status={isOverdue ? 'overdue' : pass.status} />
+          </div>
+          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginBottom: 6 }}>
+            <TypeBadge type={pass.type} />
+            <DirectionBadge direction={pass.direction} />
+            <ReturnableBadge returnable={pass.returnable} />
+          </div>
+          <div className="page-subtitle">{pass.purpose}</div>
+        </div>
+
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <button className="btn btn-ghost" onClick={() => window.print()}>
+            <Printer size={14} /> Print
+          </button>
+          {pass.status === 'pending' && canApprove && (
+            <>
+              {/* Manager can still correct the pass before deciding */}
+              <Link to={`/passes/${pass.id}/edit`} className="btn btn-ghost">
+                <Pencil size={14} /> Edit
+              </Link>
+              <button className="btn btn-success" onClick={() => handleAction('approve')} disabled={actionLoading}>
+                <Check size={14} /> Approve
+              </button>
+              <button className="btn btn-danger" onClick={() => handleAction('reject')} disabled={actionLoading}>
+                <X size={14} /> Reject
+              </button>
+            </>
+          )}
+          {canLogDeparture && (
+            <button className="btn btn-primary" onClick={() => setLogModal('outward')}>
+              <ArrowUpRight size={14} /> Mark Items Out
+            </button>
+          )}
+          {canLogReturn && (
+            <button className="btn btn-primary" onClick={() => setLogModal('inward')}>
+              <RotateCcw size={14} /> Log Return
+            </button>
+          )}
+        </div>
+      </div>
+
+      {error && (
+        <div className="alert alert-danger" style={{ marginBottom: 20 }}>
+          <AlertTriangle size={15} /> {error}
+        </div>
+      )}
+
+      {isOverdue && (
+        <div className="alert alert-danger" style={{ marginBottom: 20 }}>
+          <AlertTriangle size={15} />
+          <span>
+            <strong>LATE</strong> — Items were due back by {fmt(pass.expectedReturnDate)}. Please follow up.
+          </span>
+        </div>
+      )}
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: 20, alignItems: 'start' }}>
+        {/* Left: Details */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+          <div className="card">
+            <h3 style={{ fontWeight: 700, marginBottom: 20, fontSize: 15 }}>
+              {isDirectInward ? 'Inward Details' : 'Pass Details'}
+            </h3>
+            {isDirectInward ? (
+              // Direct gate entry logged by Security — no request/approval trail
+              <div className="detail-grid">
+                <div className="detail-item">
+                  <div className="dl">Received At</div>
+                  <div className="dv">{pass.destinationBranchName || '—'}</div>
+                </div>
+                <div className="detail-item">
+                  <div className="dl">Received From</div>
+                  <div className="dv">{pass.destinationPerson || '—'}</div>
+                </div>
+                <div className="detail-item">
+                  <div className="dl">Inward Type</div>
+                  <div className="dv">{INWARD_TYPE_LABELS[pass.inwardType] || '—'}</div>
+                </div>
+                <div className="detail-item">
+                  <div className="dl">Document</div>
+                  <div className="dv">
+                    {pass.documentNo
+                      ? `${pass.documentType && pass.documentType !== 'None' ? pass.documentType + ' · ' : ''}${pass.documentNo}`
+                      : '—'}
+                  </div>
+                </div>
+                <div className="detail-item">
+                  <div className="dl">Carried By</div>
+                  <div className="dv">
+                    {pass.carriedBy || '—'}
+                    {pass.carrierMobile && (
+                      <span style={{ color: 'var(--text3)', fontFamily: 'var(--font-mono)', fontSize: 12 }}> · {pass.carrierMobile}</span>
+                    )}
+                  </div>
+                </div>
+                <div className="detail-item">
+                  <div className="dl">Receiver</div>
+                  <div className="dv">
+                    {pass.receiverUser?.name || '—'}
+                    {pass.departmentName && <span style={{ color: 'var(--text3)' }}> · {pass.departmentName}</span>}
+                  </div>
+                </div>
+                <div className="detail-item">
+                  <div className="dl">Logged By (Security)</div>
+                  <div className="dv">{pass.inwardLog?.loggedByUser?.name || pass.createdByUser?.name || '—'}</div>
+                </div>
+                <div className="detail-item">
+                  <div className="dl">Logged At</div>
+                  <div className="dv" style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5 }}>{fmt(pass.inwardLog?.loggedAt || pass.createdAt)}</div>
+                </div>
+                {pass.barcodeRef && (
+                  <div className="detail-item">
+                    <div className="dl">Barcode / Ref</div>
+                    <div className="dv" style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5 }}>{pass.barcodeRef}</div>
+                  </div>
+                )}
+                {pass.remarks && (
+                  <div className="detail-item" style={{ gridColumn: '1/-1' }}>
+                    <div className="dl">Remarks</div>
+                    <div className="dv" style={{ color: 'var(--text2)', fontWeight: 400 }}>{pass.remarks}</div>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="detail-grid">
+                <div className="detail-item">
+                  <div className="dl">From</div>
+                  <div className="dv">{pass.sourceBranchName || '—'}</div>
+                </div>
+                <div className="detail-item">
+                  <div className="dl">To</div>
+                  <div className="dv">{pass.destinationBranchName || pass.destinationPerson || '—'}</div>
+                </div>
+                <div className="detail-item">
+                  <div className="dl">Made By</div>
+                  <div className="dv">{pass.createdByUser?.name || '—'}</div>
+                </div>
+                <div className="detail-item">
+                  <div className="dl">Department</div>
+                  <div className="dv">{pass.departmentName || '—'}</div>
+                </div>
+                <div className="detail-item">
+                  <div className="dl">Made On</div>
+                  <div className="dv" style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5 }}>{fmt(pass.createdAt)}</div>
+                </div>
+                <div className="detail-item">
+                  <div className="dl">Approved By</div>
+                  <div className="dv">{pass.approvedByUser?.name || '—'}</div>
+                </div>
+                <div className="detail-item">
+                  <div className="dl">Approved On</div>
+                  <div className="dv" style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5 }}>{fmt(pass.approvedAt)}</div>
+                </div>
+                {pass.editedByUser && (
+                  <div className="detail-item">
+                    <div className="dl">Changed Before Approval</div>
+                    <div className="dv">
+                      {pass.editedByUser.name}
+                      <span style={{ color: 'var(--text3)', fontFamily: 'var(--font-mono)', fontSize: 12 }}> · {fmt(pass.editedAt)}</span>
+                    </div>
+                  </div>
+                )}
+                {pass.returnable && (
+                  <div className="detail-item">
+                    <div className="dl">Return By</div>
+                    <div className="dv" style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5, color: isOverdue ? 'var(--red)' : 'inherit' }}>
+                      {fmt(pass.expectedReturnDate)}
+                    </div>
+                  </div>
+                )}
+                {pass.remarks && (
+                  <div className="detail-item" style={{ gridColumn: '1/-1' }}>
+                    <div className="dl">Remarks</div>
+                    <div className="dv" style={{ color: 'var(--text2)', fontWeight: 400 }}>{pass.remarks}</div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Items */}
+          <div className="card">
+            <h3 style={{ fontWeight: 700, marginBottom: 16, fontSize: 15 }}>
+              Items <span style={{ color: 'var(--text3)', fontWeight: 500 }}>({pass.items?.length})</span>
+            </h3>
+            <div className="items-list">
+              {pass.items?.map((li, idx) => {
+                const closed = li.closedQuantity || 0;
+                const remaining = li.quantity - li.returnedQuantity - closed;
+                const isFullyAccounted = remaining === 0;
+                const itemMeta = [
+                  li.unit,
+                  li.code && `Code: ${li.code}`,
+                  li.serialNo && `S/N: ${li.serialNo}`,
+                ].filter(Boolean).join(' · ');
+                return (
+                  <div key={idx} className="item-row" style={{ opacity: isFullyAccounted && pass.returnable ? 0.55 : 1 }}>
+                    <div>
+                      <div className="item-name">{li.itemName}</div>
+                      <div style={{ fontSize: 11, color: 'var(--text3)', fontFamily: 'var(--font-mono)', marginTop: 2 }}>{itemMeta}</div>
+                      {li.remarks && (
+                        <div style={{ fontSize: 11.5, color: 'var(--text3)', marginTop: 2 }}>{li.remarks}</div>
+                      )}
+                    </div>
+                    <div style={{ textAlign: 'right' }}>
+                      <div className="item-qty">Qty: {li.quantity}</div>
+                      {li.amount != null && (
+                        <div style={{ fontSize: 11.5, color: 'var(--text2)', fontFamily: 'var(--font-mono)', marginTop: 2 }}>
+                          {fmtMoney(li.rate)} × {li.quantity} = <strong>{fmtMoney(li.amount)}</strong>
+                        </div>
+                      )}
+                      {pass.returnable && pass.type === 'outward' && (
+                        <>
+                          <div className="item-returned">Returned: {li.returnedQuantity}</div>
+                          {closed > 0 && (
+                            <div style={{ fontSize: 11, color: 'var(--orange)', fontFamily: 'var(--font-mono)' }}>Closed: {closed}</div>
+                          )}
+                          {!isFullyAccounted && <div className="item-remaining">Remaining: {remaining}</div>}
+                          {isFullyAccounted && (
+                            <div style={{ fontSize: 11, color: closed > 0 ? 'var(--orange)' : 'var(--green)', fontFamily: 'var(--font-mono)', display: 'flex', alignItems: 'center', gap: 4, justifyContent: 'flex-end' }}>
+                              <Check size={10} strokeWidth={2.5} /> {closed > 0 ? 'Settled' : 'Complete'}
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            {pass.items?.some(li => li.amount != null) && (
+              <div style={{
+                display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--border)',
+              }}>
+                <span style={{ fontSize: 12, color: 'var(--text3)', fontWeight: 600 }}>Total Value</span>
+                <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: 14 }}>
+                  {fmtMoney(pass.items.reduce((s, li) => s + (li.amount || 0), 0))}
+                </span>
+              </div>
+            )}
+          </div>
+
+          {/* Closed items — written off with a reason, for observability */}
+          {pass.closures?.length > 0 && (
+            <div className="card">
+              <h3 style={{ fontWeight: 700, marginBottom: 16, fontSize: 15, display: 'flex', alignItems: 'center', gap: 8 }}>
+                <AlertTriangle size={15} style={{ color: 'var(--orange)' }} /> Items Not Coming Back
+              </h3>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                {pass.closures.map((c, ci) => (
+                  <div key={ci} style={{ borderLeft: '2px solid var(--orange)', paddingLeft: 12 }}>
+                    <div style={{ fontSize: 11, color: 'var(--text3)', fontFamily: 'var(--font-mono)', marginBottom: 6 }}>
+                      {fmt(c.closedAt)}{c.closedByUser ? ` · by ${c.closedByUser.name}` : ''}
+                    </div>
+                    {c.items?.map((it, ii) => (
+                      <div key={ii} style={{ fontSize: 13, marginBottom: 2 }}>
+                        <strong>{it.quantity}× {it.itemName}</strong>
+                        <span style={{ color: 'var(--text2)' }}> — {it.reason}</span>
+                      </div>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Right: Lifecycle timeline */}
+        <div>
+          <div className="card">
+            <h3 style={{ fontWeight: 700, marginBottom: 20, fontSize: 15 }}>Progress</h3>
+            <LifecycleTimeline pass={pass} />
+          </div>
+        </div>
+      </div>
+
+      {/* Print document — hidden on screen, shown on print */}
+      <PrintGatePass pass={pass} />
+
+      {/* Time Office logging modals (shared with the Time Office page) */}
+      {logModal === 'outward' && (
+        <LogOutwardModal pass={pass} onClose={() => setLogModal(null)} onDone={handleLogDone} />
+      )}
+      {logModal === 'inward' && (
+        <LogInwardModal pass={pass} onClose={() => setLogModal(null)} onDone={handleLogDone} />
+      )}
+    </div>
+  );
+}
+
+/* ── Lifecycle Timeline ─────────────────────────────── */
+function LifecycleTimeline({ pass }) {
+  const isOverdue = pass.isOverdue;
+
+  // Direct inward: Security logged it at the gate, done. No request/approval trail.
+  if (pass.type === 'inward') {
+    const inwardSteps = [
+      {
+        key: 'gate_log',
+        label: 'Logged at Gate',
+        sub: `${pass.inwardLog?.loggedByUser?.name || pass.createdByUser?.name || '—'} (Security)${pass.carriedBy ? ` · Carried by ${pass.carriedBy}` : ''}`,
+        time: pass.inwardLog?.loggedAt || pass.createdAt,
+        done: true,
+        Icon: ArrowDownLeft,
+        color: 'var(--green)',
+      },
+      {
+        key: 'received',
+        label: 'Received',
+        sub: pass.receiverUser?.name
+          ? `${pass.receiverUser.name}${pass.departmentName ? ` · ${pass.departmentName}` : ''}`
+          : pass.departmentName || undefined,
+        time: null,
+        done: true,
+        Icon: CheckCircle2,
+        color: 'var(--blue)',
+      },
+      {
+        key: 'completed',
+        label: pass.returnable ? 'Completed · Will Go Back Out' : 'Completed',
+        sub: '',
+        time: null,
+        done: pass.status === 'completed',
+        Icon: PackageCheck,
+        color: 'var(--green)',
+      },
+    ];
+    return <TimelineSteps steps={inwardSteps} pass={pass} />;
+  }
+
+  const steps = [
+    {
+      key: 'created',
+      label: 'Pass Created',
+      sub: pass.createdByUser?.name,
+      time: pass.createdAt,
+      done: true,
+      Icon: FileText,
+      color: 'var(--accent)',
+    },
+    {
+      key: 'approved',
+      label: pass.status === 'rejected'
+        ? 'Rejected'
+        : (pass.autoApproved ? 'Auto-Approved' : 'Approved'),
+      sub: pass.approvedByUser?.name
+        ? `${pass.approvedByUser.name}${pass.autoApproved ? ' (auto)' : ''}`
+        : undefined,
+      time: pass.approvedAt,
+      done: ['approved', 'completed', 'partial_return', 'rejected', 'in_transit'].includes(pass.status),
+      Icon: pass.status === 'rejected' ? X : CheckCircle2,
+      color: pass.status === 'rejected' ? 'var(--red)' : (pass.autoApproved ? 'var(--green)' : 'var(--blue)'),
+    },
+    ...(pass.type === 'outward' ? [{
+      key: 'outward_log',
+      label: 'Items Went Out',
+      sub: pass.outwardLog
+        ? `${pass.outwardLog.loggedByUser?.name || '—'} · Guard: ${pass.outwardLog.guardName || '—'}`
+        : 'Waiting for gate to log it',
+      time: pass.outwardLog?.loggedAt,
+      done: !!pass.outwardLog,
+      Icon: ArrowUpRight,
+      color: 'var(--orange)',
+    }] : []),
+    ...(pass.type === 'outward' && pass.returnable ? [{
+      key: 'in_transit',
+      label: 'Items Are Out',
+      sub: pass.expectedReturnDate
+        ? `Due back ${new Date(pass.expectedReturnDate).toLocaleDateString('en-IN')}`
+        : undefined,
+      time: null,
+      done: ['in_transit', 'partial_return', 'completed'].includes(pass.status),
+      Icon: Truck,
+      color: 'var(--purple)',
+    }] : []),
+    ...(pass.type === 'outward' && pass.returnable ? [{
+      key: 'inward_log',
+      label: pass.status === 'partial_return' ? 'Some Items Came Back' : 'Items Came Back',
+      sub: pass.inwardLog
+        ? `${pass.inwardLog.loggedByUser?.name || '—'} · Guard: ${pass.inwardLog.guardName || '—'}${pass.inwardLog.remarks ? ' · ' + pass.inwardLog.remarks : ''}`
+        : (isOverdue ? 'Late — not back yet' : 'Waiting for items to come back'),
+      time: pass.inwardLog?.loggedAt,
+      done: !!pass.inwardLog,
+      Icon: ArrowDownLeft,
+      color: isOverdue ? 'var(--red)' : 'var(--green)',
+    }] : []),
+    {
+      key: 'completed',
+      label: pass.status === 'partial_return' ? 'Waiting for Remaining Items' : 'Completed',
+      sub: '',
+      time: null,
+      done: pass.status === 'completed',
+      Icon: PackageCheck,
+      color: 'var(--green)',
+    },
+  ].filter(Boolean);
+
+  return <TimelineSteps steps={steps} pass={pass} />;
+}
+
+function TimelineSteps({ steps, pass }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column' }}>
+      {steps.map((step, idx) => {
+        const isRejected = step.key === 'approved' && pass.status === 'rejected';
+        const dotColor = isRejected ? 'var(--red)' : step.done ? 'var(--accent)' : 'var(--border2)';
+        return (
+          <div key={step.key} style={{ display: 'flex', gap: 14 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', flexShrink: 0 }}>
+              <div style={{
+                width: 10, height: 10, borderRadius: '50%', marginTop: 4,
+                background: dotColor, flexShrink: 0,
+              }} />
+              {idx < steps.length - 1 && (
+                <div style={{ width: 1, flex: 1, minHeight: 16, margin: '4px 0', background: 'var(--border)' }} />
+              )}
+            </div>
+            <div style={{ paddingBottom: idx < steps.length - 1 ? 16 : 0, minWidth: 0 }}>
+              <div style={{ fontSize: 13, fontWeight: step.done ? 600 : 400, color: step.done ? 'var(--text)' : 'var(--text3)' }}>
+                {step.label}
+              </div>
+              {step.sub && <div style={{ fontSize: 12, color: 'var(--text3)', marginTop: 1 }}>{step.sub}</div>}
+              {step.time && (
+                <div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 2 }}>
+                  {new Date(step.time).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ── Print Document ─────────────────────────────── */
+function PrintGatePass({ pass }) {
+  const statusLabel = {
+    pending: 'Waiting Approval', approved: 'Approved', in_transit: 'Items Out',
+    partial_return: 'Partly Back', completed: 'Completed', closed: 'Closed', rejected: 'Rejected',
+  }[pass.status] || pass.status;
+
+  const hasAmounts = pass.items?.some(li => li.amount != null);
+  const hasCodes   = pass.items?.some(li => li.code);
+  const hasSerials = pass.items?.some(li => li.serialNo);
+  const isReturnableOutward = pass.returnable && pass.type === 'outward';
+
+  return (
+    <div className="print-gate-pass">
+      {/* Header */}
+      <div className="print-header">
+        <div>
+          <div className="print-org">{pass.sourceBranchName || pass.destinationBranchName || 'GatePass'}</div>
+          <div className="print-org-sub">Item Movement Control System</div>
+        </div>
+        <div>
+          <div className="print-title">{pass.type === 'inward' ? 'INWARD ENTRY' : 'GATE PASS'}</div>
+          <div className="print-pass-num">{pass.passNumber}</div>
+        </div>
+      </div>
+
+      {/* Info grid */}
+      <div className="print-info-grid">
+        <div className="print-info-cell">
+          <div className="print-info-label">Type</div>
+          <div className="print-info-value">{pass.type === 'outward' ? 'Outward' : 'Inward'}</div>
+        </div>
+        <div className="print-info-cell">
+          <div className="print-info-label">Scope</div>
+          <div className="print-info-value">{pass.direction === 'internal' ? 'Internal' : 'External'}</div>
+        </div>
+        <div className="print-info-cell">
+          <div className="print-info-label">Returnable</div>
+          <div className="print-info-value">{pass.returnable ? 'Yes' : 'No'}</div>
+        </div>
+        <div className="print-info-cell">
+          <div className="print-info-label">Status</div>
+          <div className="print-info-value">{pass.isOverdue ? 'LATE' : statusLabel}</div>
+        </div>
+      </div>
+
+      {/* Movement */}
+      <div className="print-section">
+        <div className="print-section-title">Movement</div>
+        <div className="print-movement">
+          <div>
+            <div style={{ fontSize: '8pt', textTransform: 'uppercase', color: '#666', marginBottom: 2 }}>From</div>
+            <div style={{ fontWeight: 600 }}>{pass.sourceBranchName || pass.destinationPerson || '—'}</div>
+          </div>
+          <div className="print-movement-arrow">→</div>
+          <div>
+            <div style={{ fontSize: '8pt', textTransform: 'uppercase', color: '#666', marginBottom: 2 }}>To</div>
+            <div style={{ fontWeight: 600 }}>{pass.destinationBranchName || pass.destinationPerson || '—'}</div>
+          </div>
+        </div>
+      </div>
+
+      {/* Reason */}
+      <div className="print-section">
+        <div className="print-section-title">Reason</div>
+        <div className="print-text">{pass.purpose || '—'}</div>
+        {pass.remarks && (
+          <div style={{ marginTop: 4, fontSize: '10pt', color: '#555' }}>Remarks: {pass.remarks}</div>
+        )}
+      </div>
+
+      {/* Gate entry details for direct inward */}
+      {pass.type === 'inward' && (
+        <div className="print-section">
+          <div className="print-section-title">Gate Entry</div>
+          <div className="print-text">
+            Carried by: <strong>{pass.carriedBy || '—'}</strong>{pass.carrierMobile ? ` (${pass.carrierMobile})` : ''}
+            {'  ·  '}Document: {pass.documentNo
+              ? `${pass.documentType && pass.documentType !== 'None' ? pass.documentType + ' ' : ''}${pass.documentNo}`
+              : '—'}
+            {'  ·  '}Receiver: <strong>{pass.receiverUser?.name || '—'}</strong>{pass.departmentName ? ` (${pass.departmentName})` : ''}
+          </div>
+        </div>
+      )}
+
+      {/* Items */}
+      <div className="print-section">
+        <div className="print-section-title">Items ({pass.items?.length})</div>
+        <table className="print-items-table">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Item Name</th>
+              {hasCodes && <th>Code</th>}
+              <th>Unit</th>
+              <th>Qty</th>
+              {hasAmounts && <th>Rate</th>}
+              {hasAmounts && <th>Amount</th>}
+              {hasSerials && <th>Serial/Batch</th>}
+              {isReturnableOutward && <th>Returned</th>}
+              {isReturnableOutward && <th>Remaining</th>}
+            </tr>
+          </thead>
+          <tbody>
+            {pass.items?.map((li, i) => {
+              const remaining = li.quantity - li.returnedQuantity;
+              return (
+                <tr key={i}>
+                  <td>{i + 1}</td>
+                  <td>{li.itemName}</td>
+                  {hasCodes && <td>{li.code || '—'}</td>}
+                  <td>{li.unit}</td>
+                  <td>{li.quantity}</td>
+                  {hasAmounts && <td>{li.rate != null ? li.rate.toLocaleString('en-IN') : '—'}</td>}
+                  {hasAmounts && <td>{li.amount != null ? li.amount.toLocaleString('en-IN') : '—'}</td>}
+                  {hasSerials && <td>{li.serialNo || '—'}</td>}
+                  {isReturnableOutward && <td>{li.returnedQuantity}</td>}
+                  {isReturnableOutward && <td>{remaining}</td>}
+                </tr>
+              );
+            })}
+            {hasAmounts && (
+              <tr>
+                {/* Label spans through the Rate column so the value sits under Amount */}
+                <td colSpan={hasCodes ? 6 : 5} style={{ textAlign: 'right', fontWeight: 600 }}>Total</td>
+                <td style={{ fontWeight: 700 }}>
+                  {pass.items.reduce((s, li) => s + (li.amount || 0), 0).toLocaleString('en-IN')}
+                </td>
+                {hasSerials && <td />}
+                {isReturnableOutward && <td colSpan={2} />}
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Return date if applicable */}
+      {isReturnableOutward && pass.expectedReturnDate && (
+        <div className="print-section">
+          <div className="print-section-title">Return Info</div>
+          <div className="print-text">
+            Due back by: <strong>{fmt(pass.expectedReturnDate)}</strong>
+            {pass.earlyReturn && '  ·  Came Back Early'}
+          </div>
+        </div>
+      )}
+
+      {/* Authorization — direct inwards have no approval chain, just gate log + receiver */}
+      {pass.type === 'inward' ? (
+        <div className="print-auth">
+          <div className="print-auth-item">
+            <div className="print-auth-label">Logged by (Security)</div>
+            <div className="print-auth-value">{pass.inwardLog?.loggedByUser?.name || pass.createdByUser?.name || '—'}</div>
+            <div className="print-auth-time">{fmt(pass.inwardLog?.loggedAt || pass.createdAt)}</div>
+          </div>
+          <div className="print-auth-item">
+            <div className="print-auth-label">Receiver</div>
+            <div className="print-auth-value">{pass.receiverUser?.name || '—'}</div>
+            <div className="print-auth-time">{pass.departmentName || ''}</div>
+          </div>
+        </div>
+      ) : (
+        <div className="print-auth">
+          <div className="print-auth-item">
+            <div className="print-auth-label">Made by</div>
+            <div className="print-auth-value">{pass.createdByUser?.name || '—'}</div>
+            <div className="print-auth-time">{fmt(pass.createdAt)}{pass.departmentName ? ` · ${pass.departmentName}` : ''}</div>
+          </div>
+          <div className="print-auth-item">
+            <div className="print-auth-label">Approved by</div>
+            <div className="print-auth-value">{pass.approvedByUser?.name || '—'}{pass.autoApproved ? ' (Auto)' : ''}</div>
+            <div className="print-auth-time">{fmt(pass.approvedAt)}</div>
+          </div>
+        </div>
+      )}
+
+      {/* Gate log info */}
+      {pass.type === 'outward' && (pass.outwardLog || pass.inwardLog) && (
+        <div className="print-auth">
+          {pass.outwardLog && (
+            <div className="print-auth-item">
+              <div className="print-auth-label">Items out — logged by</div>
+              <div className="print-auth-value">{pass.outwardLog.loggedByUser?.name || '—'}</div>
+              <div className="print-auth-time">
+                {fmt(pass.outwardLog.loggedAt)} · Guard: {pass.outwardLog.guardName || '—'}
+              </div>
+            </div>
+          )}
+          {pass.inwardLog && (
+            <div className="print-auth-item">
+              <div className="print-auth-label">Items back — logged by</div>
+              <div className="print-auth-value">{pass.inwardLog.loggedByUser?.name || '—'}</div>
+              <div className="print-auth-time">
+                {fmt(pass.inwardLog.loggedAt)} · Guard: {pass.inwardLog.guardName || '—'}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Signatures */}
+      <div className="print-signatures">
+        <div>
+          <div className="print-sig-line" />
+          <div className="print-sig-label">Gate Guard</div>
+        </div>
+        <div>
+          <div className="print-sig-line" />
+          <div className="print-sig-label">Issued / Authorized By</div>
+        </div>
+        <div>
+          <div className="print-sig-line" />
+          <div className="print-sig-label">Received By</div>
+        </div>
+      </div>
+
+      {/* Footer */}
+      <div className="print-footer">
+        <span>Printed: {fmtDate(new Date().toISOString())}</span>
+        <span>{pass.passNumber} · GatePass Item Movement System</span>
+      </div>
+    </div>
+  );
+}
