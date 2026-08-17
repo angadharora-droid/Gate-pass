@@ -1,4 +1,8 @@
-const BASE = '/api';
+// In production, VITE_API_URL is the backend origin (e.g. the Railway URL) —
+// baked in at build time. When unset (local dev), the relative /api path is
+// proxied to localhost:4000 by Vite (see vite.config.js).
+const API_ORIGIN = (import.meta.env.VITE_API_URL || '').replace(/\/+$/, '');
+const BASE = `${API_ORIGIN}/api`;
 const TOKEN_KEY = 'token';
 
 export const getToken = () => localStorage.getItem(TOKEN_KEY);
