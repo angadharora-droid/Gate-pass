@@ -1,0 +1,52 @@
+# ─── Environment / secrets ────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+*.env
+env/
+.envrc
+*.pem
+*.key
+*.p12
+*.pfx
+secrets.json
+credentials.json
+service-account*.json
+
+# ─── Dependencies ─────────────────────────────────────────────────────────────
+node_modules/
+.pnp
+.pnp.js
+.yarn/
+
+# ─── Build output ─────────────────────────────────────────────────────────────
+dist/
+build/
+.vite/
+*.tsbuildinfo
+
+# ─── Logs ─────────────────────────────────────────────────────────────────────
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ─── Caches / test output ─────────────────────────────────────────────────────
+.cache/
+.parcel-cache/
+coverage/
+.nyc_output/
+.eslintcache
+
+# ─── Editor / OS ──────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ─── Local tooling ────────────────────────────────────────────────────────────
+.claude/settings.local.json

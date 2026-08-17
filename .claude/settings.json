@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//c/Users/shraw/OneDrive/Documents/**)",
+      "Bash(node -e \"console.log\\(require\\('c:/Users/shraw/OneDrive/Documents/gatepass-v3/frontend/node_modules/xlsx/package.json'\\).version\\)\")",
+      "Bash(node -e \"const l=require\\('c:/Users/shraw/OneDrive/Documents/gatepass-v3/frontend/node_modules/lucide-react/package.json'\\); console.log\\('version', l.version\\)\")",
+      "Bash(node -e ' *)",
+      "PowerShell(npm run build --prefix \"c:\\\\Users\\\\shraw\\\\OneDrive\\\\Documents\\\\gatepass-v3\\\\frontend\" 2>&1)",
+      "Bash(node_modules/.bin/vite build *)",
+      "Bash(node --check backend/routes/gatePasses.js)",
+      "Bash(node --check backend/data/db.js)",
+      "Bash(rm -f frontend/src/pages/SecurityGatePage.jsx)",
+      "Bash(rmdir '{backend,frontend}')",
+      "Bash(rm -f frontend/font-demo.html)",
+      "Bash(ls '{backend,frontend}')",
+      "Bash(ls frontend/font-demo.html)",
+      "Bash(node server.js)",
+      "Bash(PORT=4100 node server.js)",
+      "Bash(npm run *)"
+    ]
+  }
+}
