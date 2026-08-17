@@ -3,13 +3,6 @@ import { useAuth } from '../context/AuthContext';
 import { useNavigate } from 'react-router-dom';
 import { AlertTriangle, ShieldCheck, Eye, EyeOff } from 'lucide-react';
 
-const DEMO_ACCOUNTS = [
-  { label: 'Admin',       email: 'arjun@hotel.com',  password: 'admin123' },
-  { label: 'Manager',     email: 'priya@hotel.com',  password: 'pass123' },
-  { label: 'Staff',       email: 'vikram@hotel.com', password: 'pass123' },
-  { label: 'Time Office', email: 'karan@hotel.com',  password: 'pass123' },
-];
-
 export default function LoginPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -31,14 +24,6 @@ export default function LoginPage() {
     } finally {
       setLoading(false);
     }
-  };
-
-  const quickLogin = (acc) => {
-    setEmail(acc.email);
-    setPassword(acc.password);
-    setTimeout(() => {
-      login(acc.email, acc.password).then(() => navigate('/')).catch(e => setError(e.message));
-    }, 80);
   };
 
   return (
@@ -108,19 +93,6 @@ export default function LoginPage() {
             ? <><div className="spinner" style={{ width: 16, height: 16, borderTopColor: '#fff' }} /> Signing in…</>
             : 'Sign In'}
         </button>
-
-        <hr className="divider" style={{ margin: '24px 0 16px' }} />
-
-        <div style={{ fontSize: 12, fontWeight: 500, color: 'var(--text3)', marginBottom: 10 }}>
-          Demo accounts — one-click sign in
-        </div>
-        <div className="demo-grid">
-          {DEMO_ACCOUNTS.map(acc => (
-            <button key={acc.email} type="button" className="btn btn-ghost btn-sm" onClick={() => quickLogin(acc)}>
-              {acc.label}
-            </button>
-          ))}
-        </div>
       </form>
     </div>
   );
