@@ -1,17 +1,27 @@
-// End-to-end smoke test: boots a throwaway in-memory MongoDB, starts the real
-// server against it, and walks the core flows through the HTTP API — starting
-// from the minimal seed (a single admin), exactly like a fresh production boot.
-// Run with: npm run test:smoke
-import { MongoMemoryServer } from 'mongodb-memory-server';
+// End-to-end smoke test: starts the real server against a DISPOSABLE database
+// (`gatepass_smoke`) on whatever MongoDB cluster MONGODB_URI points at, and
+// walks the core flows through the HTTP API — starting from the minimal seed
+// (a single admin), exactly like a fresh production boot. The smoke database
+// is dropped before and after the run; the real `gatepass` database is never
+// touched. Run with: npm run test:smoke   (needs MONGODB_URI in env or .env)
+import 'dotenv/config';
+import { MongoClient } from 'mongodb';
 
 const PORT = 4271;
 const BASE = `http://127.0.0.1:${PORT}/api`;
+const SMOKE_DB = 'gatepass_smoke';
 
-// Generous launch timeout — the first boot on Windows can be slow while the
-// downloaded mongod binary gets scanned by Defender.
-const mongod = await MongoMemoryServer.create({ instance: { launchTimeout: 120000 } });
-process.env.MONGODB_URI = mongod.getUri();
-process.env.MONGODB_DB = 'gatepass_smoke';
+if (!process.env.MONGODB_URI) {
+  console.error('MONGODB_URI is not set — put it in backend/.env (see .env.example) to run the smoke test.');
+  process.exit(1);
+}
+
+// Start from a clean slate so seeding and assertions are deterministic.
+const client = new MongoClient(process.env.MONGODB_URI, { serverSelectionTimeoutMS: 15000 });
+await client.connect();
+await client.db(SMOKE_DB).dropDatabase();
+
+process.env.MONGODB_DB = SMOKE_DB;
 process.env.JWT_SECRET = 'smoke-test-secret';
 process.env.PORT = String(PORT);
 
@@ -182,5 +192,6 @@ check('deactivated user cannot log in', deadLogin.status === 401);
 
 // ─── Done ─────────────────────────────────────────────────────────────────────
 console.log(failures === 0 ? '\nALL SMOKE TESTS PASSED' : `\n${failures} SMOKE TEST(S) FAILED`);
-await mongod.stop();
+await client.db(SMOKE_DB).dropDatabase();
+await client.close();
 process.exit(failures === 0 ? 0 : 1);

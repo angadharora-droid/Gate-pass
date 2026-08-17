@@ -48,13 +48,11 @@ npm run dev
 
 ---
 
-## Demo Accounts
+## First Login
 
-| Role    | Email                | Password  |
-|---------|----------------------|-----------|
-| Admin   | arjun@hotel.com      | admin123  |
-| Manager | priya@hotel.com      | pass123   |
-| Staff   | vikram@hotel.com     | pass123   |
+A fresh database is seeded with a single administrator account (see
+`backend/data/db.js`). Sign in with it, change the password, then create your
+branches, departments, and users from the Admin page.
 
 ---
 

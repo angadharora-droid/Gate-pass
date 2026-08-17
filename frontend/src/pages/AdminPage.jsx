@@ -462,7 +462,7 @@ function BranchesTab() {
           <div className="modal-body">
             <div className="form-group">
               <label className="form-label">Branch Name *</label>
-              <input className="form-input" value={form.name} onChange={e => set('name', e.target.value)} placeholder="e.g. Grand Hotel – Main" />
+              <input className="form-input" value={form.name} onChange={e => set('name', e.target.value)} placeholder="e.g. Head Office" />
             </div>
             <div className="form-group" style={{ marginBottom: 0 }}>
               <label className="form-label">Location / Address</label>
