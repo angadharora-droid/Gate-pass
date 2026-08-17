@@ -75,106 +75,22 @@ async function ensureIndexes() {
 
 // ─── SEED DATA ────────────────────────────────────────────────────────────────
 // Inserted only when the database is empty (first boot against a fresh cluster).
-// Seed credentials are plaintext here only for readability; they are hashed
-// before insert, so no plaintext password is ever stored.
+// Minimal bootstrap: one admin account plus the branch/department it belongs to
+// (users must belong to a branch, and non-time_office roles need a department).
+// Everything else — branches, departments, users, passes — is created by the
+// admin from inside the app. The seed password is hashed before insert; change
+// it after the first login.
 const SEED_USERS = [
-  { id: 'u1', name: 'Arjun Mehta',  role: 'admin',       branch: 'b1', departmentId: 'd1', email: 'arjun@hotel.com',  password: 'admin123', active: true },
-  { id: 'u2', name: 'Priya Sharma', role: 'manager',     branch: 'b1', departmentId: 'd2', email: 'priya@hotel.com',  password: 'pass123',  active: true },
-  { id: 'u3', name: 'Rohan Desai',  role: 'staff',       branch: 'b2', departmentId: 'd6', email: 'rohan@hotel.com',  password: 'pass123',  active: true },
-  { id: 'u4', name: 'Sneha Patil',  role: 'manager',     branch: 'b2', departmentId: 'd5', email: 'sneha@hotel.com',  password: 'pass123',  active: true },
-  { id: 'u5', name: 'Vikram Joshi', role: 'staff',       branch: 'b1', departmentId: 'd3', email: 'vikram@hotel.com', password: 'pass123',  active: true },
-  // time_office is a central role; department is optional
-  { id: 'u6', name: 'Karan Tiwari', role: 'time_office', branch: 'b1', departmentId: null, email: 'karan@hotel.com',  password: 'pass123',  active: true },
-  { id: 'u7', name: 'Divya Nair',   role: 'time_office', branch: 'b1', departmentId: null, email: 'divya@hotel.com',  password: 'pass123',  active: true },
+  { id: 'u1', name: 'Administrator', role: 'admin', branch: 'b1', departmentId: 'd1', email: 'arjun@hotel.com', password: 'admin123', active: true },
 ];
 
 const SEED_BRANCHES = [
-  { id: 'b1', name: 'Grand Hotel – Main',  location: 'Nagpur Central', active: true },
-  { id: 'b2', name: 'The Café Annexe',     location: 'Dharampeth',     active: true },
-  { id: 'b3', name: 'Banquet Hall – West', location: 'Sitabuldi',      active: true },
+  { id: 'b1', name: 'Main Branch', location: '', active: true },
 ];
 
 // Departments are admin-defined per branch; users are assigned to a department
 const SEED_DEPARTMENTS = [
   { id: 'd1', branchId: 'b1', name: 'Administration', active: true },
-  { id: 'd2', branchId: 'b1', name: 'Maintenance', active: true },
-  { id: 'd3', branchId: 'b1', name: 'Housekeeping', active: true },
-  { id: 'd4', branchId: 'b1', name: 'Accounts', active: true },
-  { id: 'd5', branchId: 'b2', name: 'Kitchen', active: true },
-  { id: 'd6', branchId: 'b2', name: 'Service', active: true },
-  { id: 'd7', branchId: 'b3', name: 'Banquets', active: true },
-];
-
-const SEED_GATE_PASSES = [
-  {
-    id: 'gp001', passNumber: 'GP-OEN-2026-0001',
-    type: 'outward', direction: 'external', status: 'completed',
-    createdBy: 'u5', departmentId: 'd3', sourceBranch: 'b1', destinationBranch: null,
-    destinationPerson: 'Maintenance Team', returnable: false,
-    purpose: 'Used for lobby renovation',
-    createdAt: '2026-04-20T09:00:00Z',
-    approvedBy: 'u2', approvedAt: '2026-04-20T09:30:00Z', autoApproved: false,
-    expectedReturnDate: null, linkedPassId: null,
-    earlyReturn: false,
-    outwardLog: { loggedAt: '2026-04-20T10:05:00Z', loggedBy: 'u6', guardName: 'Ajay', remarks: 'Items verified and dispatched' },
-    inwardLog: null,
-    items: [{ itemId: null, itemName: 'Cleaning Supplies', quantity: 5, returnedQuantity: 0, unit: 'litre' }],
-    remarks: 'Monthly cleaning supplies',
-  },
-  {
-    id: 'gp002', passNumber: 'GP-OIR-2026-0002',
-    type: 'outward', direction: 'internal', status: 'in_transit',
-    createdBy: 'u5', departmentId: 'd3', sourceBranch: 'b1', destinationBranch: 'b2',
-    destinationPerson: null, returnable: true,
-    purpose: 'Weekend event at Café',
-    createdAt: '2026-04-28T10:00:00Z',
-    approvedBy: 'u2', approvedAt: '2026-04-28T10:45:00Z', autoApproved: false,
-    expectedReturnDate: '2026-05-05T18:00:00Z', linkedPassId: null,
-    earlyReturn: false,
-    outwardLog: { loggedAt: '2026-04-28T11:00:00Z', loggedBy: 'u6', guardName: 'Ajay', remarks: 'Loaded on hotel vehicle' },
-    inwardLog: null,
-    items: [
-      { itemId: null, itemName: 'Dinner Plates',  quantity: 50, returnedQuantity: 0, unit: 'pcs' },
-      { itemId: null, itemName: 'Folding Tables', quantity: 10, returnedQuantity: 0, unit: 'pcs' },
-    ],
-    remarks: 'For Sunday brunch event',
-  },
-  {
-    id: 'gp003', passNumber: 'GP-OER-2026-0003',
-    type: 'outward', direction: 'external', status: 'approved',
-    createdBy: 'u5', departmentId: 'd3', sourceBranch: 'b1', destinationBranch: null,
-    destinationPerson: 'Vikram Joshi (Self)', returnable: true,
-    purpose: 'Work from home for client presentation',
-    createdAt: '2026-05-01T08:00:00Z',
-    approvedBy: null, approvedAt: null, autoApproved: false,
-    expectedReturnDate: '2026-05-03T09:00:00Z', linkedPassId: null,
-    earlyReturn: false,
-    outwardLog: null,
-    inwardLog: null,
-    items: [{ itemId: null, itemName: 'Laptop Dell XPS', quantity: 1, returnedQuantity: 0, unit: 'pcs' }],
-    remarks: '',
-  },
-  // Inward entries are logged DIRECTLY by Security (time_office) at the gate —
-  // no request/approval step. The record is completed the moment it is logged.
-  {
-    id: 'gp004', passNumber: 'GP-IEN-2026-0004',
-    type: 'inward', direction: 'external', status: 'completed',
-    createdBy: 'u6', departmentId: 'd2', sourceBranch: null, destinationBranch: 'b1',
-    destinationPerson: 'SoundTech Pvt Ltd', returnable: false,
-    purpose: 'Non-Returnable — Invoice INV-4471',
-    createdAt: '2026-04-25T15:30:00Z',
-    approvedBy: null, approvedAt: null, autoApproved: false,
-    expectedReturnDate: null, linkedPassId: null,
-    outwardLog: null,
-    earlyReturn: false,
-    inwardType: 'non_returnable',
-    documentType: 'Invoice', documentNo: 'INV-4471', barcodeRef: '',
-    carriedBy: 'Ramesh (SoundTech)', carrierMobile: '98230 11223',
-    receiverId: 'u2',
-    inwardLog: { loggedAt: '2026-04-25T15:30:00Z', loggedBy: 'u6', guardName: 'Karan Tiwari', remarks: 'Received from vendor, invoice matched' },
-    items: [{ itemId: null, itemName: 'PA System', code: 'PA-2200', quantity: 1, returnedQuantity: 0, unit: 'set', rate: 48500, amount: 48500, serialNo: 'ST-88412', remarks: 'With 2 mics' }],
-    remarks: 'Vendor: SoundTech Pvt Ltd',
-  },
 ];
 
 function extractSequence(passNumber) {
@@ -196,10 +112,8 @@ async function seedIfEmpty() {
   if (await handle.collection('departments').countDocuments() === 0) {
     await handle.collection('departments').insertMany(SEED_DEPARTMENTS.map(d => ({ ...d })));
   }
-  if (await handle.collection('gatePasses').countDocuments() === 0) {
-    await handle.collection('gatePasses').insertMany(SEED_GATE_PASSES.map(p => ({ ...p })));
-  }
-  // Initialise the pass-number counter from whatever passes exist (seeded or real).
+  // Initialise the pass-number counter from whatever passes exist (none on a
+  // fresh database → numbering starts at GP-…-0001).
   if (!await handle.collection('counters').findOne({ _id: 'passNumber' })) {
     const passes = await handle.collection('gatePasses').find({}, { projection: { passNumber: 1 } }).toArray();
     const seq = Math.max(0, ...passes.map(p => extractSequence(p.passNumber)));
