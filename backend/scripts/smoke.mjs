@@ -188,6 +188,16 @@ const toUser2 = await api('POST', '/users', {
 check('admin creates time_office at second branch', toUser2.status === 201);
 const timeOffice2 = await login('guard2@test.com', 'secret1');
 
+const dept2 = await api('POST', '/departments', { token: admin, body: { name: 'Housekeeping', branchId: b2 } });
+const staff2User = await api('POST', '/users', {
+  token: admin,
+  body: { name: 'Staff Two', email: 'staff2@test.com', password: 'secret1', role: 'staff', branch: b2, departmentId: dept2.json?.id },
+});
+check('admin creates department + staff at second branch', dept2.status === 201 && staff2User.status === 201);
+const staff2 = await login('staff2@test.com', 'secret1');
+const d2 = dept2.json.id;
+const r2 = staff2User.json.id;
+
 const transfer = await api('POST', '/gate-passes', {
   token: manager,
   body: {
@@ -214,13 +224,16 @@ check('transfer counts as incoming at destination branch', destStats.json?.incom
 const destList = await api('GET', '/gate-passes', { token: timeOffice2 });
 check('destination TO sees only passes touching their branch', destList.json?.length === 1 && destList.json?.[0]?.id === transferId, `got ${destList.json?.length}`);
 
-const wrongGateIn = await api('PATCH', `/gate-passes/${transferId}/receive`, { token: timeOffice, body: { guardName: 'Ajay' } });
+const wrongGateIn = await api('PATCH', `/gate-passes/${transferId}/receive`, { token: timeOffice, body: { guardName: 'Ajay', departmentId: d2, receiverId: r2 } });
 check('source gate cannot mark items in', wrongGateIn.status === 403);
 
-const received = await api('PATCH', `/gate-passes/${transferId}/receive`, { token: timeOffice2, body: { guardName: 'Binu' } });
-check('destination receives transfer → completed', received.status === 200 && received.json?.status === 'completed' && received.json?.receivedLog?.guardName === 'Binu');
+const noReceiver = await api('PATCH', `/gate-passes/${transferId}/receive`, { token: timeOffice2, body: { guardName: 'Binu' } });
+check('receive without department/receiver rejected', noReceiver.status === 400);
 
-const reReceive = await api('PATCH', `/gate-passes/${transferId}/receive`, { token: timeOffice2, body: { guardName: 'Binu' } });
+const received = await api('PATCH', `/gate-passes/${transferId}/receive`, { token: timeOffice2, body: { guardName: 'Binu', departmentId: d2, receiverId: r2 } });
+check('destination receives transfer → completed', received.status === 200 && received.json?.status === 'completed' && received.json?.receivedLog?.receiverUser?.name === 'Staff Two');
+
+const reReceive = await api('PATCH', `/gate-passes/${transferId}/receive`, { token: timeOffice2, body: { guardName: 'Binu', departmentId: d2, receiverId: r2 } });
 check('double receive rejected', reReceive.status === 400);
 
 const crossInward = await api('POST', '/gate-passes/inward', {
@@ -231,6 +244,44 @@ const crossInward = await api('POST', '/gate-passes/inward', {
   },
 });
 check('time_office cannot log direct inward for another branch', crossInward.status === 403);
+
+// ─── Returnable transfer: receive → send-back approval → return out → return ──
+const rTransfer = await api('POST', '/gate-passes', {
+  token: manager,
+  body: {
+    type: 'outward', direction: 'internal', destinationBranch: b2,
+    returnable: true, purpose: 'Projector for conference', expectedReturnDate: '2099-01-01T00:00:00Z',
+    items: [{ itemName: 'Projector', quantity: 1, unit: 'pcs' }],
+  },
+});
+const rId = rTransfer.json?.id;
+check('manager creates returnable transfer', rTransfer.status === 201 && rTransfer.json?.status === 'approved');
+
+await api('PATCH', `/gate-passes/${rId}/log-outward`, { token: timeOffice, body: { guardName: 'Ajay' } });
+const rReceived = await api('PATCH', `/gate-passes/${rId}/receive`, { token: timeOffice2, body: { guardName: 'Binu', departmentId: d2, receiverId: r2 } });
+check('returnable transfer received → stays in_transit', rReceived.status === 200 && rReceived.json?.status === 'in_transit');
+
+const earlyBack = await api('PATCH', `/gate-passes/${rId}/log-inward`, {
+  token: timeOffice, body: { guardName: 'Ajay', returns: [{ index: 0, quantity: 1 }] },
+});
+check('source cannot log return before destination marks it out', earlyBack.status === 400);
+
+const wrongApprover = await api('PATCH', `/gate-passes/${rId}/return-request`, { token: manager });
+check('source-branch manager cannot approve the send-back', wrongApprover.status === 403);
+
+const sendBack = await api('PATCH', `/gate-passes/${rId}/return-request`, { token: staff2 });
+check('receiver approves send-back', sendBack.status === 200 && !!sendBack.json?.returnRequest);
+
+const wrongReturnOut = await api('PATCH', `/gate-passes/${rId}/return-outward`, { token: timeOffice, body: { guardName: 'Ajay' } });
+check('source gate cannot mark the return out', wrongReturnOut.status === 403);
+
+const returnOut = await api('PATCH', `/gate-passes/${rId}/return-outward`, { token: timeOffice2, body: { guardName: 'Binu' } });
+check('destination gate marks return out', returnOut.status === 200 && !!returnOut.json?.returnOutwardLog);
+
+const backHome = await api('PATCH', `/gate-passes/${rId}/log-inward`, {
+  token: timeOffice, body: { guardName: 'Ajay', returns: [{ index: 0, quantity: 1 }] },
+});
+check('source logs full return → completed', backHome.status === 200 && backHome.json?.status === 'completed');
 
 const dupUser = await api('POST', '/users', {
   token: admin,

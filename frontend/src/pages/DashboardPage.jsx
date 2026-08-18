@@ -56,6 +56,22 @@ export default function DashboardPage() {
         )}
       </div>
 
+      {stats?.itemsWithMe > 0 && (
+        <div className="alert alert-info" style={{ marginBottom: 24 }}>
+          <PackageCheck size={16} />
+          <span>
+            <strong>{stats.itemsWithMe} transfer pass(es) are with you.</strong>{' '}
+            When you're done with the items, open the pass and approve the send-back.
+          </span>
+          <Link
+            to="/passes"
+            style={{ marginLeft: 'auto', textDecoration: 'underline', textUnderlineOffset: 3, fontSize: 13, fontWeight: 500, whiteSpace: 'nowrap' }}
+          >
+            View
+          </Link>
+        </div>
+      )}
+
       {stats?.incomingTransfers > 0 && (
         <div className="alert alert-info" style={{ marginBottom: 24 }}>
           <Truck size={16} />

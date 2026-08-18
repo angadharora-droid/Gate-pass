@@ -21,12 +21,16 @@ import { hashPassword } from '../lib/security.js';
 //                damaged/etc.) by Time Office with a reason instead of returned
 // rejected     → denied by manager
 //
-// Time Office logs THREE things on a pass (each at its own branch's gate):
-//   outwardLog  → item physically LEFT the source branch (stamped by source TO)
-//   receivedLog → internal transfer physically ARRIVED at the destination branch
-//                 (stamped by DESTINATION TO — completes a non-returnable transfer)
-//   inwardLog   → item physically ARRIVED back at the source branch (return leg
-//                 of a returnable outward pass, or a direct inward gate entry)
+// Gate logs on a pass (each stamped at its own branch's gate):
+//   outwardLog       → item physically LEFT the source branch (source TO)
+//   receivedLog      → internal transfer ARRIVED at the destination branch
+//                      (destination TO, recording the receiving department +
+//                      receiver — completes a non-returnable transfer)
+//   returnRequest    → the RECEIVER approved the items going back (returnable
+//                      transfers only; puts the pass in the destination TO's queue)
+//   returnOutwardLog → return physically LEFT the destination branch (destination TO)
+//   inwardLog        → item ARRIVED back at the source branch (return leg of a
+//                      returnable outward pass, or a direct inward gate entry)
 
 // ─── CONNECTION (MongoDB Atlas) ───────────────────────────────────────────────
 // MONGODB_URI must point at a MongoDB Atlas cluster (or any MongoDB instance),
