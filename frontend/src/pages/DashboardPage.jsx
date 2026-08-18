@@ -161,7 +161,7 @@ export default function DashboardPage() {
                   <Link key={p.id} to={`/passes/${p.id}`} className="list-row">
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 5 }}>
                       <span className="pass-number">{p.passNumber}</span>
-                      <StatusBadge status={p.isOverdue ? 'overdue' : p.status} />
+                      <StatusBadge pass={p} />
                     </div>
                     <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                       <TypeBadge type={p.type} />

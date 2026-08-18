@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { api } from '../utils/api';
 import { useAuth } from '../context/AuthContext';
-import { StatusBadge, TypeBadge, ReturnableBadge, DirectionBadge } from '../components/Badges';
+import { StatusBadge, TypeBadge, ReturnableBadge, DirectionBadge, STATUS_LABELS } from '../components/Badges';
 import { LogOutwardModal, LogInwardModal, ReceiveTransferModal, ReturnOutModal } from './TimeOfficePage';
 import {
   ArrowLeft, Check, X, RotateCcw, Printer, Pencil,
@@ -138,7 +138,7 @@ export default function GatePassDetailPage() {
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8, flexWrap: 'wrap' }}>
             <span className="pass-number" style={{ fontSize: 18 }}>{pass.passNumber}</span>
-            <StatusBadge status={isOverdue ? 'overdue' : pass.status} />
+            <StatusBadge pass={pass} />
           </div>
           <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginBottom: 6 }}>
             <TypeBadge type={pass.type} />
@@ -643,10 +643,7 @@ function TimelineSteps({ steps, pass }) {
 
 /* ── Print Document ─────────────────────────────── */
 function PrintGatePass({ pass }) {
-  const statusLabel = {
-    pending: 'Waiting Approval', approved: 'Approved', in_transit: 'Items Out',
-    partial_return: 'Partly Back', completed: 'Completed', closed: 'Closed', rejected: 'Rejected',
-  }[pass.status] || pass.status;
+  const statusLabel = STATUS_LABELS[pass.displayStatus || pass.status] || pass.status;
 
   const hasAmounts = pass.items?.some(li => li.amount != null);
   const hasCodes   = pass.items?.some(li => li.code);

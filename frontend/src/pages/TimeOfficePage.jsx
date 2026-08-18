@@ -622,15 +622,23 @@ export default function TimeOfficePage() {
   const isAdmin = user?.role === 'admin';
   const atMySource = p => isAdmin || p.sourceBranch === user?.branch;
   const atMyDest   = p => isAdmin || p.destinationBranch === user?.branch;
+  const isTransfer = p => p.type === 'outward' && p.direction === 'internal' && !!p.destinationBranch;
+  const isOpen     = p => ['in_transit', 'partial_return'].includes(p.status);
 
-  const outwardQueue = passes.filter(p =>
-    p.type === 'outward' && p.status === 'approved' && !p.outwardLog && atMySource(p)
-  );
-  // Pure inward entries are logged directly via New Inward (born completed),
-  // so the only inward "work" is returnable outward passes coming back.
-  const returnQueue = passes.filter(p =>
-    p.type === 'outward' && p.returnable && ['in_transit', 'partial_return'].includes(p.status) && atMySource(p)
-  );
+  // ── Actionable-now checks, one per gate action ─────────────────────────────
+  const canMarkOutPass = p =>
+    p.type === 'outward' && p.status === 'approved' && !p.outwardLog && atMySource(p);
+  const canReceivePass = p =>
+    isTransfer(p) && p.outwardLog && !p.receivedLog && isOpen(p) && atMyDest(p);
+  // Send-back approved by the receiver → this gate must mark the return out
+  const canReturnOutPass = p =>
+    isTransfer(p) && p.returnable && p.returnRequest && !p.returnOutwardLog && isOpen(p) && atMyDest(p);
+  // Return arriving back at the source gate. A received branch transfer can't
+  // be logged back until the destination gate marks the return out.
+  const canLogReturnPass = p =>
+    p.type === 'outward' && p.returnable && isOpen(p) && atMySource(p) &&
+    !(isTransfer(p) && p.receivedLog && !p.returnOutwardLog);
+
   const today = new Date().toDateString();
   const completedToday = passes.filter(p =>
     (p.outwardLog?.loggedAt       && new Date(p.outwardLog.loggedAt).toDateString()       === today) ||
@@ -639,23 +647,27 @@ export default function TimeOfficePage() {
     (p.returnOutwardLog?.loggedAt && new Date(p.returnOutwardLog.loggedAt).toDateString() === today)
   );
 
-  // Full registers, like the ERP: every pass belonging to THIS gate (approved,
-  // rejected, done…), newest first, with action buttons only where needed.
-  const outwardRegister = passes.filter(p => p.type === 'outward' && atMySource(p));
-  const inwardRegister  = passes.filter(p => p.type === 'inward');
-  // Internal transfers dispatched TO this branch — the receiving register
-  const incomingRegister = passes.filter(p =>
-    p.type === 'outward' && p.direction === 'internal' && p.destinationBranch &&
-    p.outwardLog && atMyDest(p)
+  // ── GATE-CENTRIC REGISTERS, like a physical gate ledger ────────────────────
+  // Outward register = everything that leaves (or will leave) THROUGH MY GATE:
+  // dispatches from my branch + send-backs leaving my gate when my branch is a
+  // transfer's destination.
+  const outwardRegister = passes.filter(p =>
+    (p.type === 'outward' && atMySource(p)) ||
+    (isTransfer(p) && atMyDest(p) && p.returnRequest)
   );
-  const canReceivePass = p =>
-    p.type === 'outward' && p.direction === 'internal' && p.destinationBranch &&
-    p.outwardLog && !p.receivedLog && ['in_transit', 'partial_return'].includes(p.status) && atMyDest(p);
-  // Send-back approved by the receiver → this gate must mark the return out
-  const canReturnOutPass = p =>
-    p.type === 'outward' && p.direction === 'internal' && p.returnable &&
-    p.returnRequest && !p.returnOutwardLog && ['in_transit', 'partial_return'].includes(p.status) && atMyDest(p);
-  const incomingQueue = incomingRegister.filter(p => canReceivePass(p) || canReturnOutPass(p));
+  // Inward register = everything that arrives AT MY GATE: direct inward
+  // entries, branch transfers coming in, and returns coming back. A returnable
+  // pass shows in both registers — it leaves once and comes back once.
+  const inwardRegister = passes.filter(p =>
+    p.type === 'inward' ||
+    (isTransfer(p) && atMyDest(p) && p.outwardLog) ||
+    (p.type === 'outward' && p.returnable && atMySource(p) && p.outwardLog)
+  );
+
+  const outwardQueue = passes.filter(canMarkOutPass);
+  const returnOutQueue = passes.filter(canReturnOutPass);
+  const receiveQueue = passes.filter(canReceivePass);
+  const returnLogQueue = passes.filter(canLogReturnPass);
 
   const handleDone = () => { setModal(null); load(); };
 
@@ -664,12 +676,11 @@ export default function TimeOfficePage() {
     ? passes.filter(p => String(p.passNumber).toLowerCase().includes(searchTerm)).slice(0, 5)
     : [];
 
-  // Three registers, like the ERP: Outward Confirmation + Incoming Transfers + Inward.
-  // Tab counts show how many rows still need an action from the gate.
+  // Two registers, like a physical gate ledger: Outward (leaving my gate) and
+  // Inward (arriving at my gate). Tab counts = rows needing an action NOW.
   const tabs = [
-    { key: 'outward',  label: 'Outward Confirmation', count: outwardQueue.length + returnQueue.length, color: 'var(--orange)' },
-    { key: 'incoming', label: 'Incoming Transfers',   count: incomingQueue.length,                     color: 'var(--blue)'   },
-    { key: 'inward',   label: 'Inward',               count: 0,                                        color: 'var(--green)'  },
+    { key: 'outward', label: 'Outward Register', count: outwardQueue.length + returnOutQueue.length,  color: 'var(--orange)' },
+    { key: 'inward',  label: 'Inward Register',  count: receiveQueue.length + returnLogQueue.length,  color: 'var(--green)'  },
   ];
 
   const statPills = [
@@ -739,19 +750,13 @@ export default function TimeOfficePage() {
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                 {searchMatches.map(p => {
-                  const canOutward = p.type === 'outward' && p.status === 'approved' && !p.outwardLog && atMySource(p);
-                  const canReturn = p.type === 'outward' && p.returnable && ['in_transit', 'partial_return'].includes(p.status) && atMySource(p) &&
-                    !(p.direction === 'internal' && p.receivedLog && !p.returnOutwardLog);
-                  const canReceive = canReceivePass(p);
-                  const canReturnOut = canReturnOutPass(p);
-
-                  const action = canOutward
+                  const action = canMarkOutPass(p)
                     ? { label: 'Mark Items Out', Icon: ArrowUpRight, color: 'var(--orange)', type: 'outward' }
-                    : canReceive
+                    : canReceivePass(p)
                       ? { label: 'Mark Items In', Icon: ArrowDownLeft, color: 'var(--blue)', type: 'receive' }
-                      : canReturnOut
+                      : canReturnOutPass(p)
                         ? { label: 'Mark Return Out', Icon: ArrowUpRight, color: 'var(--purple)', type: 'returnOut' }
-                        : canReturn
+                        : canLogReturnPass(p)
                           ? { label: 'Log Return', Icon: RotateCcw, color: 'var(--blue)', type: 'inward' }
                           : null;
 
@@ -793,13 +798,14 @@ export default function TimeOfficePage() {
         <div className="loading-page"><div className="spinner" /><span>Loading passes…</span></div>
       ) : (
         <>
-          {/* ── OUTWARD CONFIRMATION register — every outward pass, like the ERP ── */}
+          {/* ── OUTWARD REGISTER — everything leaving through this gate ── */}
           {tab === 'outward' && (
             outwardRegister.length === 0 ? (
               <div className="table-wrapper">
                 <div className="empty-state">
                   <div className="empty-icon"><ArrowUpRight size={24} strokeWidth={1.75} /></div>
-                  <div className="empty-title">No outward passes yet</div>
+                  <div className="empty-title">Nothing going out yet</div>
+                  <div className="empty-sub">Approved passes and send-backs leaving this gate appear here.</div>
                 </div>
               </div>
             ) : (
@@ -809,7 +815,7 @@ export default function TimeOfficePage() {
                     <tr>
                       <th>Date</th>
                       <th>Document No</th>
-                      <th>To / Carried by</th>
+                      <th>To</th>
                       <th>Items</th>
                       <th>Transaction Type</th>
                       <th>Status</th>
@@ -818,16 +824,17 @@ export default function TimeOfficePage() {
                   </thead>
                   <tbody>
                     {outwardRegister.map(p => {
-                      const canOut = p.status === 'approved' && !p.outwardLog;
-                      // A received branch transfer can't be logged back until the
-                      // destination gate marks the return out
-                      const canReturn = p.returnable && ['in_transit', 'partial_return'].includes(p.status) &&
-                        !(p.direction === 'internal' && p.receivedLog && !p.returnOutwardLog);
+                      // Row is here as a send-back leaving MY gate (I'm the destination)
+                      const sendBackRow = isTransfer(p) && p.returnRequest && !atMySource(p);
                       return (
                         <tr key={p.id}>
                           <td style={{ whiteSpace: 'nowrap', fontSize: 12.5, color: 'var(--text3)' }}>{fmtDate(p.createdAt)}</td>
                           <td><Link to={`/passes/${p.id}`} className="pass-number">{p.passNumber}</Link></td>
-                          <td>{p.destinationBranchName || p.destinationPerson || '—'}</td>
+                          <td>
+                            {sendBackRow
+                              ? `Back to ${p.sourceBranchName || '—'}`
+                              : (p.destinationBranchName || p.destinationPerson || '—')}
+                          </td>
                           <td style={{ fontSize: 12.5, color: 'var(--text2)' }}>{itemsSummary(p)}</td>
                           <td>
                             <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
@@ -835,18 +842,21 @@ export default function TimeOfficePage() {
                               <ReturnableBadge returnable={p.returnable} />
                             </div>
                           </td>
-                          <td><StatusBadge status={p.isOverdue ? 'overdue' : p.status} /></td>
+                          <td><StatusBadge pass={p} /></td>
                           <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
-                            {canOut && (
+                            {canMarkOutPass(p) ? (
                               <button className="btn btn-primary btn-sm" onClick={() => setModal({ type: 'outward', pass: p })}>
                                 <ArrowUpRight size={13} /> Mark Items Out
                               </button>
-                            )}
-                            {canReturn && (
-                              <button className="btn btn-primary btn-sm" onClick={() => setModal({ type: 'inward', pass: p })}>
-                                <RotateCcw size={13} /> Log Return
+                            ) : canReturnOutPass(p) ? (
+                              <button className="btn btn-primary btn-sm" onClick={() => setModal({ type: 'returnOut', pass: p })}>
+                                <ArrowUpRight size={13} /> Mark Return Out
                               </button>
-                            )}
+                            ) : sendBackRow && p.returnOutwardLog ? (
+                              <span style={{ fontSize: 12, color: 'var(--green)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                                <CheckCircle2 size={13} /> Sent back {fmtDate(p.returnOutwardLog.loggedAt)}
+                              </span>
+                            ) : null}
                           </td>
                         </tr>
                       );

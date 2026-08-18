@@ -706,6 +706,28 @@ router.get('/meta/stats', asyncHandler(async (req, res) => {
   });
 }));
 
+// ─── DISPLAY STATUS ───────────────────────────────────────────────────────────
+// The stored status stays coarse (it drives filters and transitions); this
+// derives the precise lifecycle STAGE every screen shows, so a pass sitting
+// with a receiver at the destination branch never reads as just "in transit".
+// Decision table (outward passes; inward passes are born completed):
+//   pending/approved/rejected/completed/closed → as stored
+//   in_transit, external                       → items_out        (out with a person/vendor)
+//   in_transit, transfer, not received         → in_transit       (between branches)
+//   in_transit, transfer, received, no approval→ at_destination   (with the receiver)
+//   in_transit, transfer, send-back approved   → return_approved  (waiting for dest gate)
+//   in_transit, transfer, return dispatched    → returning        (heading back to source)
+//   partial_return                             → partial_return   (some items back at source)
+export function displayStatusOf(pass) {
+  if (pass.type !== 'outward' || pass.status !== 'in_transit') return pass.status;
+  const isTransfer = pass.direction === 'internal' && pass.destinationBranch;
+  if (!isTransfer) return 'items_out';
+  if (!pass.receivedLog) return 'in_transit';
+  if (pass.returnOutwardLog) return 'returning';
+  if (pass.returnRequest) return 'return_approved';
+  return 'at_destination';
+}
+
 // ─── ENRICH ───────────────────────────────────────────────────────────────────
 // `refs` = { users, branches, departments } pre-fetched via getRefs().
 function enrichPass(pass, refs) {
@@ -763,6 +785,7 @@ function enrichPass(pass, refs) {
     sourceBranchName:     sourceBranchObj?.name || null,
     destinationBranchName: destBranchObj?.name  || null,
     departmentName: deptObj?.name || null,
+    displayStatus: displayStatusOf(pass),
     isOverdue,
   };
 }

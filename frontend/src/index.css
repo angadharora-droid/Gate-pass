@@ -611,7 +611,8 @@ strong { font-weight: 600; }
 /* status dot */
 .badge-pending::before, .badge-approved::before, .badge-in_transit::before,
 .badge-completed::before, .badge-closed::before, .badge-rejected::before,
-.badge-partial_return::before, .badge-overdue::before {
+.badge-partial_return::before, .badge-overdue::before, .badge-items_out::before,
+.badge-at_destination::before, .badge-return_approved::before, .badge-returning::before {
   content: '';
   width: 6px;
   height: 6px;
@@ -622,6 +623,10 @@ strong { font-weight: 600; }
 .badge-pending        { background: rgba(217, 119, 6, 0.09);  color: var(--amber);  border: 1px solid rgba(217, 119, 6, 0.25); }
 .badge-approved       { background: var(--accent-soft);        color: var(--accent); border: 1px solid rgba(37, 99, 235, 0.22); }
 .badge-in_transit     { background: rgba(124, 58, 237, 0.08);  color: var(--purple); border: 1px solid rgba(124, 58, 237, 0.22); }
+.badge-items_out      { background: rgba(124, 58, 237, 0.08);  color: var(--purple); border: 1px solid rgba(124, 58, 237, 0.22); }
+.badge-at_destination { background: var(--accent-soft);        color: var(--accent); border: 1px solid rgba(37, 99, 235, 0.22); }
+.badge-return_approved{ background: rgba(217, 119, 6, 0.09);  color: var(--amber);  border: 1px solid rgba(217, 119, 6, 0.25); }
+.badge-returning      { background: rgba(234, 88, 12, 0.08);   color: var(--orange); border: 1px solid rgba(234, 88, 12, 0.22); }
 .badge-completed      { background: rgba(22, 163, 74, 0.08);   color: var(--green);  border: 1px solid rgba(22, 163, 74, 0.22); }
 .badge-closed         { background: var(--bg3);                color: var(--text2);  border: 1px solid var(--border2); }
 .badge-rejected       { background: rgba(220, 38, 38, 0.07);   color: var(--red);    border: 1px solid rgba(220, 38, 38, 0.22); }
