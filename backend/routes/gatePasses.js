@@ -26,7 +26,13 @@ async function getRefs() {
     dbc('branches').find({}, NO_ID).toArray(),
     dbc('departments').find({}, NO_ID).toArray(),
   ]);
-  return { users, branches, departments };
+  // Map lookups so enriching a list of passes isn't O(passes × users)
+  return {
+    users, branches, departments,
+    userById:   new Map(users.map(u => [u.id, u])),
+    branchById: new Map(branches.map(b => [b.id, b])),
+    deptById:   new Map(departments.map(d => [d.id, d])),
+  };
 }
 
 // ─── GET ALL GATE PASSES ──────────────────────────────────────────────────────
@@ -197,6 +203,8 @@ router.post('/inward', requireRole('time_office', 'admin'), asyncHandler(async (
   if (!receiver) return res.status(400).json({ error: 'Select a valid receiver' });
   if (receiver.branch !== branch.id)
     return res.status(400).json({ error: 'Receiver must belong to the selected branch' });
+  if (receiver.role === 'time_office')
+    return res.status(400).json({ error: 'The receiver must be a staff member taking custody, not gate security' });
 
   if (!Array.isArray(items) || !items.length)
     return res.status(400).json({ error: 'Add at least one item' });
@@ -233,7 +241,8 @@ router.post('/inward', requireRole('time_office', 'admin'), asyncHandler(async (
     earlyReturn: false,
     inwardType,
     documentType: documentType || 'None',
-    documentNo:   documentNo?.trim()  || '',
+    // A document number only makes sense with an actual document type
+    documentNo:   (documentType && documentType !== 'None') ? (documentNo?.trim() || '') : '',
     barcodeRef:   barcodeRef?.trim()  || '',
     carriedBy:    carriedBy.trim(),
     carrierMobile: carrierMobile?.trim() || '',
@@ -479,6 +488,8 @@ router.patch('/:id/receive', requireRole('time_office', 'admin'), asyncHandler(a
   if (!receiver) return res.status(400).json({ error: 'Select who is receiving the items' });
   if (receiver.branch !== pass.destinationBranch)
     return res.status(400).json({ error: 'Receiver must belong to the destination branch' });
+  if (receiver.role === 'time_office')
+    return res.status(400).json({ error: 'The receiver must be a staff member taking custody, not gate security' });
 
   pass.receivedLog = {
     loggedAt: new Date().toISOString(),
@@ -586,47 +597,75 @@ router.patch('/:id/log-inward', requireRole('time_office', 'admin'), asyncHandle
   if (pass.type === 'outward') {
     if (!pass.returnable)
       return res.status(400).json({ error: 'This outward pass is non-returnable; no inward log needed' });
-    if (!['in_transit', 'partial_return'].includes(pass.status))
-      return res.status(400).json({ error: 'Pass must be in_transit or partial_return to log a return' });
     // Items come BACK to the branch they left from — only that gate logs the return
     if (req.user.role === 'time_office' && pass.sourceBranch !== req.user.branch)
       return res.status(403).json({ error: 'Only the source branch gate can log this return' });
-    // A transfer received at another branch must be dispatched back by that
-    // branch's gate before it can arrive here
-    if (pass.direction === 'internal' && pass.receivedLog && !pass.returnOutwardLog)
+    if (!['in_transit', 'partial_return'].includes(pass.status))
+      return res.status(400).json({ error: 'Pass must be in_transit or partial_return to log a return' });
+    // A branch transfer must complete the receive → send-back → dispatch cycle
+    // at the destination before its return can arrive here
+    if (pass.direction === 'internal' && pass.destinationBranch && !pass.returnOutwardLog)
       return res.status(400).json({ error: 'The destination branch has not marked the return out yet' });
 
     const { remarks, returns = [], closures = [], guardName } = req.body;
     if (!guardName?.trim()) return res.status(400).json({ error: 'Gate host name is required' });
-    // returns  = [{ index, quantity }]          — items that physically came back
-    // closures = [{ index, quantity, reason }]  — items written off (lost/damaged/etc.)
-    if (!returns.length && !closures.length)
-      return res.status(400).json({ error: 'Provide at least one returned or closed item' });
+    if (!Array.isArray(returns) || !Array.isArray(closures))
+      return res.status(400).json({ error: 'returns and closures must be arrays' });
 
-    const outstanding = li => li.quantity - li.returnedQuantity - (li.closedQuantity || 0);
+    const outstanding = li => li.quantity - (li.returnedQuantity || 0) - (li.closedQuantity || 0);
 
-    // Validate everything BEFORE mutating, so a bad row never half-applies
+    // returns = [{ index, quantity }] — items that physically came back.
+    // Coerce quantities, drop zero rows, and AGGREGATE duplicate indexes so a
+    // repeated index can never slip past the outstanding cap.
+    const returnTotals = new Map();
     for (const ret of returns) {
-      const li = pass.items[ret.index];
-      if (!li) return res.status(400).json({ error: `No item at index ${ret.index}` });
-      if (ret.quantity > outstanding(li))
-        return res.status(400).json({ error: `Cannot return ${ret.quantity} of ${li.itemName}; only ${outstanding(li)} outstanding` });
+      const qty = Number(ret?.quantity);
+      if (!Number.isFinite(qty) || qty < 0)
+        return res.status(400).json({ error: 'Return quantities must be non-negative numbers' });
+      if (qty === 0) continue;
+      if (!pass.items[ret.index]) return res.status(400).json({ error: `No item at index ${ret.index}` });
+      returnTotals.set(ret.index, (returnTotals.get(ret.index) || 0) + qty);
     }
+    for (const [index, qty] of returnTotals) {
+      const li = pass.items[index];
+      if (qty > outstanding(li))
+        return res.status(400).json({ error: `Cannot return ${qty} of ${li.itemName}; only ${outstanding(li)} outstanding` });
+    }
+
+    // closures = [{ index, quantity?, reason }] — items written off with a
+    // reason. Omitting quantity closes everything still outstanding. Explicit
+    // quantities are validated against what remains AFTER the returns above.
+    const plannedClose = new Map();
     for (const cl of closures) {
       const li = pass.items[cl.index];
       if (!li) return res.status(400).json({ error: `No item at index ${cl.index}` });
       if (!cl.reason?.trim()) return res.status(400).json({ error: `A reason is required to close ${li.itemName}` });
+      const remainAfterReturns = outstanding(li) - (returnTotals.get(cl.index) || 0) - (plannedClose.get(cl.index) || 0);
+      if (cl.quantity != null) {
+        const qty = Number(cl.quantity);
+        if (!Number.isFinite(qty) || qty < 0)
+          return res.status(400).json({ error: 'Closure quantities must be non-negative numbers' });
+        if (qty > remainAfterReturns)
+          return res.status(400).json({ error: `Cannot close ${qty} of ${li.itemName}; only ${remainAfterReturns} outstanding after returns` });
+        plannedClose.set(cl.index, (plannedClose.get(cl.index) || 0) + qty);
+      } else {
+        plannedClose.set(cl.index, (plannedClose.get(cl.index) || 0) + remainAfterReturns);
+      }
     }
 
-    // Apply returns first, then closures cap against whatever is still outstanding
-    for (const ret of returns) {
-      if (ret.quantity > 0) pass.items[ret.index].returnedQuantity += ret.quantity;
+    const anyEffectiveClosure = [...plannedClose.values()].some(q => q > 0);
+    if (!returnTotals.size && !anyEffectiveClosure)
+      return res.status(400).json({ error: 'Provide at least one returned or closed quantity' });
+
+    // Everything validated — now apply. Returns first, then closures.
+    for (const [index, qty] of returnTotals) {
+      pass.items[index].returnedQuantity = (pass.items[index].returnedQuantity || 0) + qty;
     }
     const loggedAt = new Date().toISOString();
     const closureRecords = [];
     for (const cl of closures) {
       const li = pass.items[cl.index];
-      const qty = cl.quantity > 0 ? Math.min(cl.quantity, outstanding(li)) : outstanding(li);
+      const qty = cl.quantity != null ? Number(cl.quantity) : outstanding(li);
       if (qty <= 0) continue;
       li.closedQuantity = (li.closedQuantity || 0) + qty;
       closureRecords.push({ index: cl.index, itemName: li.itemName, quantity: qty, reason: cl.reason.trim() });
@@ -638,13 +677,13 @@ router.patch('/:id/log-inward', requireRole('time_office', 'admin'), asyncHandle
       pass.closures.push({ closedAt: loggedAt, closedBy: req.user.id, items: closureRecords });
     }
 
-    const fullyAccounted = pass.items.every(li => (li.returnedQuantity + (li.closedQuantity || 0)) >= li.quantity);
+    const fullyAccounted = pass.items.every(li => ((li.returnedQuantity || 0) + (li.closedQuantity || 0)) >= li.quantity);
     const anyClosed = pass.items.some(li => (li.closedQuantity || 0) > 0);
     // 'closed' = finished but some items were written off rather than returned
     pass.status = fullyAccounted ? (anyClosed ? 'closed' : 'completed') : 'partial_return';
 
     // Only stamp the inward log when something physically returned
-    if (returns.some(r => r.quantity > 0)) {
+    if (returnTotals.size) {
       pass.inwardLog = {
         loggedAt,
         loggedBy: req.user.id,
@@ -656,12 +695,23 @@ router.patch('/:id/log-inward', requireRole('time_office', 'admin'), asyncHandle
       }
     }
 
+    // A branch transfer that came back only partially starts a fresh send-back
+    // cycle: the remaining items are still at the destination, so the receiver
+    // must approve again and the destination gate must dispatch again. The
+    // finished cycle is archived on the pass for the record.
+    if (!fullyAccounted && pass.direction === 'internal' && pass.destinationBranch && pass.returnOutwardLog) {
+      pass.returnCycles = pass.returnCycles || [];
+      pass.returnCycles.push({ request: pass.returnRequest, dispatch: pass.returnOutwardLog, arrivedAt: loggedAt });
+      pass.returnRequest = null;
+      pass.returnOutwardLog = null;
+    }
+
     await dbc('gatePasses').replaceOne({ id: pass.id }, pass);
     await logAudit('LOG_INWARD', req.user.id, pass.id, {
       passNumber: pass.passNumber,
       type:       'return_leg',
       status:     pass.status,
-      returns,
+      returns:    [...returnTotals].map(([index, quantity]) => ({ index, quantity })),
       closures:   closureRecords,
     });
     return res.json(enrichPass(pass, await getRefs()));
@@ -676,23 +726,28 @@ router.get('/meta/stats', asyncHandler(async (req, res) => {
   let passes = await dbc('gatePasses').find({}, NO_ID).toArray();
   passes = scopePasses(passes, req.user);
 
+  // Departures and returns happen at the SOURCE branch gate; receiving a branch
+  // transfer happens at the DESTINATION. Non-admins only count their own gate.
+  const atMySource = p => req.user.role === 'admin' || p.sourceBranch === req.user.branch;
+  const atMyDest   = p => req.user.role === 'admin' || p.destinationBranch === req.user.branch;
+
+  // Overdue = my branch's returnable items that should have been back by now
   const overdue = passes.filter(p =>
     p.returnable && p.type === 'outward' &&
     ['in_transit', 'partial_return'].includes(p.status) &&
-    p.expectedReturnDate && new Date(p.expectedReturnDate) < now
+    p.expectedReturnDate && new Date(p.expectedReturnDate) < now &&
+    atMySource(p)
   );
-
-  // Passes waiting for Time Office action. Departures and returns happen at the
-  // SOURCE branch gate; receiving a branch transfer happens at the DESTINATION.
-  // Non-admins only count work belonging to their own gate.
-  const atMySource = p => req.user.role === 'admin' || p.sourceBranch === req.user.branch;
-  const atMyDest   = p => req.user.role === 'admin' || p.destinationBranch === req.user.branch;
 
   const awaitingOutward = passes.filter(p =>
     p.type === 'outward' && p.status === 'approved' && !p.outwardLog && atMySource(p)
   );
+  // Returns the source gate could log RIGHT NOW: external items out, or branch
+  // transfers whose return the destination has already dispatched. Transfers
+  // still sitting with the destination receiver are not actionable here.
   const awaitingInward  = passes.filter(p =>
-    p.type === 'outward' && p.returnable && ['in_transit', 'partial_return'].includes(p.status) && atMySource(p)
+    p.type === 'outward' && p.returnable && ['in_transit', 'partial_return'].includes(p.status) && atMySource(p) &&
+    (p.direction !== 'internal' || !p.destinationBranch || !!p.returnOutwardLog)
   );
   // Internal branch transfers dispatched by the source branch, not yet marked in here
   const incomingTransfers = passes.filter(p =>
@@ -758,9 +813,9 @@ export function displayStatusOf(pass) {
 // ─── ENRICH ───────────────────────────────────────────────────────────────────
 // `refs` = { users, branches, departments } pre-fetched via getRefs().
 function enrichPass(pass, refs) {
-  const u  = id => id ? refs.users.find(u => u.id === id) : null;
-  const b  = id => id ? refs.branches.find(b => b.id === id) : null;
-  const d  = id => id ? refs.departments.find(d => d.id === id) : null;
+  const u  = id => id ? (refs.userById.get(id)   || null) : null;
+  const b  = id => id ? (refs.branchById.get(id) || null) : null;
+  const d  = id => id ? (refs.deptById.get(id)   || null) : null;
 
   const createdByUser   = u(pass.createdBy);
   const approvedByUser  = u(pass.approvedBy);

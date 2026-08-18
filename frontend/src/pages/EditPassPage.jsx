@@ -4,6 +4,7 @@ import { api } from '../utils/api';
 import { ArrowLeft, Save, AlertTriangle, FileText } from 'lucide-react';
 import OutwardPassForm from '../components/OutwardPassForm';
 import { emptyRow } from '../components/ItemsGridEditor';
+import { STATUS_LABELS } from '../components/Badges';
 
 function fmtDate(d) {
   if (!d) return '—';
@@ -26,9 +27,12 @@ export default function EditPassPage() {
   const navigate = useNavigate();
   const [pass, setPass] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
 
   useEffect(() => {
-    api.getPass(id).then(p => { setPass(p); setLoading(false); }).catch(() => setLoading(false));
+    api.getPass(id)
+      .then(p => { setPass(p); setLoading(false); })
+      .catch(err => { setLoadError(err.message || 'Could not load the pass'); setLoading(false); });
   }, [id]);
 
   if (loading) return <div className="loading-page"><div className="spinner" /><span>Loading pass…</span></div>;
@@ -38,10 +42,14 @@ export default function EditPassPage() {
       <Link to="/passes" className="btn btn-ghost btn-sm" style={{ marginBottom: 24 }}>
         <ArrowLeft size={14} /> Back
       </Link>
-      <div className="empty-state">
-        <div className="empty-icon"><FileText size={24} strokeWidth={1.75} /></div>
-        <div className="empty-title">Pass not found</div>
-      </div>
+      {loadError && loadError !== 'Gate pass not found' ? (
+        <div className="alert alert-danger"><AlertTriangle size={15} /> {loadError}</div>
+      ) : (
+        <div className="empty-state">
+          <div className="empty-icon"><FileText size={24} strokeWidth={1.75} /></div>
+          <div className="empty-title">Pass not found</div>
+        </div>
+      )}
     </div>
   );
 
@@ -52,7 +60,7 @@ export default function EditPassPage() {
       </Link>
       <div className="alert alert-danger">
         <AlertTriangle size={15} />
-        This pass is <strong>{pass.status.replace('_', ' ')}</strong> — only pending passes can be edited.
+        This pass is <strong>{STATUS_LABELS[pass.displayStatus || pass.status] || pass.status}</strong> — only pending passes can be edited.
       </div>
     </div>
   );
@@ -92,7 +100,7 @@ export default function EditPassPage() {
           <div className="page-title">Edit Gate Pass</div>
           <div className="page-subtitle">
             <span className="pass-number">{pass.passNumber}</span>
-            {' · '}Pending approval — changes are saved before you approve. The pass number stays the same.
+            {' · '}Pending approval — saving updates the request without approving it. The pass number never changes.
           </div>
         </div>
       </div>
@@ -103,6 +111,7 @@ export default function EditPassPage() {
         dateText={fmtDate(pass.createdAt)}
         requestedByName={pass.createdByUser?.name || '—'}
         requestedByRole={pass.createdByUser?.role}
+        sourceBranchId={pass.sourceBranch}
         submitLabel="Save Changes"
         submitIcon={Save}
         submittingLabel="Saving…"

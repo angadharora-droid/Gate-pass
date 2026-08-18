@@ -44,7 +44,15 @@ branchesRouter.patch('/:id', requireRole('admin'), asyncHandler(async (req, res)
   const branch = await dbc('branches').findOne({ id: req.params.id }, NO_ID);
   if (!branch) return res.status(404).json({ error: 'Branch not found' });
   const { name, location, active } = req.body;
-  if (name !== undefined) branch.name = name.trim();
+  if (name !== undefined) {
+    const trimmed = name.trim();
+    if (!trimmed) return res.status(400).json({ error: 'Branch name required' });
+    const siblings = await dbc('branches').find({}, NO_ID).toArray();
+    if (siblings.find(b => b.id !== branch.id && b.name.toLowerCase() === trimmed.toLowerCase())) {
+      return res.status(400).json({ error: 'Branch with this name already exists' });
+    }
+    branch.name = trimmed;
+  }
   if (location !== undefined) branch.location = location.trim();
   if (active !== undefined) branch.active = active;
   await dbc('branches').replaceOne({ id: branch.id }, branch);
@@ -52,7 +60,21 @@ branchesRouter.patch('/:id', requireRole('admin'), asyncHandler(async (req, res)
 }));
 
 branchesRouter.delete('/:id', requireRole('admin'), asyncHandler(async (req, res) => {
-  const { matchedCount } = await dbc('branches').updateOne({ id: req.params.id }, { $set: { active: false } });
+  const branchId = req.params.id;
+  // A branch with active people or in-flight passes still has a working gate —
+  // deactivating it would strand those users and passes behind a hidden branch.
+  const [activeUsers, openPasses] = await Promise.all([
+    dbc('users').countDocuments({ branch: branchId, active: { $ne: false } }),
+    dbc('gatePasses').countDocuments({
+      status: { $in: ['pending', 'approved', 'in_transit', 'partial_return'] },
+      $or: [{ sourceBranch: branchId }, { destinationBranch: branchId }],
+    }),
+  ]);
+  if (activeUsers > 0)
+    return res.status(400).json({ error: `Cannot deactivate: ${activeUsers} active user(s) belong to this branch. Move or deactivate them first.` });
+  if (openPasses > 0)
+    return res.status(400).json({ error: `Cannot deactivate: ${openPasses} open pass(es) still reference this branch. Complete or close them first.` });
+  const { matchedCount } = await dbc('branches').updateOne({ id: branchId }, { $set: { active: false } });
   if (!matchedCount) return res.status(404).json({ error: 'Branch not found' });
   res.json({ success: true });
 }));
@@ -71,11 +93,12 @@ usersRouter.get('/', requireRole('admin', 'manager', 'time_office'), asyncHandle
   if (req.user.role === 'manager') {
     users = users.filter(u => u.branch === req.user.branch);
   }
-  // time_office only needs names to pick a Receiver on inward entries —
-  // active users, minimal fields, no emails
+  // time_office only needs names to pick a Receiver on inward entries and
+  // transfer receipts — active users of THEIR OWN branch, minimal fields,
+  // no emails. A gate account never needs the whole staff directory.
   if (req.user.role === 'time_office') {
     users = users
-      .filter(u => u.active !== false)
+      .filter(u => u.active !== false && u.branch === req.user.branch)
       .map(u => ({ id: u.id, name: u.name, role: u.role, branch: u.branch, departmentId: u.departmentId, departmentName: u.departmentName }));
   }
   res.json(users);
@@ -134,15 +157,19 @@ usersRouter.patch('/:id', requireRole('admin'), asyncHandler(async (req, res) =>
   const nextRole = role !== undefined ? role : user.role;
   const nextBranch = branch !== undefined ? branch : user.branch;
 
-  if (nextRole !== 'time_office' && !nextDepartmentId) {
-    return res.status(400).json({ error: 'Department is required for this role' });
-  }
-  if (nextDepartmentId) {
+  if (nextRole === 'time_office') {
+    // Gate accounts are branch-bound with no department — enforce server-side
+    // rather than trusting the client to send departmentId: null
+    user.departmentId = null;
+  } else {
+    if (!nextDepartmentId) {
+      return res.status(400).json({ error: 'Department is required for this role' });
+    }
     const dept = await dbc('departments').findOne({ id: nextDepartmentId }, NO_ID);
     if (!dept || dept.active === false) return res.status(400).json({ error: 'Department not found or inactive' });
     if (dept.branchId !== nextBranch) return res.status(400).json({ error: 'Department must belong to the selected branch' });
+    if (departmentId !== undefined) user.departmentId = departmentId || null;
   }
-  if (departmentId !== undefined) user.departmentId = departmentId || null;
   if (active !== undefined) user.active = active;
   await dbc('users').replaceOne({ id: user.id }, user);
   const departments = await dbc('departments').find({}, NO_ID).toArray();

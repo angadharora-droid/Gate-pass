@@ -11,6 +11,11 @@ import { asyncHandler } from './lib/asyncHandler.js';
 const app = express();
 const PORT = Number(process.env.PORT) || 4000;
 
+// Deployed behind a reverse proxy (Railway): trust one hop so req.ip is the
+// real client IP from X-Forwarded-For, not the proxy — otherwise the login
+// rate limiter lumps every user into a single shared bucket.
+app.set('trust proxy', 1);
+
 // Don't advertise the framework.
 app.disable('x-powered-by');
 

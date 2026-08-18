@@ -42,7 +42,11 @@ export const api = {
 
   // Gate passes
   getPasses: (filters = {}) => {
-    const q = new URLSearchParams(filters).toString();
+    // Drop empty values so `{status: null}` doesn't become ?status=null
+    const clean = Object.fromEntries(
+      Object.entries(filters).filter(([, v]) => v != null && v !== '')
+    );
+    const q = new URLSearchParams(clean).toString();
     return request(`/gate-passes${q ? '?' + q : ''}`);
   },
   getPass: (id) => request(`/gate-passes/${id}`),

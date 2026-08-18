@@ -31,6 +31,20 @@ import { hashPassword } from '../lib/security.js';
 //   returnOutwardLog → return physically LEFT the destination branch (destination TO)
 //   inwardLog        → item ARRIVED back at the source branch (return leg of a
 //                      returnable outward pass, or a direct inward gate entry)
+//   returnCycles     → archive of finished send-back cycles: when a return
+//                      arrives only PARTIALLY, returnRequest/returnOutwardLog
+//                      are reset so the destination can run another cycle for
+//                      the remaining items; the finished cycle is pushed here.
+//
+// DISPLAY STAGE: the stored status stays coarse; enrichPass adds a derived
+// `displayStatus` (see displayStatusOf in routes/gatePasses.js) so the UI can
+// show exactly where the items are: items_out (external), in_transit (between
+// branches), at_destination (with the receiver), return_approved, returning.
+//
+// GATE REGISTERS (Time Office UI): everything is gate-centric — the Outward
+// register lists movements LEAVING a branch's gate (dispatches + send-backs),
+// the Inward register lists everything ARRIVING (direct inward entries,
+// incoming transfers to mark in, returns to log back).
 
 // ─── CONNECTION (MongoDB Atlas) ───────────────────────────────────────────────
 // MONGODB_URI must point at a MongoDB Atlas cluster (or any MongoDB instance),

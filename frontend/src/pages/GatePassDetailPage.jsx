@@ -105,11 +105,11 @@ export default function GatePassDetailPage() {
     ['in_transit', 'partial_return'].includes(pass.status);
   const canLogDeparture = canLog && atSource && pass.type === 'outward' && pass.status === 'approved' && !pass.outwardLog;
   // Inward entries are logged directly at the gate (born completed) — the only
-  // arrival left to log is the return leg of a returnable outward pass. A
-  // received branch transfer must be dispatched back by the destination gate first.
+  // arrival left to log is the return leg of a returnable outward pass. Branch
+  // transfers must complete the receive → send-back → dispatch cycle first.
   const canLogReturn    = canLog && atSource && pass.type === 'outward' && pass.returnable &&
     ['in_transit', 'partial_return'].includes(pass.status) &&
-    !(pass.direction === 'internal' && pass.receivedLog && !pass.returnOutwardLog);
+    (pass.direction !== 'internal' || !!pass.returnOutwardLog);
   // Receiving leg of an internal branch transfer, done by the destination gate
   const canReceive      = canLog && atDest && isTransferAway && pass.destinationBranch &&
     pass.outwardLog && !pass.receivedLog;
@@ -350,7 +350,7 @@ export default function GatePassDetailPage() {
             <div className="items-list">
               {pass.items?.map((li, idx) => {
                 const closed = li.closedQuantity || 0;
-                const remaining = li.quantity - li.returnedQuantity - closed;
+                const remaining = li.quantity - (li.returnedQuantity || 0) - closed;
                 const isFullyAccounted = remaining === 0;
                 const itemMeta = [
                   li.unit,
@@ -480,16 +480,18 @@ function LifecycleTimeline({ pass }) {
         label: 'Received',
         sub: pass.receiverUser?.name
           ? `${pass.receiverUser.name}${pass.departmentName ? ` · ${pass.departmentName}` : ''}`
-          : pass.departmentName || undefined,
+          : pass.departmentName || 'Receiver not recorded',
         time: null,
-        done: true,
+        done: !!(pass.receiverUser?.name || pass.departmentName),
         Icon: CheckCircle2,
         color: 'var(--blue)',
       },
       {
         key: 'completed',
-        label: pass.returnable ? 'Completed · Will Go Back Out' : 'Completed',
-        sub: '',
+        label: 'Completed',
+        sub: pass.returnable
+          ? 'Returnable — when the items go back out, create an outward pass for them'
+          : '',
         time: null,
         done: pass.status === 'completed',
         Icon: PackageCheck,
@@ -518,7 +520,7 @@ function LifecycleTimeline({ pass }) {
         ? `${pass.approvedByUser.name}${pass.autoApproved ? ' (auto)' : ''}`
         : undefined,
       time: pass.approvedAt,
-      done: ['approved', 'completed', 'partial_return', 'rejected', 'in_transit'].includes(pass.status),
+      done: ['approved', 'completed', 'closed', 'partial_return', 'rejected', 'in_transit'].includes(pass.status),
       Icon: pass.status === 'rejected' ? X : CheckCircle2,
       color: pass.status === 'rejected' ? 'var(--red)' : (pass.autoApproved ? 'var(--green)' : 'var(--blue)'),
     },
@@ -540,7 +542,7 @@ function LifecycleTimeline({ pass }) {
         ? `Due back ${new Date(pass.expectedReturnDate).toLocaleDateString('en-IN')}`
         : undefined,
       time: null,
-      done: ['in_transit', 'partial_return', 'completed'].includes(pass.status),
+      done: ['in_transit', 'partial_return', 'completed', 'closed'].includes(pass.status),
       Icon: Truck,
       color: 'var(--purple)',
     }] : []),
@@ -583,23 +585,29 @@ function LifecycleTimeline({ pass }) {
     }] : []),
     ...(pass.type === 'outward' && pass.returnable ? [{
       key: 'inward_log',
-      label: pass.status === 'partial_return' ? 'Some Items Came Back' : 'Items Came Back',
+      label: pass.status === 'closed'
+        ? 'Items Settled'
+        : pass.status === 'partial_return' ? 'Some Items Came Back' : 'Items Came Back',
       sub: pass.inwardLog
         ? `${pass.inwardLog.loggedByUser?.name || '—'} · Host: ${pass.inwardLog.guardName || '—'}${pass.inwardLog.remarks ? ' · ' + pass.inwardLog.remarks : ''}`
-        : (isOverdue ? 'Late — not back yet' : 'Waiting for items to come back'),
+        : pass.status === 'closed'
+          ? 'All remaining items were written off with a reason'
+          : (isOverdue ? 'Late — not back yet' : 'Waiting for items to come back'),
       time: pass.inwardLog?.loggedAt,
-      done: !!pass.inwardLog,
+      done: !!pass.inwardLog || pass.status === 'closed',
       Icon: ArrowDownLeft,
       color: isOverdue ? 'var(--red)' : 'var(--green)',
     }] : []),
     {
       key: 'completed',
-      label: pass.status === 'partial_return' ? 'Waiting for Remaining Items' : 'Completed',
+      label: pass.status === 'closed'
+        ? 'Closed — Some Items Written Off'
+        : pass.status === 'partial_return' ? 'Waiting for Remaining Items' : 'Completed',
       sub: '',
       time: null,
-      done: pass.status === 'completed',
+      done: ['completed', 'closed'].includes(pass.status),
       Icon: PackageCheck,
-      color: 'var(--green)',
+      color: pass.status === 'closed' ? 'var(--orange)' : 'var(--green)',
     },
   ].filter(Boolean);
 
@@ -648,6 +656,7 @@ function PrintGatePass({ pass }) {
   const hasAmounts = pass.items?.some(li => li.amount != null);
   const hasCodes   = pass.items?.some(li => li.code);
   const hasSerials = pass.items?.some(li => li.serialNo);
+  const hasClosed  = pass.items?.some(li => (li.closedQuantity || 0) > 0);
   const isReturnableOutward = pass.returnable && pass.type === 'outward';
 
   return (
@@ -738,12 +747,14 @@ function PrintGatePass({ pass }) {
               {hasAmounts && <th>Amount</th>}
               {hasSerials && <th>Serial/Batch</th>}
               {isReturnableOutward && <th>Returned</th>}
+              {isReturnableOutward && hasClosed && <th>Written Off</th>}
               {isReturnableOutward && <th>Remaining</th>}
             </tr>
           </thead>
           <tbody>
             {pass.items?.map((li, i) => {
-              const remaining = li.quantity - li.returnedQuantity;
+              const closed = li.closedQuantity || 0;
+              const remaining = li.quantity - (li.returnedQuantity || 0) - closed;
               return (
                 <tr key={i}>
                   <td>{i + 1}</td>
@@ -754,7 +765,8 @@ function PrintGatePass({ pass }) {
                   {hasAmounts && <td>{li.rate != null ? li.rate.toLocaleString('en-IN') : '—'}</td>}
                   {hasAmounts && <td>{li.amount != null ? li.amount.toLocaleString('en-IN') : '—'}</td>}
                   {hasSerials && <td>{li.serialNo || '—'}</td>}
-                  {isReturnableOutward && <td>{li.returnedQuantity}</td>}
+                  {isReturnableOutward && <td>{li.returnedQuantity || 0}</td>}
+                  {isReturnableOutward && hasClosed && <td>{closed || '—'}</td>}
                   {isReturnableOutward && <td>{remaining}</td>}
                 </tr>
               );
@@ -767,7 +779,7 @@ function PrintGatePass({ pass }) {
                   {pass.items.reduce((s, li) => s + (li.amount || 0), 0).toLocaleString('en-IN')}
                 </td>
                 {hasSerials && <td />}
-                {isReturnableOutward && <td colSpan={2} />}
+                {isReturnableOutward && <td colSpan={hasClosed ? 3 : 2} />}
               </tr>
             )}
           </tbody>

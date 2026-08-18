@@ -40,6 +40,10 @@ export default function NewInwardPage() {
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
   const setBranch = (branchId) => setForm(f => ({ ...f, branchId, departmentId: '', receiverId: '' }));
   const setDept = (departmentId) => setForm(f => ({ ...f, departmentId, receiverId: '' }));
+  // 'None' means no document — clear any number typed under a previous type
+  const setDocType = (documentType) => setForm(f => ({
+    ...f, documentType, documentNo: documentType === 'None' ? '' : f.documentNo,
+  }));
 
   const branchDepts = departments.filter(d => d.branchId === form.branchId);
   // Receiver = someone in the receiving branch; people from the chosen
@@ -58,6 +62,12 @@ export default function NewInwardPage() {
     if (!form.departmentId) { setError('Select the receiving department'); return; }
     if (!form.receiverId)   { setError('Select who is receiving the items'); return; }
     if (!form.carriedBy.trim()) { setError('Enter who carried the items in'); return; }
+    // Catch half-filled rows the grid would otherwise drop silently
+    const badRow = rows.findIndex(r => {
+      const hasContent = [r.itemName, r.code, r.rate, r.serialNo, r.remarks].some(v => String(v ?? '').trim());
+      return hasContent && (!r.itemName.trim() || !(Number(r.quantity) > 0));
+    });
+    if (badRow !== -1) { setError(`Row ${badRow + 1} is incomplete — every item needs a description and a quantity above 0`); return; }
     const items = rowsToItems(rows);
     if (!items.length) { setError('Add at least one item with a description and quantity'); return; }
 
@@ -126,7 +136,7 @@ export default function NewInwardPage() {
           <div className="form-group">
             <label className="form-label">Document No</label>
             <div style={{ display: 'flex', gap: 8 }}>
-              <select className="form-select" style={{ maxWidth: 170 }} value={form.documentType} onChange={e => set('documentType', e.target.value)}>
+              <select className="form-select" style={{ maxWidth: 170 }} value={form.documentType} onChange={e => setDocType(e.target.value)}>
                 {DOCUMENT_TYPES.map(t => <option key={t}>{t}</option>)}
               </select>
               <input className="form-input" value={form.documentNo}

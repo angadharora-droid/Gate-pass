@@ -11,7 +11,11 @@ import { X, UploadCloud, Download, FileSpreadsheet, AlertTriangle, Check } from 
 
 const NAME_KEYS = ['itemname', 'item', 'name', 'description', 'desc', 'product', 'particulars'];
 const UNIT_KEYS = ['unit', 'uom', 'units', 'unitofmeasure'];
-const QTY_KEYS  = ['qty', 'quantity', 'qnty', 'qantity', 'count', 'nos', 'no'];
+// Strong keys unambiguously mean quantity; weak ones ('no', 'nos') also appear
+// as serial-number headers ("No.") so they only count when nothing stronger
+// matches anywhere in the header row.
+const QTY_KEYS_STRONG = ['qty', 'quantity', 'qnty', 'qantity', 'count'];
+const QTY_KEYS_WEAK   = ['nos', 'no'];
 
 const normKey = (k) => String(k ?? '').trim().toLowerCase().replace(/[\s_\-.]+/g, '');
 
@@ -23,12 +27,19 @@ async function loadXLSX() {
 
 function detectColumns(headerRow, units) {
   const map = { name: -1, unit: -1, qty: -1 };
-  headerRow.forEach((cell, i) => {
-    const n = normKey(cell);
+  const norm = headerRow.map(normKey);
+  norm.forEach((n, i) => {
     if (map.name === -1 && NAME_KEYS.includes(n)) map.name = i;
     else if (map.unit === -1 && UNIT_KEYS.includes(n)) map.unit = i;
-    else if (map.qty === -1 && QTY_KEYS.includes(n)) map.qty = i;
+    else if (map.qty === -1 && QTY_KEYS_STRONG.includes(n)) map.qty = i;
   });
+  // Fall back to weak qty headers only when no strong one exists at all —
+  // a "No. | Item Name | Qty" layout must map Qty, not the serial column.
+  if (map.qty === -1) {
+    norm.forEach((n, i) => {
+      if (map.qty === -1 && i !== map.name && i !== map.unit && QTY_KEYS_WEAK.includes(n)) map.qty = i;
+    });
+  }
   return map;
 }
 

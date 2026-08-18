@@ -20,11 +20,15 @@ export const defaultOutwardForm = () => ({
 // Shared ERP-style outward form, used by New Gate Pass (create) and by the
 // manager's pre-approval edit. The page supplies initial values and an
 // async onSubmit(payload); the form owns validation and error display.
+// `sourceBranchId` is the PASS's source branch (on edit it can differ from the
+// editor's own branch) — it is excluded from the destination options.
 export default function OutwardPassForm({
   initialForm, initialRows,
   dateText, requestedByName, requestedByRole,
+  sourceBranchId,
   submitLabel, submitIcon: SubmitIcon, submittingLabel = 'Submitting…',
   footerHint = null,
+  showCreateHint = false,
   onSubmit,
 }) {
   const { user } = useAuth();
@@ -36,10 +40,15 @@ export default function OutwardPassForm({
   const [rows, setRows] = useState(() => initialRows?.length ? initialRows : [emptyRow()]);
   const [showImport, setShowImport] = useState(false);
 
-  useEffect(() => { api.getBranches().then(setBranches); }, []);
+  useEffect(() => {
+    api.getBranches()
+      .then(setBranches)
+      .catch(() => setError('Could not load the branch list — internal transfers need it. Reload the page to retry.'));
+  }, []);
 
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
   const isReturnable = form.outwardType === 'returnable';
+  const srcBranch = sourceBranchId || user?.branch;
 
   const importItems = (imported) => {
     const mapped = imported.map(it => ({ ...emptyRow(), itemName: it.itemName, unit: it.unit, quantity: it.quantity }));
@@ -58,6 +67,16 @@ export default function OutwardPassForm({
     if (form.direction === 'external' && !form.destinationPerson.trim()) {
       setError('Enter recipient name'); return;
     }
+    if (isReturnable) {
+      if (!form.expectedReturnDate) { setError('Set the Return By date — it drives late-return tracking'); return; }
+      if (new Date(form.expectedReturnDate) <= new Date()) { setError('Return By must be in the future'); return; }
+    }
+    // Catch half-filled rows the grid would otherwise drop silently
+    const badRow = rows.findIndex(r => {
+      const hasContent = [r.itemName, r.code, r.rate, r.serialNo, r.remarks].some(v => String(v ?? '').trim());
+      return hasContent && (!r.itemName.trim() || !(Number(r.quantity) > 0));
+    });
+    if (badRow !== -1) { setError(`Row ${badRow + 1} is incomplete — every item needs a description and a quantity above 0`); return; }
     const items = rowsToItems(rows);
     if (!items.length) { setError('Add at least one item with a description and quantity'); return; }
 
@@ -135,7 +154,7 @@ export default function OutwardPassForm({
             <input
               className="form-input"
               type="datetime-local"
-              value={form.expectedReturnDate}
+              value={isReturnable ? form.expectedReturnDate : ''}
               onChange={e => set('expectedReturnDate', e.target.value)}
               disabled={!isReturnable}
             />
@@ -155,10 +174,22 @@ export default function OutwardPassForm({
               <label className="form-label">To Branch *</label>
               <select className="form-select" value={form.destinationBranch} onChange={e => set('destinationBranch', e.target.value)}>
                 <option value="">Select branch…</option>
-                {branches.filter(b => b.id !== user?.branch).map(b => (
-                  <option key={b.id} value={b.id}>{b.name} — {b.location}</option>
+                {/* The current value may point at a branch no longer in the
+                    active list (deactivated) — keep it visible instead of
+                    silently blanking a still-set field */}
+                {form.destinationBranch && !branches.some(b => b.id === form.destinationBranch) && (
+                  <option value={form.destinationBranch}>(inactive branch)</option>
+                )}
+                {branches.filter(b => b.id !== srcBranch).map(b => (
+                  <option key={b.id} value={b.id}>{b.name}{b.location ? ` — ${b.location}` : ''}</option>
                 ))}
               </select>
+              {isReturnable && (
+                <div className="form-hint" style={{ marginTop: 6 }}>
+                  Internal returnable transfer: the destination gate marks the items in and assigns a
+                  receiver; the items come back through their send-back flow.
+                </div>
+              )}
             </div>
           ) : (
             <div className="form-group">
@@ -194,10 +225,13 @@ export default function OutwardPassForm({
           </div>
         </div>
 
-        <div className="form-hint" style={{ marginTop: 14 }}>
-          Gate passes cover <strong>outward</strong> movement only. Incoming goods are logged
-          directly by Security at the gate when they arrive — no request needed.
-        </div>
+        {showCreateHint && (
+          <div className="form-hint" style={{ marginTop: 14 }}>
+            Gate passes cover <strong>outward</strong> requests only — arrivals at the gate
+            (direct inward, incoming transfers, returns) are handled by Security in the
+            Inward register.
+          </div>
+        )}
       </div>
 
       {/* Material items — same ERP grid as New Inward */}

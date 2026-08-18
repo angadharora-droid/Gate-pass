@@ -98,7 +98,7 @@ export default function DashboardPage() {
             Please follow up.
           </span>
           <Link
-            to="/passes?status=approved&type=outward"
+            to="/passes?overdue=true"
             style={{ marginLeft: 'auto', textDecoration: 'underline', textUnderlineOffset: 3, fontSize: 13, fontWeight: 500, whiteSpace: 'nowrap' }}
           >
             View all
@@ -121,12 +121,17 @@ export default function DashboardPage() {
         <div className="stat-card blue">
           <div className="stat-icon"><CheckCircle2 size={16} /></div>
           <div className="stat-num">{stats?.approved ?? 0}</div>
-          <div className="stat-label">Approved</div>
+          <div className="stat-label">Ready to Go Out</div>
+        </div>
+        <div className="stat-card violet">
+          <div className="stat-icon"><Truck size={16} /></div>
+          <div className="stat-num">{stats?.inTransit ?? 0}</div>
+          <div className="stat-label">Out Right Now</div>
         </div>
         <div className="stat-card green">
           <div className="stat-icon"><PackageCheck size={16} /></div>
-          <div className="stat-num">{stats?.completed ?? 0}</div>
-          <div className="stat-label">Completed</div>
+          <div className="stat-num">{(stats?.completed ?? 0) + (stats?.closed ?? 0)}</div>
+          <div className="stat-label">Settled</div>
         </div>
         <div className="stat-card red">
           <div className="stat-icon"><AlertTriangle size={16} /></div>

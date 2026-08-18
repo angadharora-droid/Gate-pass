@@ -14,10 +14,13 @@ function currentMonth() {
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}`;
 }
 
+// Local-time boundaries, so the month bucket matches the dates the table
+// displays (UTC boundaries put the first local hours of a month in the
+// previous month's report for IST users).
 function monthToRange(month) {
   const [y, m] = month.split('-').map(Number);
-  const start = new Date(Date.UTC(y, m - 1, 1, 0, 0, 0));
-  const end = new Date(Date.UTC(y, m, 1, 0, 0, 0));
+  const start = new Date(y, m - 1, 1);
+  const end = new Date(y, m, 1);
   return { start, end };
 }
 
@@ -127,31 +130,40 @@ export default function ReportsPage() {
     try {
       const mod = await import('xlsx');
       const XLSX = mod.utils ? mod : mod.default;
+      const sumQty = (p, field) => (p.items || []).reduce((s, li) => s + (li[field] || 0), 0);
       const rows = filtered.map(p => ({
         'Pass #': p.passNumber,
         'Created': fmtDate(p.createdAt),
-        'Branch': p.sourceBranchName || p.destinationBranchName || '—',
+        // Direction-aware ends: inward comes FROM an outside party TO the branch
+        'From': p.type === 'inward' ? (p.destinationPerson || 'Outside party') : (p.sourceBranchName || '—'),
+        'To': p.destinationBranchName || (p.type === 'inward' ? '—' : (p.destinationPerson || '—')),
         'Department': p.departmentName || '—',
         'Type': p.type === 'inward' ? 'Inward' : 'Outward',
         'Scope': p.direction === 'internal' ? 'Internal' : 'External',
         'Returnable': p.returnable ? 'Yes' : 'No',
-        'Status': STATUS_LABELS[p.isOverdue ? 'overdue' : (p.displayStatus || p.status)] || p.status,
+        'Status': STATUS_LABELS[p.displayStatus || p.status] || p.status,
+        'Late': p.isOverdue ? 'Yes' : 'No',
         'Early Return': p.earlyReturn ? 'Yes' : 'No',
         'Expected Return': p.expectedReturnDate ? fmtDate(p.expectedReturnDate) : '—',
-        'Counterparty': p.destinationPerson || p.destinationBranchName || '—',
+        // Custody chain of the movement legs, where stamped
+        'Dispatched': p.outwardLog ? fmtDate(p.outwardLog.loggedAt) : '—',
+        'Received At Destination': p.receivedLog ? fmtDate(p.receivedLog.loggedAt) : '—',
         'Received By': p.receivedLog
           ? `${p.receivedLog.receiverUser?.name || '—'}${p.receivedLog.departmentName ? ` (${p.receivedLog.departmentName})` : ''}`
           : '—',
+        'Send-Back Approved': p.returnRequest ? fmtDate(p.returnRequest.requestedAt) : '—',
+        'Return Dispatched': p.returnOutwardLog ? fmtDate(p.returnOutwardLog.loggedAt) : '—',
+        'Returned': (p.type === 'outward' && p.inwardLog) ? fmtDate(p.inwardLog.loggedAt) : '—',
+        'Qty Returned': p.type === 'outward' && p.returnable ? sumQty(p, 'returnedQuantity') : '—',
+        'Qty Written Off': p.type === 'outward' && p.returnable ? sumQty(p, 'closedQuantity') : '—',
         'Items': (p.items || []).map(li => `${li.itemName} × ${li.quantity} ${li.unit}`).join(', '),
         'Purpose': p.purpose || '',
         'Remarks': p.remarks || '',
       }));
       const ws = XLSX.utils.json_to_sheet(rows);
-      ws['!cols'] = [
-        { wch: 16 }, { wch: 20 }, { wch: 16 }, { wch: 16 }, { wch: 9 }, { wch: 9 },
-        { wch: 11 }, { wch: 17 }, { wch: 12 }, { wch: 20 }, { wch: 22 }, { wch: 22 },
-        { wch: 42 }, { wch: 30 }, { wch: 30 },
-      ];
+      ws['!cols'] = Object.keys(rows[0]).map(k =>
+        ({ wch: k === 'Items' ? 42 : ['Purpose', 'Remarks'].includes(k) ? 30 : Math.max(11, k.length + 6) })
+      );
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, 'Report');
       const branchName = branch ? (branches.find(b => b.id === branch)?.name || branch) : 'all-branches';
@@ -169,7 +181,7 @@ export default function ReportsPage() {
       <div className="page-header">
         <div>
           <div className="page-title">Reports</div>
-          <div className="page-subtitle">Monthly view with filters and editable entries</div>
+          <div className="page-subtitle">Monthly view with filters{canEdit ? ' and editable entries' : ''}</div>
         </div>
         <button
           className="btn btn-primary"
@@ -256,7 +268,7 @@ export default function ReportsPage() {
               <tr>
                 <th>Pass #</th>
                 <th>Created</th>
-                <th>Branch</th>
+                <th>From → To</th>
                 <th>Department</th>
                 <th>Movement</th>
                 <th>Status</th>
@@ -269,13 +281,15 @@ export default function ReportsPage() {
             <tbody>
               {filtered.map(p => {
                 const isEditing = editingId === p.id;
-                const branchName = p.sourceBranchName || p.destinationBranchName || '—';
+                const fromTo = p.type === 'inward'
+                  ? `${p.destinationPerson || 'Outside party'} → ${p.destinationBranchName || '—'}`
+                  : `${p.sourceBranchName || '—'} → ${p.destinationBranchName || p.destinationPerson || '—'}`;
 
                 return (
                   <tr key={p.id}>
                     <td><Link to={`/passes/${p.id}`} className="pass-number">{p.passNumber}</Link></td>
                     <td style={{ fontSize: 12, color: 'var(--text2)', fontFamily: 'var(--font-mono)', whiteSpace: 'nowrap' }}>{fmtDate(p.createdAt)}</td>
-                    <td style={{ fontSize: 13, color: 'var(--text2)' }}>{branchName}</td>
+                    <td style={{ fontSize: 13, color: 'var(--text2)' }}>{fromTo}</td>
                     <td style={{ fontSize: 13, color: 'var(--text2)' }}>{p.departmentName || '—'}</td>
                     <td style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                       <TypeBadge type={p.type} />

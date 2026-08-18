@@ -10,10 +10,10 @@ const roleColor = {
 };
 
 const roleDesc = {
-  admin:       'Full access — manage users, items, and branches. View all passes across all branches.',
-  manager:     'Approve or reject passes for their branch. Create passes (auto-approved). Record returns.',
-  staff:       'Create gate pass requests for their branch. View own branch passes.',
-  time_office: 'Security at the gate of THEIR branch only: logs outward departures and returns, receives transfers arriving from other branches, and records new inward arrivals directly (no approval flow).',
+  admin:       'Full access — manage users, departments, and branches. View all passes across all branches.',
+  manager:     'Approve or reject their branch’s outgoing passes. Create passes (auto-approved). Can approve send-backs of transfers held at their branch.',
+  staff:       'Create gate pass requests for their branch. View own branch passes. Approve the send-back of transfer items they hold.',
+  time_office: 'Security at the gate of THEIR branch only: marks everything leaving the gate out (dispatches and send-backs) and everything arriving in (direct inward entries, incoming transfers, returns).',
 };
 
 /* ── Shared helpers ─────────────────────────────────────────────────────────── */
@@ -65,7 +65,8 @@ function UsersTab() {
   const [loading, setLoading] = useState(false);
 
   const load = () => {
-    Promise.all([api.getUsers(), api.getBranches(), api.getDepartments({ all: true })]).then(([u, b, d]) => {
+    // all=true: users may belong to a deactivated branch — still show its name
+    Promise.all([api.getUsers(), api.getBranches(true), api.getDepartments({ all: true })]).then(([u, b, d]) => {
       setUsers(u); setBranches(b); setDepartments(d);
     });
   };
@@ -484,23 +485,33 @@ function BranchesTab() {
 
 /* ── Audit Tab ──────────────────────────────────────────────────────────────── */
 const ACTION_COLOR = {
-  LOGIN:       'var(--text3)',
-  CREATE_PASS: 'var(--blue)',
-  APPROVE:     'var(--green)',
-  REJECT:      'var(--red)',
-  EDIT_PASS:   'var(--purple)',
-  LOG_OUTWARD: 'var(--orange)',
-  LOG_INWARD:  'var(--green)',
+  LOGIN:              'var(--text3)',
+  CREATE_PASS:        'var(--blue)',
+  APPROVE:            'var(--green)',
+  REJECT:             'var(--red)',
+  EDIT_PASS:          'var(--purple)',
+  REVISE_PASS:        'var(--purple)',
+  LOG_OUTWARD:        'var(--orange)',
+  LOG_INWARD:         'var(--green)',
+  LOG_INWARD_DIRECT:  'var(--green)',
+  RECEIVE_TRANSFER:   'var(--accent)',
+  APPROVE_RETURN:     'var(--green)',
+  LOG_RETURN_OUTWARD: 'var(--orange)',
 };
 
 const ACTION_BG = {
-  LOGIN:       'rgba(100,116,139,0.08)',
-  CREATE_PASS: 'rgba(59,130,246,0.1)',
-  APPROVE:     'rgba(22,163,74,0.1)',
-  REJECT:      'rgba(220,38,38,0.1)',
-  EDIT_PASS:   'rgba(124,58,237,0.1)',
-  LOG_OUTWARD: 'rgba(249,115,22,0.1)',
-  LOG_INWARD:  'rgba(22,163,74,0.1)',
+  LOGIN:              'rgba(100,116,139,0.08)',
+  CREATE_PASS:        'rgba(59,130,246,0.1)',
+  APPROVE:            'rgba(22,163,74,0.1)',
+  REJECT:             'rgba(220,38,38,0.1)',
+  EDIT_PASS:          'rgba(124,58,237,0.1)',
+  REVISE_PASS:        'rgba(124,58,237,0.1)',
+  LOG_OUTWARD:        'rgba(249,115,22,0.1)',
+  LOG_INWARD:         'rgba(22,163,74,0.1)',
+  LOG_INWARD_DIRECT:  'rgba(22,163,74,0.1)',
+  RECEIVE_TRANSFER:   'rgba(37,99,235,0.1)',
+  APPROVE_RETURN:     'rgba(22,163,74,0.1)',
+  LOG_RETURN_OUTWARD: 'rgba(249,115,22,0.1)',
 };
 
 function fmtAuditDetails(details) {
