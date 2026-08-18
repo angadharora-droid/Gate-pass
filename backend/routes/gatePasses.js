@@ -78,6 +78,10 @@ router.post('/', requireRole('admin', 'manager', 'staff'), asyncHandler(async (r
     return res.status(400).json({ error: 'type, direction, and items are required' });
   if (type === 'inward')
     return res.status(400).json({ error: 'Inward entries are logged directly by Security at the gate, not requested here' });
+  if (type !== 'outward')
+    return res.status(400).json({ error: 'type must be outward' });
+  if (!['internal', 'external'].includes(direction))
+    return res.status(400).json({ error: 'direction must be internal or external' });
   if (!purpose?.trim())
     return res.status(400).json({ error: 'Purpose is required' });
 
@@ -87,6 +91,22 @@ router.post('/', requireRole('admin', 'manager', 'staff'), asyncHandler(async (r
     if (li.rate != null && li.rate !== '' && Number(li.rate) < 0)
       return res.status(400).json({ error: `Rate cannot be negative for "${li.itemName}"` });
   }
+
+  // Source branch is the author's branch; only admins may author for another
+  // branch, and every branch reference must be real and active.
+  const srcBranchId = (req.user.role === 'admin' && sourceBranch) ? sourceBranch : req.user.branch;
+  const srcBranch = await dbc('branches').findOne({ id: srcBranchId, active: { $ne: false } }, NO_ID);
+  if (!srcBranch) return res.status(400).json({ error: 'Source branch not found or inactive' });
+
+  let destBranch = null;
+  if (direction === 'internal') {
+    destBranch = await dbc('branches').findOne({ id: destinationBranch, active: { $ne: false } }, NO_ID);
+    if (!destBranch) return res.status(400).json({ error: 'Select a valid destination branch' });
+    if (destBranch.id === srcBranchId)
+      return res.status(400).json({ error: 'Destination branch must differ from the source branch' });
+  }
+  if (returnable && expectedReturnDate && isNaN(new Date(expectedReturnDate).getTime()))
+    return res.status(400).json({ error: 'Expected return date is not a valid date' });
 
   const isManagerOrAdmin = ['manager', 'admin'].includes(req.user.role);
   const now = new Date().toISOString();
@@ -99,9 +119,9 @@ router.post('/', requireRole('admin', 'manager', 'staff'), asyncHandler(async (r
     status: isManagerOrAdmin ? 'approved' : 'pending',
     createdBy: req.user.id,
     departmentId: req.user.departmentId || null,
-    sourceBranch:      sourceBranch || req.user.branch,
-    destinationBranch: direction === 'internal' ? destinationBranch : null,
-    destinationPerson: direction === 'external' ? (destinationPerson || null) : null,
+    sourceBranch:      srcBranchId,
+    destinationBranch: direction === 'internal' ? destBranch.id : null,
+    destinationPerson: direction === 'external' ? (destinationPerson?.trim() || null) : null,
     returnable: returnable ?? false,
     purpose: purpose.trim(),
     createdAt: now,
@@ -264,9 +284,9 @@ router.patch('/:id/status', requireRole('manager', 'admin'), asyncHandler(async 
     return res.status(400).json({ error: 'action must be approve or reject' });
   if (pass.status !== 'pending')
     return res.status(400).json({ error: 'Only pending passes can be approved/rejected' });
-  if (req.user.role === 'manager') {
-    const mine = pass.sourceBranch === req.user.branch || pass.destinationBranch === req.user.branch;
-    if (!mine) return res.status(403).json({ error: 'You can only approve passes for your branch' });
+  // Goods LEAVE the source branch — only its manager (or admin) authorizes that
+  if (req.user.role === 'manager' && pass.sourceBranch !== req.user.branch) {
+    return res.status(403).json({ error: 'Only the source branch manager can approve this pass' });
   }
 
   pass.status     = action === 'approve' ? 'approved' : 'rejected';
@@ -289,9 +309,9 @@ router.patch('/:id/revise', requireRole('manager', 'admin'), asyncHandler(async 
   if (!pass) return res.status(404).json({ error: 'Gate pass not found' });
   if (pass.status !== 'pending')
     return res.status(400).json({ error: 'Only pending passes can be edited; this one is already ' + pass.status });
-  if (req.user.role === 'manager') {
-    const mine = pass.sourceBranch === req.user.branch || pass.destinationBranch === req.user.branch;
-    if (!mine) return res.status(403).json({ error: 'You can only edit passes for your branch' });
+  // Same authority rule as approval: the pass belongs to its source branch
+  if (req.user.role === 'manager' && pass.sourceBranch !== req.user.branch) {
+    return res.status(403).json({ error: 'Only the source branch manager can edit this pass' });
   }
 
   const {
@@ -303,8 +323,14 @@ router.patch('/:id/revise', requireRole('manager', 'admin'), asyncHandler(async 
     return res.status(400).json({ error: 'direction must be internal or external' });
   if (!purpose?.trim())
     return res.status(400).json({ error: 'Purpose is required' });
-  if (direction === 'internal' && !destinationBranch)
-    return res.status(400).json({ error: 'Select a destination branch for internal movement' });
+  if (direction === 'internal') {
+    const destBranch = await dbc('branches').findOne({ id: destinationBranch, active: { $ne: false } }, NO_ID);
+    if (!destBranch) return res.status(400).json({ error: 'Select a valid destination branch' });
+    if (destBranch.id === pass.sourceBranch)
+      return res.status(400).json({ error: 'Destination branch must differ from the source branch' });
+  }
+  if (returnable && expectedReturnDate && isNaN(new Date(expectedReturnDate).getTime()))
+    return res.status(400).json({ error: 'Expected return date is not a valid date' });
   if (!Array.isArray(items) || !items.length)
     return res.status(400).json({ error: 'Add at least one item' });
   for (const li of items) {
@@ -388,14 +414,15 @@ router.patch('/:id/log-outward', requireRole('time_office', 'admin'), asyncHandl
   const pass = await dbc('gatePasses').findOne({ id: req.params.id }, NO_ID);
   if (!pass) return res.status(404).json({ error: 'Gate pass not found' });
 
+  // Authorization first, so state details never leak to the wrong gate
+  if (req.user.role === 'time_office' && pass.sourceBranch !== req.user.branch)
+    return res.status(403).json({ error: 'Only the source branch gate can mark these items out' });
   if (pass.type !== 'outward')
     return res.status(400).json({ error: 'log-outward is only for outward passes' });
   if (pass.status !== 'approved')
     return res.status(400).json({ error: 'Pass must be in approved status to log outward movement' });
   if (pass.outwardLog)
     return res.status(400).json({ error: 'Outward movement already logged for this pass' });
-  if (req.user.role === 'time_office' && pass.sourceBranch !== req.user.branch)
-    return res.status(403).json({ error: 'Only the source branch gate can mark these items out' });
 
   const { remarks, guardName } = req.body;
   if (!guardName?.trim()) return res.status(400).json({ error: 'Gate host name is required' });
@@ -431,14 +458,14 @@ router.patch('/:id/receive', requireRole('time_office', 'admin'), asyncHandler(a
 
   if (!(pass.type === 'outward' && pass.direction === 'internal' && pass.destinationBranch))
     return res.status(400).json({ error: 'Only internal branch-to-branch passes can be received' });
+  if (req.user.role === 'time_office' && pass.destinationBranch !== req.user.branch)
+    return res.status(403).json({ error: 'Only the destination branch gate can mark these items in' });
   if (!pass.outwardLog)
     return res.status(400).json({ error: 'Items have not been marked out by the source branch yet' });
   if (pass.receivedLog)
     return res.status(400).json({ error: 'Items already marked in at the destination branch' });
   if (!['in_transit', 'partial_return'].includes(pass.status))
     return res.status(400).json({ error: `Cannot receive a pass in ${pass.status} status` });
-  if (req.user.role === 'time_office' && pass.destinationBranch !== req.user.branch)
-    return res.status(403).json({ error: 'Only the destination branch gate can mark these items in' });
 
   const { remarks, guardName, departmentId, receiverId } = req.body;
   if (!guardName?.trim()) return res.status(400).json({ error: 'Gate host name is required' });
@@ -518,14 +545,14 @@ router.patch('/:id/return-outward', requireRole('time_office', 'admin'), asyncHa
 
   if (!(pass.type === 'outward' && pass.direction === 'internal' && pass.returnable && pass.destinationBranch))
     return res.status(400).json({ error: 'Only returnable branch transfers have a return dispatch' });
+  if (req.user.role === 'time_office' && pass.destinationBranch !== req.user.branch)
+    return res.status(403).json({ error: 'Only the destination branch gate can mark this return out' });
   if (!pass.returnRequest)
     return res.status(400).json({ error: 'The receiver has not approved the send-back yet' });
   if (pass.returnOutwardLog)
     return res.status(400).json({ error: 'Return already marked out at the destination branch' });
   if (!['in_transit', 'partial_return'].includes(pass.status))
     return res.status(400).json({ error: `Cannot mark a return out in ${pass.status} status` });
-  if (req.user.role === 'time_office' && pass.destinationBranch !== req.user.branch)
-    return res.status(403).json({ error: 'Only the destination branch gate can mark this return out' });
 
   const { remarks, guardName } = req.body;
   if (!guardName?.trim()) return res.status(400).json({ error: 'Gate host name is required' });
