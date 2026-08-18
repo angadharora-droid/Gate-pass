@@ -2,14 +2,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../utils/api';
 import { useAuth } from '../context/AuthContext';
-import { StatusBadge, TypeBadge, DirectionBadge, ReturnableBadge } from '../components/Badges';
+import { StatusBadge, TypeBadge, DirectionBadge, ReturnableBadge, STATUS_LABELS } from '../components/Badges';
 import { AlertTriangle, FileBarChart2, Timer, Download } from 'lucide-react';
-
-const STATUS_LABELS = {
-  pending: 'Waiting Approval', approved: 'Approved', in_transit: 'Items Out',
-  partial_return: 'Partly Back', completed: 'Completed', closed: 'Closed', rejected: 'Rejected',
-  overdue: 'Late',
-};
 
 function pad2(n) {
   return String(n).padStart(2, '0');
@@ -141,10 +135,13 @@ export default function ReportsPage() {
         'Type': p.type === 'inward' ? 'Inward' : 'Outward',
         'Scope': p.direction === 'internal' ? 'Internal' : 'External',
         'Returnable': p.returnable ? 'Yes' : 'No',
-        'Status': STATUS_LABELS[p.isOverdue ? 'overdue' : p.status] || p.status,
+        'Status': STATUS_LABELS[p.isOverdue ? 'overdue' : (p.displayStatus || p.status)] || p.status,
         'Early Return': p.earlyReturn ? 'Yes' : 'No',
         'Expected Return': p.expectedReturnDate ? fmtDate(p.expectedReturnDate) : '—',
         'Counterparty': p.destinationPerson || p.destinationBranchName || '—',
+        'Received By': p.receivedLog
+          ? `${p.receivedLog.receiverUser?.name || '—'}${p.receivedLog.departmentName ? ` (${p.receivedLog.departmentName})` : ''}`
+          : '—',
         'Items': (p.items || []).map(li => `${li.itemName} × ${li.quantity} ${li.unit}`).join(', '),
         'Purpose': p.purpose || '',
         'Remarks': p.remarks || '',
@@ -152,8 +149,8 @@ export default function ReportsPage() {
       const ws = XLSX.utils.json_to_sheet(rows);
       ws['!cols'] = [
         { wch: 16 }, { wch: 20 }, { wch: 16 }, { wch: 16 }, { wch: 9 }, { wch: 9 },
-        { wch: 11 }, { wch: 15 }, { wch: 12 }, { wch: 20 }, { wch: 22 }, { wch: 42 },
-        { wch: 30 }, { wch: 30 },
+        { wch: 11 }, { wch: 17 }, { wch: 12 }, { wch: 20 }, { wch: 22 }, { wch: 22 },
+        { wch: 42 }, { wch: 30 }, { wch: 30 },
       ];
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, 'Report');
@@ -229,7 +226,7 @@ export default function ReportsPage() {
               <option value="">All</option>
               <option value="pending">Waiting Approval</option>
               <option value="approved">Approved</option>
-              <option value="in_transit">Items Out</option>
+              <option value="in_transit">Out / In Transit</option>
               <option value="partial_return">Partly Back</option>
               <option value="completed">Completed</option>
               <option value="closed">Closed</option>
@@ -285,7 +282,7 @@ export default function ReportsPage() {
                       <DirectionBadge direction={p.direction} />
                       <ReturnableBadge returnable={p.returnable} />
                     </td>
-                    <td><StatusBadge status={p.isOverdue ? 'overdue' : p.status} /></td>
+                    <td><StatusBadge pass={p} /></td>
                     <td>{p.earlyReturn ? <span className="badge badge-early_return" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><Timer size={11} strokeWidth={2.5} /> Early</span> : <span style={{ color: 'var(--text3)' }}>—</span>}</td>
                     <td style={{ maxWidth: 260 }}>
                       {isEditing ? (

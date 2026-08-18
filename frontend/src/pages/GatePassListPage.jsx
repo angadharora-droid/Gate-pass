@@ -9,8 +9,9 @@ const STATUS_TABS = [
   { key: null,             label: 'All' },
   { key: 'pending',        label: 'Waiting Approval' },
   { key: 'approved',       label: 'Approved' },
-  { key: 'completed',      label: 'Completed' },
+  { key: 'in_transit',     label: 'Out / In Transit' },
   { key: 'partial_return', label: 'Partly Back' },
+  { key: 'completed',      label: 'Completed' },
   { key: 'closed',         label: 'Closed' },
   { key: 'rejected',       label: 'Rejected' },
 ];
@@ -136,7 +137,7 @@ export default function GatePassListPage() {
                       <> → {p.destinationBranchName || p.destinationPerson}</>
                     )}
                   </td>
-                  <td><StatusBadge status={p.isOverdue ? 'overdue' : p.status} /></td>
+                  <td><StatusBadge pass={p} /></td>
                   <td style={{ fontSize: 12, color: 'var(--text3)', whiteSpace: 'nowrap' }}>{fmt(p.createdAt)}</td>
                   <td>
                     <Link to={`/passes/${p.id}`} className="btn btn-ghost btn-sm">View</Link>
