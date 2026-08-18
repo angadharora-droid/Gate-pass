@@ -113,7 +113,9 @@ router.post('/', requireRole('admin', 'manager', 'staff'), asyncHandler(async (r
     earlyReturn: false,
     outwardLog:  null,  // set by source-branch Time Office when item physically leaves
     inwardLog:   null,  // set by source-branch Time Office when item returns
-    receivedLog: null,  // set by DESTINATION-branch Time Office on internal transfers
+    receivedLog: null,  // set by DESTINATION-branch Time Office on internal transfers (with dept + receiver)
+    returnRequest:    null,  // receiver's send-back approval on a returnable transfer
+    returnOutwardLog: null,  // destination gate marking the return out
     items: items.map(li => {
       const quantity = Number(li.quantity);
       const rate = (li.rate != null && li.rate !== '') ? Number(li.rate) : null;
@@ -414,12 +416,15 @@ router.patch('/:id/log-outward', requireRole('time_office', 'admin'), asyncHandl
 // ─── TIME OFFICE (DESTINATION BRANCH): RECEIVE A BRANCH TRANSFER ─────────────
 // The receiving leg of an internal (branch→branch) outward pass. Once the
 // source branch marks the items out, the pass shows up at the destination
-// branch, whose gate marks the items IN here.
+// branch, whose gate marks the items IN here — recording WHICH department and
+// WHICH user takes custody of the items.
 // Effect:
 //   non-returnable transfer → 'completed' (items delivered, movement done)
-//   returnable transfer     → stays 'in_transit'/'partial_return' — the items
-//                             still have to come back to the source branch
-//                             (return leg via /log-inward)
+//   returnable transfer     → stays 'in_transit'/'partial_return' — the pass is
+//                             now "with" the receiver, who must approve the
+//                             send-back (/return-request) before the items go
+//                             out through this gate again (/return-outward)
+//                             and finally arrive back at the source (/log-inward)
 router.patch('/:id/receive', requireRole('time_office', 'admin'), asyncHandler(async (req, res) => {
   const pass = await dbc('gatePasses').findOne({ id: req.params.id }, NO_ID);
   if (!pass) return res.status(404).json({ error: 'Gate pass not found' });
@@ -435,13 +440,26 @@ router.patch('/:id/receive', requireRole('time_office', 'admin'), asyncHandler(a
   if (req.user.role === 'time_office' && pass.destinationBranch !== req.user.branch)
     return res.status(403).json({ error: 'Only the destination branch gate can mark these items in' });
 
-  const { remarks, guardName } = req.body;
+  const { remarks, guardName, departmentId, receiverId } = req.body;
   if (!guardName?.trim()) return res.status(400).json({ error: 'Gate host name is required' });
+
+  const dept = await dbc('departments').findOne({ id: departmentId, active: { $ne: false } }, NO_ID);
+  if (!dept) return res.status(400).json({ error: 'Select the receiving department' });
+  if (dept.branchId !== pass.destinationBranch)
+    return res.status(400).json({ error: 'Department must belong to the destination branch' });
+
+  const receiver = await dbc('users').findOne({ id: receiverId, active: { $ne: false } }, NO_ID);
+  if (!receiver) return res.status(400).json({ error: 'Select who is receiving the items' });
+  if (receiver.branch !== pass.destinationBranch)
+    return res.status(400).json({ error: 'Receiver must belong to the destination branch' });
+
   pass.receivedLog = {
     loggedAt: new Date().toISOString(),
     loggedBy: req.user.id,
     guardName: guardName.trim(),
     remarks:  remarks?.trim() || '',
+    departmentId: dept.id,
+    receiverId: receiver.id,
   };
   if (!pass.returnable) pass.status = 'completed';
 
@@ -449,7 +467,77 @@ router.patch('/:id/receive', requireRole('time_office', 'admin'), asyncHandler(a
   await logAudit('RECEIVE_TRANSFER', req.user.id, pass.id, {
     passNumber: pass.passNumber,
     destinationBranch: pass.destinationBranch,
+    receiverId: receiver.id,
   });
+  res.json(enrichPass(pass, await getRefs()));
+}));
+
+// ─── RECEIVER: APPROVE THE SEND-BACK ─────────────────────────────────────────
+// A returnable transfer sits "with" the receiver at the destination branch.
+// When they are done with the items, they approve them going back out — that
+// puts the pass in the destination Time Office's outgoing queue.
+router.patch('/:id/return-request', asyncHandler(async (req, res) => {
+  const pass = await dbc('gatePasses').findOne({ id: req.params.id }, NO_ID);
+  if (!pass) return res.status(404).json({ error: 'Gate pass not found' });
+  // Same visibility rule as GET /:id — don't reveal passes outside the branch
+  if (!scopePasses([pass], req.user).length)
+    return res.status(404).json({ error: 'Gate pass not found' });
+
+  if (!(pass.type === 'outward' && pass.direction === 'internal' && pass.returnable && pass.destinationBranch))
+    return res.status(400).json({ error: 'Only returnable branch transfers have a send-back approval' });
+  if (!pass.receivedLog)
+    return res.status(400).json({ error: 'Items have not been marked in at the destination branch yet' });
+  if (pass.returnRequest)
+    return res.status(400).json({ error: 'Send-back already approved' });
+  if (!['in_transit', 'partial_return'].includes(pass.status))
+    return res.status(400).json({ error: `Cannot approve a send-back in ${pass.status} status` });
+
+  const isReceiver    = req.user.id === pass.receivedLog.receiverId;
+  const isDestManager = req.user.role === 'manager' && req.user.branch === pass.destinationBranch;
+  if (!(req.user.role === 'admin' || isReceiver || isDestManager))
+    return res.status(403).json({ error: 'Only the receiver (or their branch manager) can approve the send-back' });
+
+  pass.returnRequest = {
+    requestedAt: new Date().toISOString(),
+    requestedBy: req.user.id,
+    remarks: req.body?.remarks?.trim() || '',
+  };
+
+  await dbc('gatePasses').replaceOne({ id: pass.id }, pass);
+  await logAudit('APPROVE_RETURN', req.user.id, pass.id, { passNumber: pass.passNumber });
+  res.json(enrichPass(pass, await getRefs()));
+}));
+
+// ─── TIME OFFICE (DESTINATION BRANCH): MARK THE RETURN OUT ───────────────────
+// After the receiver approves the send-back, the destination branch's gate
+// marks the items physically leaving. The pass then heads back to the source
+// branch, whose gate logs the arrival via /log-inward as usual.
+router.patch('/:id/return-outward', requireRole('time_office', 'admin'), asyncHandler(async (req, res) => {
+  const pass = await dbc('gatePasses').findOne({ id: req.params.id }, NO_ID);
+  if (!pass) return res.status(404).json({ error: 'Gate pass not found' });
+
+  if (!(pass.type === 'outward' && pass.direction === 'internal' && pass.returnable && pass.destinationBranch))
+    return res.status(400).json({ error: 'Only returnable branch transfers have a return dispatch' });
+  if (!pass.returnRequest)
+    return res.status(400).json({ error: 'The receiver has not approved the send-back yet' });
+  if (pass.returnOutwardLog)
+    return res.status(400).json({ error: 'Return already marked out at the destination branch' });
+  if (!['in_transit', 'partial_return'].includes(pass.status))
+    return res.status(400).json({ error: `Cannot mark a return out in ${pass.status} status` });
+  if (req.user.role === 'time_office' && pass.destinationBranch !== req.user.branch)
+    return res.status(403).json({ error: 'Only the destination branch gate can mark this return out' });
+
+  const { remarks, guardName } = req.body;
+  if (!guardName?.trim()) return res.status(400).json({ error: 'Gate host name is required' });
+  pass.returnOutwardLog = {
+    loggedAt: new Date().toISOString(),
+    loggedBy: req.user.id,
+    guardName: guardName.trim(),
+    remarks:  remarks?.trim() || '',
+  };
+
+  await dbc('gatePasses').replaceOne({ id: pass.id }, pass);
+  await logAudit('LOG_RETURN_OUTWARD', req.user.id, pass.id, { passNumber: pass.passNumber });
   res.json(enrichPass(pass, await getRefs()));
 }));
 
@@ -476,6 +564,10 @@ router.patch('/:id/log-inward', requireRole('time_office', 'admin'), asyncHandle
     // Items come BACK to the branch they left from — only that gate logs the return
     if (req.user.role === 'time_office' && pass.sourceBranch !== req.user.branch)
       return res.status(403).json({ error: 'Only the source branch gate can log this return' });
+    // A transfer received at another branch must be dispatched back by that
+    // branch's gate before it can arrive here
+    if (pass.direction === 'internal' && pass.receivedLog && !pass.returnOutwardLog)
+      return res.status(400).json({ error: 'The destination branch has not marked the return out yet' });
 
     const { remarks, returns = [], closures = [], guardName } = req.body;
     if (!guardName?.trim()) return res.status(400).json({ error: 'Gate host name is required' });
@@ -581,6 +673,18 @@ router.get('/meta/stats', asyncHandler(async (req, res) => {
     p.outwardLog && !p.receivedLog &&
     ['in_transit', 'partial_return'].includes(p.status) && atMyDest(p)
   );
+  // Send-backs approved by the receiver, waiting for the destination gate to mark out
+  const awaitingReturnOut = passes.filter(p =>
+    p.type === 'outward' && p.direction === 'internal' && p.returnable &&
+    p.returnRequest && !p.returnOutwardLog &&
+    ['in_transit', 'partial_return'].includes(p.status) && atMyDest(p)
+  );
+  // Returnable transfers currently in THIS user's custody, send-back not yet approved
+  const itemsWithMe = passes.filter(p =>
+    p.type === 'outward' && p.direction === 'internal' && p.returnable &&
+    p.receivedLog?.receiverId === req.user.id && !p.returnRequest &&
+    ['in_transit', 'partial_return'].includes(p.status)
+  );
 
   res.json({
     total:           passes.length,
@@ -595,6 +699,8 @@ router.get('/meta/stats', asyncHandler(async (req, res) => {
     awaitingOutward: awaitingOutward.length,
     awaitingInward:  awaitingInward.length,
     incomingTransfers: incomingTransfers.length,
+    awaitingReturnOut: awaitingReturnOut.length,
+    itemsWithMe:       itemsWithMe.length,
     outward:         passes.filter(p => p.type === 'outward').length,
     inward:          passes.filter(p => p.type === 'inward').length,
   });
@@ -614,6 +720,10 @@ function enrichPass(pass, refs) {
   const outwardLogUser  = u(pass.outwardLog?.loggedBy);
   const inwardLogUser   = u(pass.inwardLog?.loggedBy);
   const receivedLogUser = u(pass.receivedLog?.loggedBy);
+  const transferReceiver   = u(pass.receivedLog?.receiverId);
+  const transferDept       = d(pass.receivedLog?.departmentId);
+  const returnRequestUser  = u(pass.returnRequest?.requestedBy);
+  const returnOutwardUser  = u(pass.returnOutwardLog?.loggedBy);
   const sourceBranchObj = b(pass.sourceBranch);
   const destBranchObj   = b(pass.destinationBranch);
   const deptObj         = d(pass.departmentId || createdByUser?.departmentId);
@@ -633,7 +743,20 @@ function enrichPass(pass, refs) {
     editedByUser:         editedByUser   ? { id: editedByUser.id,   name: editedByUser.name,   role: editedByUser.role   } : null,
     outwardLog:  pass.outwardLog  ? { ...pass.outwardLog,  loggedByUser: outwardLogUser  ? { id: outwardLogUser.id,  name: outwardLogUser.name  } : null } : null,
     inwardLog:   pass.inwardLog   ? { ...pass.inwardLog,   loggedByUser: inwardLogUser   ? { id: inwardLogUser.id,   name: inwardLogUser.name   } : null } : null,
-    receivedLog: pass.receivedLog ? { ...pass.receivedLog, loggedByUser: receivedLogUser ? { id: receivedLogUser.id, name: receivedLogUser.name } : null } : null,
+    receivedLog: pass.receivedLog ? {
+      ...pass.receivedLog,
+      loggedByUser:   receivedLogUser  ? { id: receivedLogUser.id,  name: receivedLogUser.name  } : null,
+      receiverUser:   transferReceiver ? { id: transferReceiver.id, name: transferReceiver.name } : null,
+      departmentName: transferDept?.name || null,
+    } : null,
+    returnRequest: pass.returnRequest ? {
+      ...pass.returnRequest,
+      requestedByUser: returnRequestUser ? { id: returnRequestUser.id, name: returnRequestUser.name } : null,
+    } : null,
+    returnOutwardLog: pass.returnOutwardLog ? {
+      ...pass.returnOutwardLog,
+      loggedByUser: returnOutwardUser ? { id: returnOutwardUser.id, name: returnOutwardUser.name } : null,
+    } : null,
     closures: Array.isArray(pass.closures)
       ? pass.closures.map(c => { const cu = u(c.closedBy); return { ...c, closedByUser: cu ? { id: cu.id, name: cu.name } : null }; })
       : [],

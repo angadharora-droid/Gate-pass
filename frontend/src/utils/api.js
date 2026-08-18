@@ -54,8 +54,12 @@ export const api = {
   revisePass: (id, data) => request(`/gate-passes/${id}/revise`, { method: 'PATCH', body: JSON.stringify(data) }),
   logOutward: (id, payload) => request(`/gate-passes/${id}/log-outward`, { method: 'PATCH', body: JSON.stringify(payload) }),
   logInward: (id, payload) => request(`/gate-passes/${id}/log-inward`, { method: 'PATCH', body: JSON.stringify(payload) }),
-  // Destination branch marks an internal transfer's items in
+  // Destination branch marks an internal transfer's items in (with dept + receiver)
   receivePass: (id, payload) => request(`/gate-passes/${id}/receive`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  // Receiver approves the items going back to the source branch
+  requestReturn: (id, payload = {}) => request(`/gate-passes/${id}/return-request`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  // Destination branch gate marks the approved return physically out
+  returnOutward: (id, payload) => request(`/gate-passes/${id}/return-outward`, { method: 'PATCH', body: JSON.stringify(payload) }),
   getStats: () => request('/gate-passes/meta/stats'),
 
   // Admin edit (used by Reports)

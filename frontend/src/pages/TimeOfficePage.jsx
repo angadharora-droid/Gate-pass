@@ -120,18 +120,38 @@ export function LogOutwardModal({ pass, onClose, onDone }) {
 }
 
 /* ── Receive Transfer Modal ─────────────────────────────────────────────────── */
-// Destination-branch gate marks an internal branch transfer's items IN.
+// Destination-branch gate marks an internal branch transfer's items IN and
+// records which department + user takes custody of them.
 export function ReceiveTransferModal({ pass, onClose, onDone }) {
   const [guardName, setGuardName] = useState('');
   const [remarks, setRemarks] = useState('');
+  const [departmentId, setDepartmentId] = useState('');
+  const [receiverId, setReceiverId] = useState('');
+  const [departments, setDepartments] = useState([]);
+  const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
+  useEffect(() => {
+    Promise.all([api.getDepartments({ branch: pass.destinationBranch }), api.getUsers()])
+      .then(([d, u]) => { setDepartments(d); setUsers(u); })
+      .catch(e => setError(e.message));
+  }, [pass.destinationBranch]);
+
+  // Receiver = someone at the destination branch; people from the chosen
+  // department are listed first, the rest of the branch below them.
+  const inBranch = users.filter(u => u.branch === pass.destinationBranch && u.role !== 'time_office' && u.active !== false);
+  const inDept   = departmentId ? inBranch.filter(u => u.departmentId === departmentId) : [];
+  const others   = departmentId ? inBranch.filter(u => u.departmentId !== departmentId) : inBranch;
+
   const handleConfirm = async () => {
-    setError(''); setLoading(true);
+    setError('');
+    if (!guardName.trim())  { setError('Gate host name is required'); return; }
+    if (!departmentId)      { setError('Select the receiving department'); return; }
+    if (!receiverId)        { setError('Select who is receiving the items'); return; }
+    setLoading(true);
     try {
-      if (!guardName.trim()) { setError('Gate host name is required'); setLoading(false); return; }
-      await api.receivePass(pass.id, { guardName: guardName.trim(), remarks });
+      await api.receivePass(pass.id, { guardName: guardName.trim(), remarks, departmentId, receiverId });
       onDone();
     } catch (e) { setError(e.message); } finally { setLoading(false); }
   };
@@ -180,6 +200,33 @@ export function ReceiveTransferModal({ pass, onClose, onDone }) {
 
           <div className="form-row" style={{ marginBottom: 12 }}>
             <div className="form-group" style={{ marginBottom: 0 }}>
+              <label className="form-label">Receiving Department *</label>
+              <select className="form-select" value={departmentId}
+                onChange={e => { setDepartmentId(e.target.value); setReceiverId(''); }}>
+                <option value="">Select…</option>
+                {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+              </select>
+            </div>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label className="form-label">Receiver *</label>
+              <select className="form-select" value={receiverId} onChange={e => setReceiverId(e.target.value)}>
+                <option value="">Select…</option>
+                {inDept.length > 0 && (
+                  <optgroup label="In department">
+                    {inDept.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+                  </optgroup>
+                )}
+                {others.length > 0 && (
+                  <optgroup label={departmentId ? 'Other branch users' : 'Branch users'}>
+                    {others.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+                  </optgroup>
+                )}
+              </select>
+            </div>
+          </div>
+
+          <div className="form-row" style={{ marginBottom: 12 }}>
+            <div className="form-group" style={{ marginBottom: 0 }}>
               <label className="form-label">Gate Host Name *</label>
               <input className="form-input" value={guardName} onChange={e => setGuardName(e.target.value)} placeholder="e.g. Ajay Kumar" autoFocus />
             </div>
@@ -204,6 +251,95 @@ export function ReceiveTransferModal({ pass, onClose, onDone }) {
             {loading
               ? <><div className="spinner" style={{ width: 15, height: 15 }} /> Saving…</>
               : <><ArrowDownLeft size={14} /> Confirm — Items Received</>}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── Return Out Modal ───────────────────────────────────────────────────────── */
+// Destination-branch gate marks an approved send-back physically OUT, headed
+// back to the source branch.
+export function ReturnOutModal({ pass, onClose, onDone }) {
+  const [guardName, setGuardName] = useState('');
+  const [remarks, setRemarks] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const handleConfirm = async () => {
+    setError(''); setLoading(true);
+    try {
+      if (!guardName.trim()) { setError('Gate host name is required'); setLoading(false); return; }
+      await api.returnOutward(pass.id, { guardName: guardName.trim(), remarks });
+      onDone();
+    } catch (e) { setError(e.message); } finally { setLoading(false); }
+  };
+
+  return (
+    <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="modal">
+        <div className="modal-header">
+          <div>
+            <div className="modal-title">Mark Return Out</div>
+            <div style={{ fontSize: 12, color: 'var(--text3)', marginTop: 3 }}>{pass.passNumber}</div>
+          </div>
+          <button className="modal-close" onClick={onClose}><X size={16} /></button>
+        </div>
+        <div className="modal-body">
+          <div className="alert alert-info" style={{ marginBottom: 20 }}>
+            <Info size={15} />
+            Send-back approved by <strong>{pass.returnRequest?.requestedByUser?.name || 'the receiver'}</strong>.
+            Confirm these items have <strong>actually left your gate</strong>, headed back
+            to <strong>{pass.sourceBranchName || 'the source branch'}</strong>. This cannot be undone.
+          </div>
+
+          <div style={{ marginBottom: 20 }}>
+            <div style={{ fontSize: 12, color: 'var(--text3)', marginBottom: 10 }}>Items going back</div>
+            {pass.items?.map((li, i) => (
+              <div key={i} className="item-row">
+                <div>
+                  <div className="item-name">{li.itemName}</div>
+                  <div style={{ fontSize: 11, color: 'var(--text3)', fontFamily: 'var(--font-mono)' }}>{li.unit}</div>
+                </div>
+                <div className="item-qty">× {li.quantity}</div>
+              </div>
+            ))}
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 20, padding: '12px 16px', background: 'var(--bg3)', borderRadius: 'var(--radius)', border: '1px solid var(--border)', fontSize: 13 }}>
+            <div><span style={{ color: 'var(--text3)' }}>From: </span>{pass.destinationBranchName || '—'}</div>
+            <div><span style={{ color: 'var(--text3)' }}>Back to: </span>{pass.sourceBranchName || '—'}</div>
+            <div><span style={{ color: 'var(--text3)' }}>Was with: </span>{pass.receivedLog?.receiverUser?.name || '—'}</div>
+            <div><span style={{ color: 'var(--text3)' }}>Approved: </span>{fmt(pass.returnRequest?.requestedAt)}</div>
+          </div>
+
+          <div className="form-row" style={{ marginBottom: 12 }}>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label className="form-label">Gate Host Name *</label>
+              <input className="form-input" value={guardName} onChange={e => setGuardName(e.target.value)} placeholder="e.g. Ajay Kumar" autoFocus />
+            </div>
+            <div />
+          </div>
+
+          <div className="form-group" style={{ marginBottom: 0 }}>
+            <label className="form-label">Remarks (optional)</label>
+            <textarea className="form-textarea" rows={2} value={remarks}
+              onChange={e => setRemarks(e.target.value)}
+              placeholder="e.g. Loaded on vehicle KA-01-1234…" />
+          </div>
+          {error && (
+            <div className="alert alert-danger" style={{ marginTop: 12 }}>
+              <AlertTriangle size={15} /> {error}
+            </div>
+          )}
+        </div>
+        <div className="modal-footer">
+          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+          <button className="btn btn-primary" onClick={handleConfirm} disabled={loading}>
+            {loading
+              ? <><div className="spinner" style={{ width: 15, height: 15 }} /> Saving…</>
+              : <><ArrowUpRight size={14} /> Confirm — Items Went Back</>}
           </button>
         </div>
       </div>
@@ -497,9 +633,10 @@ export default function TimeOfficePage() {
   );
   const today = new Date().toDateString();
   const completedToday = passes.filter(p =>
-    (p.outwardLog?.loggedAt  && new Date(p.outwardLog.loggedAt).toDateString()  === today) ||
-    (p.inwardLog?.loggedAt   && new Date(p.inwardLog.loggedAt).toDateString()   === today) ||
-    (p.receivedLog?.loggedAt && new Date(p.receivedLog.loggedAt).toDateString() === today)
+    (p.outwardLog?.loggedAt       && new Date(p.outwardLog.loggedAt).toDateString()       === today) ||
+    (p.inwardLog?.loggedAt        && new Date(p.inwardLog.loggedAt).toDateString()        === today) ||
+    (p.receivedLog?.loggedAt      && new Date(p.receivedLog.loggedAt).toDateString()      === today) ||
+    (p.returnOutwardLog?.loggedAt && new Date(p.returnOutwardLog.loggedAt).toDateString() === today)
   );
 
   // Full registers, like the ERP: every pass belonging to THIS gate (approved,
@@ -514,7 +651,11 @@ export default function TimeOfficePage() {
   const canReceivePass = p =>
     p.type === 'outward' && p.direction === 'internal' && p.destinationBranch &&
     p.outwardLog && !p.receivedLog && ['in_transit', 'partial_return'].includes(p.status) && atMyDest(p);
-  const incomingQueue = incomingRegister.filter(canReceivePass);
+  // Send-back approved by the receiver → this gate must mark the return out
+  const canReturnOutPass = p =>
+    p.type === 'outward' && p.direction === 'internal' && p.returnable &&
+    p.returnRequest && !p.returnOutwardLog && ['in_transit', 'partial_return'].includes(p.status) && atMyDest(p);
+  const incomingQueue = incomingRegister.filter(p => canReceivePass(p) || canReturnOutPass(p));
 
   const handleDone = () => { setModal(null); load(); };
 
@@ -534,9 +675,9 @@ export default function TimeOfficePage() {
   const statPills = [
     { label: 'Waiting to Go Out',    val: stats.awaitingOutward,   color: 'var(--orange)', Icon: ArrowUpRight },
     { label: 'Incoming Transfers',   val: stats.incomingTransfers, color: 'var(--blue)',   Icon: Truck },
+    { label: 'Returns to Mark Out',  val: stats.awaitingReturnOut, color: 'var(--purple)', Icon: RotateCcw },
     { label: 'Waiting to Come Back', val: stats.awaitingInward,    color: 'var(--green)',  Icon: ArrowDownLeft },
     { label: 'Late Returns',         val: stats.overdueReturns,    color: 'var(--red)',    Icon: AlertTriangle },
-    { label: 'Items Out',            val: stats.inTransit,         color: 'var(--purple)', Icon: Package },
     { label: 'Logged Today',         val: completedToday.length,   color: 'var(--text2)',  Icon: CheckCircle2 },
   ];
 
@@ -599,16 +740,20 @@ export default function TimeOfficePage() {
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                 {searchMatches.map(p => {
                   const canOutward = p.type === 'outward' && p.status === 'approved' && !p.outwardLog && atMySource(p);
-                  const canReturn = p.type === 'outward' && p.returnable && ['in_transit', 'partial_return'].includes(p.status) && atMySource(p);
+                  const canReturn = p.type === 'outward' && p.returnable && ['in_transit', 'partial_return'].includes(p.status) && atMySource(p) &&
+                    !(p.direction === 'internal' && p.receivedLog && !p.returnOutwardLog);
                   const canReceive = canReceivePass(p);
+                  const canReturnOut = canReturnOutPass(p);
 
                   const action = canOutward
                     ? { label: 'Mark Items Out', Icon: ArrowUpRight, color: 'var(--orange)', type: 'outward' }
                     : canReceive
                       ? { label: 'Mark Items In', Icon: ArrowDownLeft, color: 'var(--blue)', type: 'receive' }
-                      : canReturn
-                        ? { label: 'Log Return', Icon: RotateCcw, color: 'var(--blue)', type: 'inward' }
-                        : null;
+                      : canReturnOut
+                        ? { label: 'Mark Return Out', Icon: ArrowUpRight, color: 'var(--purple)', type: 'returnOut' }
+                        : canReturn
+                          ? { label: 'Log Return', Icon: RotateCcw, color: 'var(--blue)', type: 'inward' }
+                          : null;
 
                   return (
                     <PassCard
@@ -674,7 +819,10 @@ export default function TimeOfficePage() {
                   <tbody>
                     {outwardRegister.map(p => {
                       const canOut = p.status === 'approved' && !p.outwardLog;
-                      const canReturn = p.returnable && ['in_transit', 'partial_return'].includes(p.status);
+                      // A received branch transfer can't be logged back until the
+                      // destination gate marks the return out
+                      const canReturn = p.returnable && ['in_transit', 'partial_return'].includes(p.status) &&
+                        !(p.direction === 'internal' && p.receivedLog && !p.returnOutwardLog);
                       return (
                         <tr key={p.id}>
                           <td style={{ whiteSpace: 'nowrap', fontSize: 12.5, color: 'var(--text3)' }}>{fmtDate(p.createdAt)}</td>
@@ -754,6 +902,18 @@ export default function TimeOfficePage() {
                             <button className="btn btn-primary btn-sm" onClick={() => setModal({ type: 'receive', pass: p })}>
                               <ArrowDownLeft size={13} /> Mark Items In
                             </button>
+                          ) : canReturnOutPass(p) ? (
+                            <button className="btn btn-primary btn-sm" onClick={() => setModal({ type: 'returnOut', pass: p })}>
+                              <ArrowUpRight size={13} /> Mark Return Out
+                            </button>
+                          ) : p.returnOutwardLog && ['in_transit', 'partial_return'].includes(p.status) ? (
+                            <span style={{ fontSize: 12, color: 'var(--purple)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                              <Truck size={13} /> Returning to {p.sourceBranchName || 'source'}
+                            </span>
+                          ) : p.receivedLog && p.returnable && !p.returnRequest && ['in_transit', 'partial_return'].includes(p.status) ? (
+                            <span style={{ fontSize: 12, color: 'var(--text3)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                              <Clock size={13} /> With {p.receivedLog.receiverUser?.name || 'receiver'}
+                            </span>
                           ) : p.receivedLog ? (
                             <span style={{ fontSize: 12, color: 'var(--green)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                               <CheckCircle2 size={13} /> Received {fmtDate(p.receivedLog.loggedAt)}
@@ -832,6 +992,9 @@ export default function TimeOfficePage() {
       )}
       {modal?.type === 'receive' && (
         <ReceiveTransferModal pass={modal.pass} onClose={() => setModal(null)} onDone={handleDone} />
+      )}
+      {modal?.type === 'returnOut' && (
+        <ReturnOutModal pass={modal.pass} onClose={() => setModal(null)} onDone={handleDone} />
       )}
     </div>
   );
