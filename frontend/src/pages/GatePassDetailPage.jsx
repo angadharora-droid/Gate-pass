@@ -3,7 +3,7 @@ import { useParams, Link, useNavigate } from 'react-router-dom';
 import { api } from '../utils/api';
 import { useAuth } from '../context/AuthContext';
 import { StatusBadge, TypeBadge, ReturnableBadge, DirectionBadge } from '../components/Badges';
-import { LogOutwardModal, LogInwardModal } from './TimeOfficePage';
+import { LogOutwardModal, LogInwardModal, ReceiveTransferModal } from './TimeOfficePage';
 import {
   ArrowLeft, Check, X, RotateCcw, Printer, Pencil,
   AlertTriangle, CheckCircle2,
@@ -81,12 +81,21 @@ export default function GatePassDetailPage() {
   );
 
   // Logging physical movement is a Time Office function — backend restricts
-  // /log-outward and /log-inward to time_office + admin. Managers/staff cannot log.
+  // /log-outward, /log-inward and /receive to time_office + admin. Time Office
+  // is branch-bound: departures/returns at the SOURCE gate, receiving an
+  // internal transfer at the DESTINATION gate. Admin can log anywhere.
+  const isAdmin = user?.role === 'admin';
   const canLog = ['time_office', 'admin'].includes(user?.role);
-  const canLogDeparture = canLog && pass.type === 'outward' && pass.status === 'approved' && !pass.outwardLog;
+  const atSource = isAdmin || user?.branch === pass.sourceBranch;
+  const atDest   = isAdmin || user?.branch === pass.destinationBranch;
+  const canLogDeparture = canLog && atSource && pass.type === 'outward' && pass.status === 'approved' && !pass.outwardLog;
   // Inward entries are logged directly at the gate (born completed) — the only
   // arrival left to log is the return leg of a returnable outward pass.
-  const canLogReturn    = canLog && pass.type === 'outward' && pass.returnable && ['in_transit', 'partial_return'].includes(pass.status);
+  const canLogReturn    = canLog && atSource && pass.type === 'outward' && pass.returnable && ['in_transit', 'partial_return'].includes(pass.status);
+  // Receiving leg of an internal branch transfer, done by the destination gate
+  const canReceive      = canLog && atDest && pass.type === 'outward' && pass.direction === 'internal' &&
+    pass.destinationBranch && pass.outwardLog && !pass.receivedLog &&
+    ['in_transit', 'partial_return'].includes(pass.status);
   const isOverdue = pass.isOverdue;
   const isDirectInward = pass.type === 'inward';
 
@@ -135,6 +144,11 @@ export default function GatePassDetailPage() {
           {canLogDeparture && (
             <button className="btn btn-primary" onClick={() => setLogModal('outward')}>
               <ArrowUpRight size={14} /> Mark Items Out
+            </button>
+          )}
+          {canReceive && (
+            <button className="btn btn-primary" onClick={() => setLogModal('receive')}>
+              <ArrowDownLeft size={14} /> Mark Items In
             </button>
           )}
           {canLogReturn && (
@@ -391,6 +405,9 @@ export default function GatePassDetailPage() {
       {logModal === 'inward' && (
         <LogInwardModal pass={pass} onClose={() => setLogModal(null)} onDone={handleLogDone} />
       )}
+      {logModal === 'receive' && (
+        <ReceiveTransferModal pass={pass} onClose={() => setLogModal(null)} onDone={handleLogDone} />
+      )}
     </div>
   );
 }
@@ -462,7 +479,7 @@ function LifecycleTimeline({ pass }) {
       key: 'outward_log',
       label: 'Items Went Out',
       sub: pass.outwardLog
-        ? `${pass.outwardLog.loggedByUser?.name || '—'} · Guard: ${pass.outwardLog.guardName || '—'}`
+        ? `${pass.outwardLog.loggedByUser?.name || '—'} · Host: ${pass.outwardLog.guardName || '—'}`
         : 'Waiting for gate to log it',
       time: pass.outwardLog?.loggedAt,
       done: !!pass.outwardLog,
@@ -480,11 +497,23 @@ function LifecycleTimeline({ pass }) {
       Icon: Truck,
       color: 'var(--purple)',
     }] : []),
+    // Receiving leg — only internal branch-to-branch transfers have one
+    ...(pass.type === 'outward' && pass.direction === 'internal' && pass.destinationBranch ? [{
+      key: 'received',
+      label: `Received at ${pass.destinationBranchName || 'Destination Branch'}`,
+      sub: pass.receivedLog
+        ? `${pass.receivedLog.loggedByUser?.name || '—'} · Host: ${pass.receivedLog.guardName || '—'}${pass.receivedLog.remarks ? ' · ' + pass.receivedLog.remarks : ''}`
+        : 'Waiting for the destination gate to mark items in',
+      time: pass.receivedLog?.loggedAt,
+      done: !!pass.receivedLog,
+      Icon: ArrowDownLeft,
+      color: 'var(--blue)',
+    }] : []),
     ...(pass.type === 'outward' && pass.returnable ? [{
       key: 'inward_log',
       label: pass.status === 'partial_return' ? 'Some Items Came Back' : 'Items Came Back',
       sub: pass.inwardLog
-        ? `${pass.inwardLog.loggedByUser?.name || '—'} · Guard: ${pass.inwardLog.guardName || '—'}${pass.inwardLog.remarks ? ' · ' + pass.inwardLog.remarks : ''}`
+        ? `${pass.inwardLog.loggedByUser?.name || '—'} · Host: ${pass.inwardLog.guardName || '—'}${pass.inwardLog.remarks ? ' · ' + pass.inwardLog.remarks : ''}`
         : (isOverdue ? 'Late — not back yet' : 'Waiting for items to come back'),
       time: pass.inwardLog?.loggedAt,
       done: !!pass.inwardLog,
@@ -717,14 +746,23 @@ function PrintGatePass({ pass }) {
       )}
 
       {/* Gate log info */}
-      {pass.type === 'outward' && (pass.outwardLog || pass.inwardLog) && (
+      {pass.type === 'outward' && (pass.outwardLog || pass.receivedLog || pass.inwardLog) && (
         <div className="print-auth">
           {pass.outwardLog && (
             <div className="print-auth-item">
               <div className="print-auth-label">Items out — logged by</div>
               <div className="print-auth-value">{pass.outwardLog.loggedByUser?.name || '—'}</div>
               <div className="print-auth-time">
-                {fmt(pass.outwardLog.loggedAt)} · Guard: {pass.outwardLog.guardName || '—'}
+                {fmt(pass.outwardLog.loggedAt)} · Host: {pass.outwardLog.guardName || '—'}
+              </div>
+            </div>
+          )}
+          {pass.receivedLog && (
+            <div className="print-auth-item">
+              <div className="print-auth-label">Received at {pass.destinationBranchName || 'destination'} — by</div>
+              <div className="print-auth-value">{pass.receivedLog.loggedByUser?.name || '—'}</div>
+              <div className="print-auth-time">
+                {fmt(pass.receivedLog.loggedAt)} · Host: {pass.receivedLog.guardName || '—'}
               </div>
             </div>
           )}
@@ -733,7 +771,7 @@ function PrintGatePass({ pass }) {
               <div className="print-auth-label">Items back — logged by</div>
               <div className="print-auth-value">{pass.inwardLog.loggedByUser?.name || '—'}</div>
               <div className="print-auth-time">
-                {fmt(pass.inwardLog.loggedAt)} · Guard: {pass.inwardLog.guardName || '—'}
+                {fmt(pass.inwardLog.loggedAt)} · Host: {pass.inwardLog.guardName || '—'}
               </div>
             </div>
           )}
@@ -744,7 +782,7 @@ function PrintGatePass({ pass }) {
       <div className="print-signatures">
         <div>
           <div className="print-sig-line" />
-          <div className="print-sig-label">Gate Guard</div>
+          <div className="print-sig-label">Gate Host</div>
         </div>
         <div>
           <div className="print-sig-line" />

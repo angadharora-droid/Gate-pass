@@ -13,6 +13,7 @@ import {
   Inbox,
   ArrowRight,
   Plus,
+  Truck,
 } from 'lucide-react';
 
 export default function DashboardPage() {
@@ -54,6 +55,24 @@ export default function DashboardPage() {
           </Link>
         )}
       </div>
+
+      {stats?.incomingTransfers > 0 && (
+        <div className="alert alert-info" style={{ marginBottom: 24 }}>
+          <Truck size={16} />
+          <span>
+            <strong>{stats.incomingTransfers} transfer(s) from another branch</strong>{' '}
+            {['admin', 'time_office'].includes(user?.role)
+              ? 'are on the way — mark the items in when they arrive.'
+              : 'are on the way to your branch.'}
+          </span>
+          <Link
+            to={['admin', 'time_office'].includes(user?.role) ? '/time-office' : '/passes'}
+            style={{ marginLeft: 'auto', textDecoration: 'underline', textUnderlineOffset: 3, fontSize: 13, fontWeight: 500, whiteSpace: 'nowrap' }}
+          >
+            View
+          </Link>
+        </div>
+      )}
 
       {overduePasses.length > 0 && (
         <div className="alert alert-danger" style={{ marginBottom: 24 }}>

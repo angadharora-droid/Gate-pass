@@ -164,10 +164,15 @@ export default function NewInwardPage() {
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 16 }}>
           <div className="form-group" style={{ marginBottom: 0 }}>
             <label className="form-label">Branch *</label>
-            <select className="form-select" value={form.branchId} onChange={e => setBranch(e.target.value)}>
-              <option value="">Select…</option>
-              {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
-            </select>
+            {user?.role === 'time_office' ? (
+              // Time Office is branch-bound — arrivals can only be logged at their own gate
+              <div className="readonly-field">{user?.branchName || '—'}</div>
+            ) : (
+              <select className="form-select" value={form.branchId} onChange={e => setBranch(e.target.value)}>
+                <option value="">Select…</option>
+                {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+              </select>
+            )}
           </div>
           <div className="form-group" style={{ marginBottom: 0 }}>
             <label className="form-label">Department *</label>

@@ -6,23 +6,27 @@ import { hashPassword } from '../lib/security.js';
 // admin       → full access: manage users, items, branches, view all passes
 // manager     → manage passes for their branch; auto-approve own requests
 // staff       → create pass requests for their branch
-// time_office → CENTRAL role (not branch-bound): confirms actual physical
-//               movement for ALL branches — logs departure (outward) and arrival (inward/return)
+// time_office → BRANCH-BOUND gate role: confirms actual physical movement at
+//               their own branch's gate only — logs departures/returns as the
+//               source branch, and receives internal transfers as the destination
 
 // ─── STATUS FLOW ──────────────────────────────────────────────────────────────
 // pending      → created by staff, awaiting manager approval
-// approved     → manager approved; Time Office must now log physical movement
-// in_transit   → Time Office logged OUTWARD departure of returnable item; awaiting return
+// approved     → manager approved; source-branch Time Office must now log departure
+// in_transit   → items are OUT: a returnable pass awaiting return, or an internal
+//                branch transfer awaiting receipt at the destination branch
 // partial_return → some items returned and logged by Time Office; rest pending
 // completed    → all movement fully confirmed by Time Office
 // closed       → fully accounted for, but some items were written off (lost/
 //                damaged/etc.) by Time Office with a reason instead of returned
 // rejected     → denied by manager
 //
-// Time Office logs TWO things on a pass:
-//   outwardLog  → item physically LEFT the premises (stamped by TO for outward passes)
-//   inwardLog   → item physically ARRIVED at premises (stamped by TO for inward passes
-//                 or for the return leg of a returnable outward pass)
+// Time Office logs THREE things on a pass (each at its own branch's gate):
+//   outwardLog  → item physically LEFT the source branch (stamped by source TO)
+//   receivedLog → internal transfer physically ARRIVED at the destination branch
+//                 (stamped by DESTINATION TO — completes a non-returnable transfer)
+//   inwardLog   → item physically ARRIVED back at the source branch (return leg
+//                 of a returnable outward pass, or a direct inward gate entry)
 
 // ─── CONNECTION (MongoDB Atlas) ───────────────────────────────────────────────
 // MONGODB_URI must point at a MongoDB Atlas cluster (or any MongoDB instance),
