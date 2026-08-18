@@ -20,13 +20,17 @@ export const STATUS_LABELS = {
 };
 
 // Prefer passing the whole pass — the badge then shows the precise stage
-// (displayStatus) and flags overdue automatically. `status` is a fallback for
-// callers that pass a raw key.
+// (displayStatus) with a separate "Late" chip when overdue, so lateness never
+// hides WHERE the items are. `status` is a fallback for raw-key callers.
 export function StatusBadge({ pass, status }) {
-  const key = pass ? (pass.isOverdue ? 'overdue' : (pass.displayStatus || pass.status)) : status;
+  if (!pass) {
+    return <span className={`badge badge-${status}`}>{STATUS_LABELS[status] || status}</span>;
+  }
+  const key = pass.displayStatus || pass.status;
   return (
-    <span className={`badge badge-${key}`}>
-      {STATUS_LABELS[key] || key}
+    <span style={{ display: 'inline-flex', gap: 4, flexWrap: 'wrap' }}>
+      <span className={`badge badge-${key}`}>{STATUS_LABELS[key] || key}</span>
+      {pass.isOverdue && <span className="badge badge-overdue">Late</span>}
     </span>
   );
 }

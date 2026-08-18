@@ -175,15 +175,21 @@ export function ReceiveTransferModal({ pass, onClose, onDone }) {
 
           <div style={{ marginBottom: 20 }}>
             <div style={{ fontSize: 12, color: 'var(--text3)', marginBottom: 10 }}>Items arriving</div>
-            {pass.items?.map((li, i) => (
-              <div key={i} className="item-row">
-                <div>
-                  <div className="item-name">{li.itemName}</div>
-                  <div style={{ fontSize: 11, color: 'var(--text3)', fontFamily: 'var(--font-mono)' }}>{li.unit}</div>
+            {pass.items?.map((li, i) => {
+              // Show what is actually still on its way — items already returned
+              // to the source or written off never arrive here
+              const arriving = li.quantity - (li.returnedQuantity || 0) - (li.closedQuantity || 0);
+              if (arriving <= 0) return null;
+              return (
+                <div key={i} className="item-row">
+                  <div>
+                    <div className="item-name">{li.itemName}</div>
+                    <div style={{ fontSize: 11, color: 'var(--text3)', fontFamily: 'var(--font-mono)' }}>{li.unit}</div>
+                  </div>
+                  <div className="item-qty">× {arriving}</div>
                 </div>
-                <div className="item-qty">× {li.quantity}</div>
-              </div>
-            ))}
+              );
+            })}
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 20, padding: '12px 16px', background: 'var(--bg3)', borderRadius: 'var(--radius)', border: '1px solid var(--border)', fontSize: 13 }}>
@@ -358,7 +364,7 @@ export function LogInwardModal({ pass, onClose, onDone }) {
   const [error, setError] = useState('');
 
   const isReturnLeg = pass.type === 'outward';
-  const outstandingOf = li => li.quantity - li.returnedQuantity - (li.closedQuantity || 0);
+  const outstandingOf = li => li.quantity - (li.returnedQuantity || 0) - (li.closedQuantity || 0);
   const [returnQtys, setReturnQtys] = useState(() => {
     if (!isReturnLeg) return {};
     return Object.fromEntries(pass.items.map((li, i) => [i, outstandingOf(li)]));
@@ -563,7 +569,7 @@ function PassCard({ pass, actionLabel, ActionIcon, onAction, isDone, logInfo }) 
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
             <Link to={`/passes/${pass.id}`} className="pass-number">{pass.passNumber}</Link>
-            {pass.isOverdue && <span className="badge badge-overdue">Overdue</span>}
+            <StatusBadge pass={pass} />
           </div>
           <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--text)', marginBottom: 4 }}>{pass.purpose}</div>
           <div style={{ display: 'flex', gap: 4, marginBottom: 4, flexWrap: 'wrap' }}>
@@ -633,18 +639,22 @@ export default function TimeOfficePage() {
   // Send-back approved by the receiver → this gate must mark the return out
   const canReturnOutPass = p =>
     isTransfer(p) && p.returnable && p.returnRequest && !p.returnOutwardLog && isOpen(p) && atMyDest(p);
-  // Return arriving back at the source gate. A received branch transfer can't
-  // be logged back until the destination gate marks the return out.
+  // Return arriving back at the source gate. Branch transfers must complete the
+  // receive → send-back → return-dispatch cycle before the source logs them in.
   const canLogReturnPass = p =>
     p.type === 'outward' && p.returnable && isOpen(p) && atMySource(p) &&
-    !(isTransfer(p) && p.receivedLog && !p.returnOutwardLog);
+    (!isTransfer(p) || !!p.returnOutwardLog);
 
+  // Only count log events stamped at MY gate: departures/arrivals at the
+  // source, receipts/return-dispatches at the destination.
   const today = new Date().toDateString();
+  const loggedToday = (log, atMyGate) =>
+    atMyGate && log?.loggedAt && new Date(log.loggedAt).toDateString() === today;
   const completedToday = passes.filter(p =>
-    (p.outwardLog?.loggedAt       && new Date(p.outwardLog.loggedAt).toDateString()       === today) ||
-    (p.inwardLog?.loggedAt        && new Date(p.inwardLog.loggedAt).toDateString()        === today) ||
-    (p.receivedLog?.loggedAt      && new Date(p.receivedLog.loggedAt).toDateString()      === today) ||
-    (p.returnOutwardLog?.loggedAt && new Date(p.returnOutwardLog.loggedAt).toDateString() === today)
+    loggedToday(p.outwardLog, atMySource(p)) ||
+    loggedToday(p.inwardLog, p.type === 'inward' ? atMyDest(p) : atMySource(p)) ||
+    loggedToday(p.receivedLog, atMyDest(p)) ||
+    loggedToday(p.returnOutwardLog, atMyDest(p))
   );
 
   // ── GATE-CENTRIC REGISTERS, like a physical gate ledger ────────────────────
@@ -867,86 +877,18 @@ export default function TimeOfficePage() {
             )
           )}
 
-          {/* ── INCOMING TRANSFERS register — branch transfers arriving here ── */}
-          {tab === 'incoming' && (
-            incomingRegister.length === 0 ? (
-              <div className="table-wrapper">
-                <div className="empty-state">
-                  <div className="empty-icon"><Truck size={24} strokeWidth={1.75} /></div>
-                  <div className="empty-title">No incoming transfers</div>
-                  <div className="empty-sub">
-                    When another branch marks items out to {isAdmin ? 'a branch' : 'your branch'}, they appear here to be marked in.
-                  </div>
-                </div>
-              </div>
-            ) : (
-              <div className="table-wrapper">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Dispatched</th>
-                      <th>Document No</th>
-                      <th>From Branch</th>
-                      <th>Items</th>
-                      <th>Transaction Type</th>
-                      <th>Status</th>
-                      <th></th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {incomingRegister.map(p => (
-                      <tr key={p.id}>
-                        <td style={{ whiteSpace: 'nowrap', fontSize: 12.5, color: 'var(--text3)' }}>{fmtDate(p.outwardLog?.loggedAt)}</td>
-                        <td><Link to={`/passes/${p.id}`} className="pass-number">{p.passNumber}</Link></td>
-                        <td>{p.sourceBranchName || '—'}</td>
-                        <td style={{ fontSize: 12.5, color: 'var(--text2)' }}>{itemsSummary(p)}</td>
-                        <td>
-                          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-                            <TypeBadge type={p.type} />
-                            <ReturnableBadge returnable={p.returnable} />
-                          </div>
-                        </td>
-                        <td><StatusBadge status={p.isOverdue ? 'overdue' : p.status} /></td>
-                        <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
-                          {canReceivePass(p) ? (
-                            <button className="btn btn-primary btn-sm" onClick={() => setModal({ type: 'receive', pass: p })}>
-                              <ArrowDownLeft size={13} /> Mark Items In
-                            </button>
-                          ) : canReturnOutPass(p) ? (
-                            <button className="btn btn-primary btn-sm" onClick={() => setModal({ type: 'returnOut', pass: p })}>
-                              <ArrowUpRight size={13} /> Mark Return Out
-                            </button>
-                          ) : p.returnOutwardLog && ['in_transit', 'partial_return'].includes(p.status) ? (
-                            <span style={{ fontSize: 12, color: 'var(--purple)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                              <Truck size={13} /> Returning to {p.sourceBranchName || 'source'}
-                            </span>
-                          ) : p.receivedLog && p.returnable && !p.returnRequest && ['in_transit', 'partial_return'].includes(p.status) ? (
-                            <span style={{ fontSize: 12, color: 'var(--text3)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                              <Clock size={13} /> With {p.receivedLog.receiverUser?.name || 'receiver'}
-                            </span>
-                          ) : p.receivedLog ? (
-                            <span style={{ fontSize: 12, color: 'var(--green)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                              <CheckCircle2 size={13} /> Received {fmtDate(p.receivedLog.loggedAt)}
-                            </span>
-                          ) : null}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )
-          )}
-
-          {/* ── INWARD register — every gate entry logged by Security ── */}
+          {/* ── INWARD REGISTER — everything arriving at this gate: direct inward
+                 entries, branch transfers coming in, and returns coming back ── */}
           {tab === 'inward' && (
             inwardRegister.length === 0 ? (
               <div className="table-wrapper">
                 <div className="empty-state">
                   <div className="empty-icon"><ArrowDownLeft size={24} strokeWidth={1.75} /></div>
-                  <div className="empty-title">No inward entries yet</div>
+                  <div className="empty-title">No arrivals yet</div>
                   <div className="empty-sub">
-                    When goods arrive, log them with <Link to="/inward/new" style={{ color: 'var(--accent)' }}>New Inward</Link>.
+                    Direct inward entries, transfers from other branches, and returns coming back all
+                    appear here. Log new arrivals with{' '}
+                    <Link to="/inward/new" style={{ color: 'var(--accent)' }}>New Inward</Link>.
                   </div>
                 </div>
               </div>
@@ -955,37 +897,77 @@ export default function TimeOfficePage() {
                 <table>
                   <thead>
                     <tr>
-                      <th>Doc No</th>
                       <th>Date</th>
-                      <th>Carried by</th>
-                      <th>Inward Type</th>
+                      <th>Document No</th>
+                      <th>From / Carried by</th>
                       <th>Items</th>
+                      <th>Kind</th>
                       <th>Status</th>
                       <th>Receiver</th>
+                      <th></th>
                     </tr>
                   </thead>
                   <tbody>
-                    {inwardRegister.map(p => (
-                      <tr key={p.id}>
-                        <td><Link to={`/passes/${p.id}`} className="pass-number">{p.passNumber}</Link></td>
-                        <td style={{ whiteSpace: 'nowrap', fontSize: 12.5, color: 'var(--text3)' }}>{fmtDate(p.inwardLog?.loggedAt || p.createdAt)}</td>
-                        <td>
-                          {p.destinationPerson ? `${p.destinationPerson} - ` : ''}{p.carriedBy || '—'}
-                          {p.carrierMobile && (
-                            <div style={{ fontSize: 11.5, color: 'var(--text3)', fontFamily: 'var(--font-mono)' }}>{p.carrierMobile}</div>
-                          )}
-                        </td>
-                        <td><ReturnableBadge returnable={p.returnable} /></td>
-                        <td style={{ fontSize: 12.5, color: 'var(--text2)' }}>{itemsSummary(p)}</td>
-                        <td><StatusBadge status={p.status} /></td>
-                        <td>
-                          {p.receiverUser?.name || '—'}
-                          {p.departmentName && (
-                            <div style={{ fontSize: 11.5, color: 'var(--text3)' }}>{p.departmentName}</div>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
+                    {inwardRegister.map(p => {
+                      const direct = p.type === 'inward';
+                      const transferIn = !direct && isTransfer(p) && atMyDest(p) && !!p.outwardLog;
+                      const kind = direct ? 'Direct Inward' : transferIn ? 'Branch Transfer' : 'Return';
+                      const from = direct
+                        ? `${p.destinationPerson ? p.destinationPerson + ' - ' : ''}${p.carriedBy || '—'}`
+                        : transferIn
+                          ? (p.sourceBranchName || '—')
+                          : (p.destinationBranchName || p.destinationPerson || '—');
+                      const date = direct
+                        ? (p.inwardLog?.loggedAt || p.createdAt)
+                        : (p.inwardLog?.loggedAt || p.receivedLog?.loggedAt || p.outwardLog?.loggedAt || p.createdAt);
+                      const receiverName = direct ? p.receiverUser?.name : p.receivedLog?.receiverUser?.name;
+                      const receiverDept = direct ? p.departmentName : p.receivedLog?.departmentName;
+                      return (
+                        <tr key={p.id}>
+                          <td style={{ whiteSpace: 'nowrap', fontSize: 12.5, color: 'var(--text3)' }}>{fmtDate(date)}</td>
+                          <td><Link to={`/passes/${p.id}`} className="pass-number">{p.passNumber}</Link></td>
+                          <td>
+                            {from}
+                            {direct && p.carrierMobile && (
+                              <div style={{ fontSize: 11.5, color: 'var(--text3)', fontFamily: 'var(--font-mono)' }}>{p.carrierMobile}</div>
+                            )}
+                          </td>
+                          <td style={{ fontSize: 12.5, color: 'var(--text2)' }}>{itemsSummary(p)}</td>
+                          <td>
+                            <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                              <span className={`tag ${direct ? 'tag-external' : 'tag-internal'}`}>{kind}</span>
+                              <ReturnableBadge returnable={p.returnable} />
+                            </div>
+                          </td>
+                          <td><StatusBadge pass={p} /></td>
+                          <td>
+                            {receiverName || '—'}
+                            {receiverDept && (
+                              <div style={{ fontSize: 11.5, color: 'var(--text3)' }}>{receiverDept}</div>
+                            )}
+                          </td>
+                          <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                            {canReceivePass(p) ? (
+                              <button className="btn btn-primary btn-sm" onClick={() => setModal({ type: 'receive', pass: p })}>
+                                <ArrowDownLeft size={13} /> Mark Items In
+                              </button>
+                            ) : canLogReturnPass(p) ? (
+                              <button className="btn btn-primary btn-sm" onClick={() => setModal({ type: 'inward', pass: p })}>
+                                <RotateCcw size={13} /> Log Return
+                              </button>
+                            ) : transferIn && p.receivedLog && p.returnable && !p.returnRequest && isOpen(p) ? (
+                              <span style={{ fontSize: 12, color: 'var(--text3)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                                <Clock size={13} /> With {p.receivedLog.receiverUser?.name || 'receiver'}
+                              </span>
+                            ) : transferIn && p.receivedLog && !isOpen(p) ? (
+                              <span style={{ fontSize: 12, color: 'var(--green)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                                <CheckCircle2 size={13} /> Received {fmtDate(p.receivedLog.loggedAt)}
+                              </span>
+                            ) : null}
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
