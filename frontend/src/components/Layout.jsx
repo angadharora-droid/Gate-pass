@@ -1,4 +1,4 @@
-import { Outlet, NavLink, useNavigate } from 'react-router-dom';
+import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useEffect, useState } from 'react';
 import { api } from '../utils/api';
@@ -20,24 +20,30 @@ const NAV_ICON_SIZE = 16;
 export default function Layout() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
   const [stats, setStats] = useState({});
 
+  // Refetch on navigation so badges reflect actions just taken on other pages
   useEffect(() => {
     api.getStats().then(setStats).catch(() => {});
-  }, []);
+  }, [location.pathname]);
 
   const handleLogout = () => { logout(); navigate('/login'); };
   const initials = user?.name?.split(' ').map(n => n[0]).join('').slice(0, 2) || '?';
 
+  // All gate work actionable right now, at either side of this user's gate
+  const gateWork = (stats.awaitingOutward || 0) + (stats.awaitingInward || 0) +
+    (stats.incomingTransfers || 0) + (stats.awaitingReturnOut || 0);
+
   const navItems = [
     { to: '/',           Icon: LayoutDashboard, label: 'Dashboard',   exact: true, roles: null },
     { to: '/passes',     Icon: FileText,        label: 'Gate Passes',  roles: null,
-      badge: stats.pending > 0 ? stats.pending : null },
+      // The pending queue is the approvers' to-do, not everyone's
+      badge: ['admin', 'manager'].includes(user?.role) && stats.pending > 0 ? stats.pending : null },
     { to: '/passes/new', Icon: FilePlus2,       label: 'New Pass',     roles: ['admin', 'manager', 'staff'] },
     { to: '/inward/new', Icon: PackagePlus,     label: 'New Inward',   roles: ['admin', 'time_office'] },
     { to: '/time-office',Icon: Clock,           label: 'Time Office',  roles: ['admin', 'time_office'],
-      badge: (stats.awaitingOutward + stats.awaitingInward) > 0
-        ? (stats.awaitingOutward + stats.awaitingInward) : null },
+      badge: gateWork > 0 ? gateWork : null },
     { to: '/reports',    Icon: BarChart2,       label: 'Reports',      roles: ['admin', 'manager'] },
     { to: '/admin',      Icon: Settings2,       label: 'Admin Panel',  roles: ['admin'] },
   ].filter(item => !item.roles || item.roles.includes(user?.role));
@@ -73,10 +79,10 @@ export default function Layout() {
             <>
               <div className="nav-section-label" style={{ marginTop: 14 }}>Alerts</div>
               <NavLink
-                to="/passes?status=approved"
+                to="/passes?overdue=true"
                 className="nav-item"
                 title={`${stats.overdueReturns} late`}
-                style={{ color: '#f87171' }}
+                style={{ color: 'var(--red)' }}
               >
                 <span className="nav-icon"><AlertTriangle size={NAV_ICON_SIZE} /></span>
                 <span className="nav-label">{stats.overdueReturns} Late</span>

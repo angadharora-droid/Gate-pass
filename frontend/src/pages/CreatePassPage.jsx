@@ -41,6 +41,8 @@ export default function CreatePassPage() {
         dateText={today}
         requestedByName={user?.name}
         requestedByRole={user?.role}
+        sourceBranchId={user?.branch}
+        showCreateHint
         submitLabel={isManagerOrAdmin ? 'Submit' : 'Submit for Approval'}
         submitIcon={isManagerOrAdmin ? Zap : ArrowRight}
         footerHint={!isManagerOrAdmin

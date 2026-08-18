@@ -11,8 +11,11 @@ export function AuthProvider({ children }) {
 
   useEffect(() => {
     if (getToken()) {
+      // On a real auth failure the api layer already clears the token and
+      // redirects; a transient network/server error should NOT log the user
+      // out, so keep the token and just finish loading.
       api.me().then(data => { setUser(data.user); setLoading(false); })
-        .catch(() => { clearToken(); setLoading(false); });
+        .catch(() => setLoading(false));
     } else {
       setLoading(false);
     }
