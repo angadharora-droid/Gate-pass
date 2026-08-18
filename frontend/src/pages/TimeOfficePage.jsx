@@ -5,7 +5,7 @@ import { useAuth } from '../context/AuthContext';
 import { StatusBadge, TypeBadge, ReturnableBadge } from '../components/Badges';
 import {
   X, AlertTriangle, Info, ArrowUpRight, ArrowDownLeft, RotateCcw,
-  Clock, TrendingUp, Package, CheckCircle2, PackagePlus,
+  Clock, TrendingUp, Package, CheckCircle2, PackagePlus, Truck,
 } from 'lucide-react';
 
 function fmt(d) {
@@ -39,7 +39,7 @@ export function LogOutwardModal({ pass, onClose, onDone }) {
   const handleConfirm = async () => {
     setError(''); setLoading(true);
     try {
-      if (!guardName.trim()) { setError('Gate guard name is required'); setLoading(false); return; }
+      if (!guardName.trim()) { setError('Gate host name is required'); setLoading(false); return; }
       await api.logOutward(pass.id, { guardName: guardName.trim(), remarks });
       onDone();
     } catch (e) { setError(e.message); } finally { setLoading(false); }
@@ -88,7 +88,7 @@ export function LogOutwardModal({ pass, onClose, onDone }) {
 
           <div className="form-row" style={{ marginBottom: 12 }}>
             <div className="form-group" style={{ marginBottom: 0 }}>
-              <label className="form-label">Gate Guard Name *</label>
+              <label className="form-label">Gate Host Name *</label>
               <input className="form-input" value={guardName} onChange={e => setGuardName(e.target.value)} placeholder="e.g. Ajay Kumar" autoFocus />
             </div>
             <div />
@@ -119,6 +119,98 @@ export function LogOutwardModal({ pass, onClose, onDone }) {
   );
 }
 
+/* ── Receive Transfer Modal ─────────────────────────────────────────────────── */
+// Destination-branch gate marks an internal branch transfer's items IN.
+export function ReceiveTransferModal({ pass, onClose, onDone }) {
+  const [guardName, setGuardName] = useState('');
+  const [remarks, setRemarks] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const handleConfirm = async () => {
+    setError(''); setLoading(true);
+    try {
+      if (!guardName.trim()) { setError('Gate host name is required'); setLoading(false); return; }
+      await api.receivePass(pass.id, { guardName: guardName.trim(), remarks });
+      onDone();
+    } catch (e) { setError(e.message); } finally { setLoading(false); }
+  };
+
+  return (
+    <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="modal">
+        <div className="modal-header">
+          <div>
+            <div className="modal-title">Mark Items In</div>
+            <div style={{ fontSize: 12, color: 'var(--text3)', marginTop: 3 }}>{pass.passNumber}</div>
+          </div>
+          <button className="modal-close" onClick={onClose}><X size={16} /></button>
+        </div>
+        <div className="modal-body">
+          <div className="alert alert-info" style={{ marginBottom: 20 }}>
+            <Info size={15} />
+            Items sent from <strong>{pass.sourceBranchName || 'another branch'}</strong>.
+            Confirm they have <strong>actually arrived at your gate</strong>. This cannot be undone.
+          </div>
+
+          <div style={{ marginBottom: 20 }}>
+            <div style={{ fontSize: 12, color: 'var(--text3)', marginBottom: 10 }}>Items arriving</div>
+            {pass.items?.map((li, i) => (
+              <div key={i} className="item-row">
+                <div>
+                  <div className="item-name">{li.itemName}</div>
+                  <div style={{ fontSize: 11, color: 'var(--text3)', fontFamily: 'var(--font-mono)' }}>{li.unit}</div>
+                </div>
+                <div className="item-qty">× {li.quantity}</div>
+              </div>
+            ))}
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 20, padding: '12px 16px', background: 'var(--bg3)', borderRadius: 'var(--radius)', border: '1px solid var(--border)', fontSize: 13 }}>
+            <div><span style={{ color: 'var(--text3)' }}>From: </span>{pass.sourceBranchName || '—'}</div>
+            <div><span style={{ color: 'var(--text3)' }}>To: </span>{pass.destinationBranchName || '—'}</div>
+            <div><span style={{ color: 'var(--text3)' }}>Went out: </span>{fmt(pass.outwardLog?.loggedAt)}</div>
+            <div>
+              <span style={{ color: 'var(--text3)' }}>Returnable: </span>
+              <span style={{ color: pass.returnable ? 'var(--blue)' : 'var(--text3)' }}>
+                {pass.returnable ? `Yes — goes back to ${pass.sourceBranchName || 'source'}` : 'No'}
+              </span>
+            </div>
+          </div>
+
+          <div className="form-row" style={{ marginBottom: 12 }}>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label className="form-label">Gate Host Name *</label>
+              <input className="form-input" value={guardName} onChange={e => setGuardName(e.target.value)} placeholder="e.g. Ajay Kumar" autoFocus />
+            </div>
+            <div />
+          </div>
+
+          <div className="form-group" style={{ marginBottom: 0 }}>
+            <label className="form-label">Remarks (optional)</label>
+            <textarea className="form-textarea" rows={2} value={remarks}
+              onChange={e => setRemarks(e.target.value)}
+              placeholder="e.g. Received in good condition…" />
+          </div>
+          {error && (
+            <div className="alert alert-danger" style={{ marginTop: 12 }}>
+              <AlertTriangle size={15} /> {error}
+            </div>
+          )}
+        </div>
+        <div className="modal-footer">
+          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+          <button className="btn btn-primary" onClick={handleConfirm} disabled={loading}>
+            {loading
+              ? <><div className="spinner" style={{ width: 15, height: 15 }} /> Saving…</>
+              : <><ArrowDownLeft size={14} /> Confirm — Items Received</>}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ── Log Inward Modal ───────────────────────────────────────────────────────── */
 // Reasons offered when Time Office closes an item that won't be returned.
 const CLOSE_REASONS = ['Lost', 'Damaged', 'Consumed / Used up', 'Sold', 'Not returnable', 'Other'];
@@ -142,7 +234,7 @@ export function LogInwardModal({ pass, onClose, onDone }) {
 
   const handleConfirm = async () => {
     setError('');
-    if (!guardName.trim()) { setError('Gate guard name is required'); return; }
+    if (!guardName.trim()) { setError('Gate host name is required'); return; }
 
     if (!isReturnLeg) {
       setLoading(true);
@@ -296,7 +388,7 @@ export function LogInwardModal({ pass, onClose, onDone }) {
 
           <div className="form-row" style={{ marginBottom: 12 }}>
             <div className="form-group" style={{ marginBottom: 0 }}>
-              <label className="form-label">Gate Guard Name *</label>
+              <label className="form-label">Gate Host Name *</label>
               <input className="form-input" value={guardName} onChange={e => setGuardName(e.target.value)} placeholder="e.g. Ajay Kumar" autoFocus />
             </div>
             <div />
@@ -389,24 +481,40 @@ export default function TimeOfficePage() {
 
   useEffect(() => { load(); }, [load]);
 
+  // time_office is branch-bound: departures/returns happen at the SOURCE gate,
+  // receiving a branch transfer happens at the DESTINATION gate. Admin sees all.
+  const isAdmin = user?.role === 'admin';
+  const atMySource = p => isAdmin || p.sourceBranch === user?.branch;
+  const atMyDest   = p => isAdmin || p.destinationBranch === user?.branch;
+
   const outwardQueue = passes.filter(p =>
-    p.type === 'outward' && p.status === 'approved' && !p.outwardLog
+    p.type === 'outward' && p.status === 'approved' && !p.outwardLog && atMySource(p)
   );
   // Pure inward entries are logged directly via New Inward (born completed),
   // so the only inward "work" is returnable outward passes coming back.
   const returnQueue = passes.filter(p =>
-    p.type === 'outward' && p.returnable && ['in_transit', 'partial_return'].includes(p.status)
+    p.type === 'outward' && p.returnable && ['in_transit', 'partial_return'].includes(p.status) && atMySource(p)
   );
   const today = new Date().toDateString();
   const completedToday = passes.filter(p =>
-    (p.outwardLog?.loggedAt && new Date(p.outwardLog.loggedAt).toDateString() === today) ||
-    (p.inwardLog?.loggedAt  && new Date(p.inwardLog.loggedAt).toDateString()  === today)
+    (p.outwardLog?.loggedAt  && new Date(p.outwardLog.loggedAt).toDateString()  === today) ||
+    (p.inwardLog?.loggedAt   && new Date(p.inwardLog.loggedAt).toDateString()   === today) ||
+    (p.receivedLog?.loggedAt && new Date(p.receivedLog.loggedAt).toDateString() === today)
   );
 
-  // Full registers, like the ERP: Time Office sees EVERY pass (approved,
+  // Full registers, like the ERP: every pass belonging to THIS gate (approved,
   // rejected, done…), newest first, with action buttons only where needed.
-  const outwardRegister = passes.filter(p => p.type === 'outward');
+  const outwardRegister = passes.filter(p => p.type === 'outward' && atMySource(p));
   const inwardRegister  = passes.filter(p => p.type === 'inward');
+  // Internal transfers dispatched TO this branch — the receiving register
+  const incomingRegister = passes.filter(p =>
+    p.type === 'outward' && p.direction === 'internal' && p.destinationBranch &&
+    p.outwardLog && atMyDest(p)
+  );
+  const canReceivePass = p =>
+    p.type === 'outward' && p.direction === 'internal' && p.destinationBranch &&
+    p.outwardLog && !p.receivedLog && ['in_transit', 'partial_return'].includes(p.status) && atMyDest(p);
+  const incomingQueue = incomingRegister.filter(canReceivePass);
 
   const handleDone = () => { setModal(null); load(); };
 
@@ -415,19 +523,21 @@ export default function TimeOfficePage() {
     ? passes.filter(p => String(p.passNumber).toLowerCase().includes(searchTerm)).slice(0, 5)
     : [];
 
-  // Two registers, like the ERP: Outward Confirmation + Inward.
+  // Three registers, like the ERP: Outward Confirmation + Incoming Transfers + Inward.
   // Tab counts show how many rows still need an action from the gate.
   const tabs = [
-    { key: 'outward', label: 'Outward Confirmation', count: outwardQueue.length + returnQueue.length, color: 'var(--orange)' },
-    { key: 'inward',  label: 'Inward',               count: 0,                                        color: 'var(--green)'  },
+    { key: 'outward',  label: 'Outward Confirmation', count: outwardQueue.length + returnQueue.length, color: 'var(--orange)' },
+    { key: 'incoming', label: 'Incoming Transfers',   count: incomingQueue.length,                     color: 'var(--blue)'   },
+    { key: 'inward',   label: 'Inward',               count: 0,                                        color: 'var(--green)'  },
   ];
 
   const statPills = [
-    { label: 'Waiting to Go Out',    val: stats.awaitingOutward, color: 'var(--orange)', Icon: ArrowUpRight },
-    { label: 'Waiting to Come Back', val: stats.awaitingInward,  color: 'var(--green)',  Icon: ArrowDownLeft },
-    { label: 'Late Returns',         val: stats.overdueReturns,  color: 'var(--red)',    Icon: AlertTriangle },
-    { label: 'Items Out',            val: stats.inTransit,       color: 'var(--purple)', Icon: Package },
-    { label: 'Logged Today',         val: completedToday.length, color: 'var(--text2)',  Icon: CheckCircle2 },
+    { label: 'Waiting to Go Out',    val: stats.awaitingOutward,   color: 'var(--orange)', Icon: ArrowUpRight },
+    { label: 'Incoming Transfers',   val: stats.incomingTransfers, color: 'var(--blue)',   Icon: Truck },
+    { label: 'Waiting to Come Back', val: stats.awaitingInward,    color: 'var(--green)',  Icon: ArrowDownLeft },
+    { label: 'Late Returns',         val: stats.overdueReturns,    color: 'var(--red)',    Icon: AlertTriangle },
+    { label: 'Items Out',            val: stats.inTransit,         color: 'var(--purple)', Icon: Package },
+    { label: 'Logged Today',         val: completedToday.length,   color: 'var(--text2)',  Icon: CheckCircle2 },
   ];
 
   return (
@@ -436,7 +546,7 @@ export default function TimeOfficePage() {
         <div>
           <div className="page-title">Time Office</div>
           <div className="page-subtitle">
-            Gate log — items going out and coming in · All branches ·{' '}
+            Gate log — items going out and coming in · {isAdmin ? 'All branches' : (user?.branchName || 'Your branch')} ·{' '}
             <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--accent)', fontSize: 12 }}>
               {user?.name}
             </span>
@@ -488,14 +598,17 @@ export default function TimeOfficePage() {
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                 {searchMatches.map(p => {
-                  const canOutward = p.type === 'outward' && p.status === 'approved' && !p.outwardLog;
-                  const canReturn = p.type === 'outward' && p.returnable && ['in_transit', 'partial_return'].includes(p.status);
+                  const canOutward = p.type === 'outward' && p.status === 'approved' && !p.outwardLog && atMySource(p);
+                  const canReturn = p.type === 'outward' && p.returnable && ['in_transit', 'partial_return'].includes(p.status) && atMySource(p);
+                  const canReceive = canReceivePass(p);
 
                   const action = canOutward
                     ? { label: 'Mark Items Out', Icon: ArrowUpRight, color: 'var(--orange)', type: 'outward' }
-                    : canReturn
-                      ? { label: 'Log Return', Icon: RotateCcw, color: 'var(--blue)', type: 'inward' }
-                      : null;
+                    : canReceive
+                      ? { label: 'Mark Items In', Icon: ArrowDownLeft, color: 'var(--blue)', type: 'receive' }
+                      : canReturn
+                        ? { label: 'Log Return', Icon: RotateCcw, color: 'var(--blue)', type: 'inward' }
+                        : null;
 
                   return (
                     <PassCard
@@ -596,6 +709,65 @@ export default function TimeOfficePage() {
             )
           )}
 
+          {/* ── INCOMING TRANSFERS register — branch transfers arriving here ── */}
+          {tab === 'incoming' && (
+            incomingRegister.length === 0 ? (
+              <div className="table-wrapper">
+                <div className="empty-state">
+                  <div className="empty-icon"><Truck size={24} strokeWidth={1.75} /></div>
+                  <div className="empty-title">No incoming transfers</div>
+                  <div className="empty-sub">
+                    When another branch marks items out to {isAdmin ? 'a branch' : 'your branch'}, they appear here to be marked in.
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="table-wrapper">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Dispatched</th>
+                      <th>Document No</th>
+                      <th>From Branch</th>
+                      <th>Items</th>
+                      <th>Transaction Type</th>
+                      <th>Status</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {incomingRegister.map(p => (
+                      <tr key={p.id}>
+                        <td style={{ whiteSpace: 'nowrap', fontSize: 12.5, color: 'var(--text3)' }}>{fmtDate(p.outwardLog?.loggedAt)}</td>
+                        <td><Link to={`/passes/${p.id}`} className="pass-number">{p.passNumber}</Link></td>
+                        <td>{p.sourceBranchName || '—'}</td>
+                        <td style={{ fontSize: 12.5, color: 'var(--text2)' }}>{itemsSummary(p)}</td>
+                        <td>
+                          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                            <TypeBadge type={p.type} />
+                            <ReturnableBadge returnable={p.returnable} />
+                          </div>
+                        </td>
+                        <td><StatusBadge status={p.isOverdue ? 'overdue' : p.status} /></td>
+                        <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                          {canReceivePass(p) ? (
+                            <button className="btn btn-primary btn-sm" onClick={() => setModal({ type: 'receive', pass: p })}>
+                              <ArrowDownLeft size={13} /> Mark Items In
+                            </button>
+                          ) : p.receivedLog ? (
+                            <span style={{ fontSize: 12, color: 'var(--green)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                              <CheckCircle2 size={13} /> Received {fmtDate(p.receivedLog.loggedAt)}
+                            </span>
+                          ) : null}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )
+          )}
+
           {/* ── INWARD register — every gate entry logged by Security ── */}
           {tab === 'inward' && (
             inwardRegister.length === 0 ? (
@@ -657,6 +829,9 @@ export default function TimeOfficePage() {
       )}
       {modal?.type === 'inward' && (
         <LogInwardModal pass={modal.pass} onClose={() => setModal(null)} onDone={handleDone} />
+      )}
+      {modal?.type === 'receive' && (
+        <ReceiveTransferModal pass={modal.pass} onClose={() => setModal(null)} onDone={handleDone} />
       )}
     </div>
   );

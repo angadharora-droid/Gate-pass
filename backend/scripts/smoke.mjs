@@ -179,6 +179,59 @@ check('admin creates branch', newBranch.status === 201);
 const dupBranch = await api('POST', '/branches', { token: admin, body: { name: 'second branch' } });
 check('duplicate branch name rejected (case-insensitive)', dupBranch.status === 400);
 
+// ─── Inter-branch transfer: source dispatches, destination receives ──────────
+const b2 = newBranch.json.id;
+const toUser2 = await api('POST', '/users', {
+  token: admin,
+  body: { name: 'Guard Two', email: 'guard2@test.com', password: 'secret1', role: 'time_office', branch: b2 },
+});
+check('admin creates time_office at second branch', toUser2.status === 201);
+const timeOffice2 = await login('guard2@test.com', 'secret1');
+
+const transfer = await api('POST', '/gate-passes', {
+  token: manager,
+  body: {
+    type: 'outward', direction: 'internal', destinationBranch: b2,
+    returnable: false, purpose: 'Extra crockery for banquet',
+    items: [{ itemName: 'Dinner Plates', quantity: 50, unit: 'pcs' }],
+  },
+});
+check('manager creates internal transfer (auto-approved)', transfer.status === 201 && transfer.json?.status === 'approved');
+const transferId = transfer.json?.id;
+
+const wrongGateOut = await api('PATCH', `/gate-passes/${transferId}/log-outward`, { token: timeOffice2, body: { guardName: 'Binu' } });
+check('destination gate cannot mark items out', wrongGateOut.status === 403);
+
+const earlyReceive = await api('PATCH', `/gate-passes/${transferId}/receive`, { token: timeOffice2, body: { guardName: 'Binu' } });
+check('cannot receive before source marks items out', earlyReceive.status === 400);
+
+const dispatched = await api('PATCH', `/gate-passes/${transferId}/log-outward`, { token: timeOffice, body: { guardName: 'Ajay' } });
+check('internal transfer dispatch → in_transit (not completed)', dispatched.status === 200 && dispatched.json?.status === 'in_transit');
+
+const destStats = await api('GET', '/gate-passes/meta/stats', { token: timeOffice2 });
+check('transfer counts as incoming at destination branch', destStats.json?.incomingTransfers === 1, JSON.stringify(destStats.json));
+
+const destList = await api('GET', '/gate-passes', { token: timeOffice2 });
+check('destination TO sees only passes touching their branch', destList.json?.length === 1 && destList.json?.[0]?.id === transferId, `got ${destList.json?.length}`);
+
+const wrongGateIn = await api('PATCH', `/gate-passes/${transferId}/receive`, { token: timeOffice, body: { guardName: 'Ajay' } });
+check('source gate cannot mark items in', wrongGateIn.status === 403);
+
+const received = await api('PATCH', `/gate-passes/${transferId}/receive`, { token: timeOffice2, body: { guardName: 'Binu' } });
+check('destination receives transfer → completed', received.status === 200 && received.json?.status === 'completed' && received.json?.receivedLog?.guardName === 'Binu');
+
+const reReceive = await api('PATCH', `/gate-passes/${transferId}/receive`, { token: timeOffice2, body: { guardName: 'Binu' } });
+check('double receive rejected', reReceive.status === 400);
+
+const crossInward = await api('POST', '/gate-passes/inward', {
+  token: timeOffice2,
+  body: {
+    branchId: b1, departmentId: d1, receiverId: managerUser.json.id, inwardType: 'non_returnable',
+    carriedBy: 'Courier Guy', items: [{ itemName: 'Boxes', quantity: 1, unit: 'box' }],
+  },
+});
+check('time_office cannot log direct inward for another branch', crossInward.status === 403);
+
 const dupUser = await api('POST', '/users', {
   token: admin,
   body: { name: 'Dup', email: 'MANAGER@test.com', password: 'x', role: 'staff', branch: b1, departmentId: d1 },

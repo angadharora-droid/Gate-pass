@@ -13,7 +13,7 @@ const roleDesc = {
   admin:       'Full access — manage users, items, and branches. View all passes across all branches.',
   manager:     'Approve or reject passes for their branch. Create passes (auto-approved). Record returns.',
   staff:       'Create gate pass requests for their branch. View own branch passes.',
-  time_office: 'Central role — not branch-bound. Security at the gate for all branches: logs outward departures and returns, and records new inward arrivals directly (no approval flow).',
+  time_office: 'Security at the gate of THEIR branch only: logs outward departures and returns, receives transfers arriving from other branches, and records new inward arrivals directly (no approval flow).',
 };
 
 /* ── Shared helpers ─────────────────────────────────────────────────────────── */
