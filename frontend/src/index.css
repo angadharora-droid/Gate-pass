@@ -638,22 +638,20 @@ strong { font-weight: 600; }
 .badge-inward         { background: rgba(22, 163, 74, 0.07);   color: var(--green);  border: 1px solid rgba(22, 163, 74, 0.2); }
 .badge-early_return   { background: var(--accent-soft);        color: var(--accent); border: 1px solid rgba(37, 99, 235, 0.2); }
 
-/* ─── ITEM MASTER SUGGESTIONS (grid Description cell) ── */
+/* ─── ITEM MASTER SUGGESTIONS (grid Description cell) ──
+   position: fixed + inline viewport coords, so the menu floats ABOVE the
+   grid's overflow-x container instead of being clipped by it or forcing
+   extra scrollbars onto the table. */
 .suggest-menu {
-  position: absolute;
-  top: 100%;
-  left: 0;
-  min-width: 100%;
-  width: max-content;
+  position: fixed;
   max-width: 420px;
-  z-index: 60;
+  z-index: 200;
   background: var(--bg2);
   border: 1px solid var(--border2);
   border-radius: var(--radius);
   box-shadow: var(--shadow-lg);
   max-height: 240px;
   overflow-y: auto;
-  margin-top: 2px;
 }
 .suggest-item {
   display: block;

@@ -10,18 +10,27 @@ function pad2(n) {
   return String(n).padStart(2, '0');
 }
 
-function currentMonth() {
+// All range math is LOCAL time, so the buckets match the dates the table
+// displays (UTC boundaries would put the first local hours of a day in the
+// previous day's report for IST users).
+const toDateInput = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+
+function firstOfMonth() {
   const d = new Date();
-  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}`;
+  return toDateInput(new Date(d.getFullYear(), d.getMonth(), 1));
 }
 
-// Local-time boundaries, so the month bucket matches the dates the table
-// displays (UTC boundaries put the first local hours of a month in the
-// previous month's report for IST users).
-function monthToRange(month) {
-  const [y, m] = month.split('-').map(Number);
-  const start = new Date(y, m - 1, 1);
-  const end = new Date(y, m, 1);
+// From/To are inclusive calendar days; either side may be left empty for an
+// open-ended range.
+function rangeToBounds(fromDate, toDate) {
+  const parse = (s) => {
+    if (!s) return null;
+    const [y, m, d] = s.split('-').map(Number);
+    return new Date(y, m - 1, d);
+  };
+  const start = parse(fromDate);
+  const endDay = parse(toDate);
+  const end = endDay ? new Date(endDay.getFullYear(), endDay.getMonth(), endDay.getDate() + 1) : null;
   return { start, end };
 }
 
@@ -62,7 +71,8 @@ export default function ReportsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
-  const [month, setMonth] = useState(currentMonth());
+  const [fromDate, setFromDate] = useState(firstOfMonth());
+  const [toDate, setToDate] = useState(toDateInput(new Date()));
   const [branch, setBranch] = useState('');
   const [departmentId, setDepartmentId] = useState('');
   const [type, setType] = useState('');
@@ -96,13 +106,14 @@ export default function ReportsPage() {
   }, [branch]);
 
   const filtered = useMemo(() => {
-    const { start, end } = monthToRange(month);
+    const { start, end } = rangeToBounds(fromDate, toDate);
 
     return passes
       .filter(p => {
         const created = p.createdAt ? new Date(p.createdAt) : null;
         if (!created) return false;
-        if (!(created >= start && created < end)) return false;
+        if (start && created < start) return false;
+        if (end && created >= end) return false;
 
         if (branch) {
           const inBranch = p.sourceBranch === branch || p.destinationBranch === branch;
@@ -132,7 +143,25 @@ export default function ReportsPage() {
         return true;
       })
       .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-  }, [passes, month, branch, departmentId, type, status, user]);
+  }, [passes, fromDate, toDate, branch, departmentId, type, status, user]);
+
+  // Quick range presets
+  const setRange = (from, to) => { setFromDate(from); setToDate(to); };
+  const presets = [
+    { label: 'This Month', apply: () => setRange(firstOfMonth(), toDateInput(new Date())) },
+    { label: 'Last Month', apply: () => {
+      const d = new Date();
+      setRange(
+        toDateInput(new Date(d.getFullYear(), d.getMonth() - 1, 1)),
+        toDateInput(new Date(d.getFullYear(), d.getMonth(), 0)),
+      );
+    } },
+    { label: 'Last 30 Days', apply: () => {
+      const d = new Date();
+      setRange(toDateInput(new Date(d.getFullYear(), d.getMonth(), d.getDate() - 29)), toDateInput(d));
+    } },
+    { label: 'All Time', apply: () => setRange('', '') },
+  ];
 
   // Live aggregates over whatever the filters currently select
   const summary = useMemo(() => {
@@ -248,10 +277,22 @@ export default function ReportsPage() {
       {error && <div className="alert alert-danger" style={{ marginBottom: 20 }}><AlertTriangle size={15} /> {error}</div>}
 
       <div className="card" style={{ padding: '16px 20px', marginBottom: 20 }}>
-        <div className="form-row" style={{ gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
+        <div className="filters-bar" style={{ marginBottom: 12 }}>
+          {presets.map(p => (
+            <button key={p.label} className="filter-chip" onClick={p.apply}>{p.label}</button>
+          ))}
+        </div>
+
+        <div className="form-row" style={{ gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 12 }}>
           <div className="form-group" style={{ marginBottom: 0 }}>
-            <label className="form-label">Month</label>
-            <input className="form-input" type="month" value={month} onChange={e => setMonth(e.target.value)} />
+            <label className="form-label">From <span style={{ fontWeight: 400, color: 'var(--text3)' }}>(blank = beginning)</span></label>
+            <input className="form-input" type="date" value={fromDate} max={toDate || undefined}
+              onChange={e => setFromDate(e.target.value)} />
+          </div>
+          <div className="form-group" style={{ marginBottom: 0 }}>
+            <label className="form-label">To <span style={{ fontWeight: 400, color: 'var(--text3)' }}>(blank = today)</span></label>
+            <input className="form-input" type="date" value={toDate} min={fromDate || undefined}
+              onChange={e => setToDate(e.target.value)} />
           </div>
           <div className="form-group" style={{ marginBottom: 0 }}>
             <label className="form-label">Branch</label>
