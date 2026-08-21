@@ -48,7 +48,7 @@ function TabBar({ tabs, active, onChange }) {
 
 export default function GatePassListPage() {
   const { user } = useAuth();
-  const canCreate = ['admin', 'manager', 'staff'].includes(user?.role);
+  const canCreate = ['admin', 'supermanager', 'manager', 'staff'].includes(user?.role);
   // Deep links work: /passes?status=in_transit, /passes?movement=in, /passes?overdue=true
   const [searchParams] = useSearchParams();
   const [passes, setPasses]     = useState([]);

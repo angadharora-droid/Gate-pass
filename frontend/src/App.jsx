@@ -31,11 +31,11 @@ export default function App() {
         <Route index element={<DashboardPage />} />
         <Route path="passes" element={<GatePassListPage />} />
         <Route path="passes/new" element={
-          <RequireAuth roles={['admin','manager','staff']}><CreatePassPage /></RequireAuth>
+          <RequireAuth roles={['admin','supermanager','manager','staff']}><CreatePassPage /></RequireAuth>
         } />
         <Route path="passes/:id" element={<GatePassDetailPage />} />
         <Route path="passes/:id/edit" element={
-          <RequireAuth roles={['admin','manager']}><EditPassPage /></RequireAuth>
+          <RequireAuth roles={['admin','supermanager','manager']}><EditPassPage /></RequireAuth>
         } />
         <Route path="inward/new" element={
           <RequireAuth roles={['admin','time_office']}><NewInwardPage /></RequireAuth>

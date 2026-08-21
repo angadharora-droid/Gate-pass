@@ -39,8 +39,10 @@ export default function Layout() {
     { to: '/',           Icon: LayoutDashboard, label: 'Dashboard',   exact: true, roles: null },
     { to: '/passes',     Icon: FileText,        label: 'Gate Passes',  roles: null,
       // The pending queue is the approvers' to-do, not everyone's
-      badge: ['admin', 'manager'].includes(user?.role) && stats.pending > 0 ? stats.pending : null },
-    { to: '/passes/new', Icon: FilePlus2,       label: 'New Pass',     roles: ['admin', 'manager', 'staff'] },
+      // Routed-aware: only passes THIS approver can actually decide
+      badge: ['admin', 'supermanager', 'manager'].includes(user?.role) && stats.myPendingApprovals > 0
+        ? stats.myPendingApprovals : null },
+    { to: '/passes/new', Icon: FilePlus2,       label: 'New Pass',     roles: ['admin', 'supermanager', 'manager', 'staff'] },
     { to: '/inward/new', Icon: PackagePlus,     label: 'New Inward',   roles: ['admin', 'time_office'] },
     { to: '/time-office',Icon: Clock,           label: 'Time Office',  roles: ['admin', 'time_office'],
       badge: gateWork > 0 ? gateWork : null },

@@ -49,7 +49,7 @@ export default function DashboardPage() {
             Welcome back, <strong>{user?.name}</strong> · {user?.branchName}
           </div>
         </div>
-        {['admin', 'manager', 'staff'].includes(user?.role) && (
+        {['admin', 'supermanager', 'manager', 'staff'].includes(user?.role) && (
           <Link to="/passes/new" className="btn btn-primary">
             <Plus size={15} /> New Gate Pass
           </Link>

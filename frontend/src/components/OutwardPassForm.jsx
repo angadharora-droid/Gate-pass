@@ -40,11 +40,23 @@ export default function OutwardPassForm({
   const [rows, setRows] = useState(() => initialRows?.length ? initialRows : [emptyRow()]);
   const [showImport, setShowImport] = useState(false);
 
+  // Staff route their request to a chosen approver: their department's
+  // manager or a supermanager of the branch. Other roles self-approve.
+  const isStaff = user?.role === 'staff';
+  const [approvers, setApprovers] = useState([]);
+  const [approversLoaded, setApproversLoaded] = useState(false);
+  const [approverId, setApproverId] = useState('');
+
   useEffect(() => {
     api.getBranches()
       .then(setBranches)
       .catch(() => setError('Could not load the branch list — internal transfers need it. Reload the page to retry.'));
-  }, []);
+    if (isStaff) {
+      api.getApprovers()
+        .then(a => { setApprovers(a); setApproversLoaded(true); })
+        .catch(() => setError('Could not load the approver list. Reload the page to retry.'));
+    }
+  }, [isStaff]);
 
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
   const isReturnable = form.outwardType === 'returnable';
@@ -71,6 +83,7 @@ export default function OutwardPassForm({
       if (!form.expectedReturnDate) { setError('Set the Return By date — it drives late-return tracking'); return; }
       if (new Date(form.expectedReturnDate) <= new Date()) { setError('Return By must be in the future'); return; }
     }
+    if (isStaff && !approverId) { setError('Select who should approve this pass'); return; }
     // Catch half-filled rows the grid would otherwise drop silently
     const badRow = rows.findIndex(r => {
       const hasContent = [r.itemName, r.code, r.rate, r.serialNo, r.remarks].some(v => String(v ?? '').trim());
@@ -91,6 +104,7 @@ export default function OutwardPassForm({
         destinationBranch: form.direction === 'internal' ? form.destinationBranch : null,
         destinationPerson: form.direction === 'external' ? form.destinationPerson : null,
         expectedReturnDate: (isReturnable && form.expectedReturnDate) ? form.expectedReturnDate : null,
+        ...(isStaff ? { approverId } : {}),
       });
     } catch (err) {
       setError(err.message);
@@ -203,6 +217,38 @@ export default function OutwardPassForm({
             </div>
           )}
         </div>
+
+        {isStaff && (
+          <div className="form-row">
+            <div className="form-group">
+              <label className="form-label">Send for Approval To *</label>
+              <select className="form-select" value={approverId} onChange={e => setApproverId(e.target.value)}>
+                <option value="">Select approver…</option>
+                {approvers.filter(a => a.role === 'manager').length > 0 && (
+                  <optgroup label="Department Manager">
+                    {approvers.filter(a => a.role === 'manager').map(a => (
+                      <option key={a.id} value={a.id}>{a.name}</option>
+                    ))}
+                  </optgroup>
+                )}
+                {approvers.filter(a => a.role === 'supermanager').length > 0 && (
+                  <optgroup label="Branch Supermanagers">
+                    {approvers.filter(a => a.role === 'supermanager').map(a => (
+                      <option key={a.id} value={a.id}>{a.name}</option>
+                    ))}
+                  </optgroup>
+                )}
+              </select>
+              {approversLoaded && approvers.length === 0 && (
+                <div className="form-hint" style={{ color: 'var(--orange)' }}>
+                  No approvers found — ask the admin to assign a manager to your department
+                  or a supermanager to your branch.
+                </div>
+              )}
+            </div>
+            <div />
+          </div>
+        )}
 
         <div className="form-row" style={{ gridTemplateColumns: '1fr 1fr' }}>
           <div className="form-group" style={{ marginBottom: 0 }}>

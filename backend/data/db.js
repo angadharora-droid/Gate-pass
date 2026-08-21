@@ -185,7 +185,11 @@ export async function logAudit(action, userId, targetId, details) {
   });
 }
 
-export const ROLES = ['admin', 'manager', 'staff', 'time_office'];
+// supermanager → branch-level approver: no department; staff may route any of
+// their passes to a supermanager of their branch instead of the department manager
+export const ROLES = ['admin', 'supermanager', 'manager', 'staff', 'time_office'];
+// Roles that are branch-bound with no department attachment
+export const NO_DEPT_ROLES = ['time_office', 'supermanager'];
 export const UNITS = ['pcs', 'set', 'kg', 'litre', 'box', 'bag', 'roll', 'pair', 'dozen'];
 
 // Nature of a direct inward entry logged by Security at the gate.
