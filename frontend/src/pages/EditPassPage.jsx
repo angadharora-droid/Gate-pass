@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { api } from '../utils/api';
+import { useAuth } from '../context/AuthContext';
 import { ArrowLeft, Save, AlertTriangle, FileText } from 'lucide-react';
 import OutwardPassForm from '../components/OutwardPassForm';
 import { emptyRow } from '../components/ItemsGridEditor';
@@ -24,6 +25,7 @@ function toLocalInput(iso) {
 // back to the detail view.
 export default function EditPassPage() {
   const { id } = useParams();
+  const { user } = useAuth();
   const navigate = useNavigate();
   const [pass, setPass] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -61,6 +63,21 @@ export default function EditPassPage() {
       <div className="alert alert-danger">
         <AlertTriangle size={15} />
         This pass is <strong>{STATUS_LABELS[pass.displayStatus || pass.status] || pass.status}</strong> — only pending passes can be edited.
+      </div>
+    </div>
+  );
+
+  // A routed pass is only editable by its chosen approver (or admin) — bounce
+  // BEFORE the form so no one fills it out just to hit the server's 403
+  if (pass.approverId && pass.approverId !== user?.id && user?.role !== 'admin') return (
+    <div>
+      <Link to={`/passes/${pass.id}`} className="btn btn-ghost btn-sm" style={{ marginBottom: 24 }}>
+        <ArrowLeft size={14} /> Back to {pass.passNumber}
+      </Link>
+      <div className="alert alert-danger">
+        <AlertTriangle size={15} />
+        This pass is routed to <strong>{pass.approverUser?.name || 'a specific approver'}</strong> — only
+        they (or an admin) can edit or approve it.
       </div>
     </div>
   );

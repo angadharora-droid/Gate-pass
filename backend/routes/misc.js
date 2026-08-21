@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { v4 as uuidv4 } from 'uuid';
-import { dbc, NO_ID, ROLES, UNITS, CATEGORIES } from '../data/db.js';
+import { dbc, NO_ID, ROLES, NO_DEPT_ROLES, UNITS, CATEGORIES } from '../data/db.js';
 import { authMiddleware, requireRole } from '../middleware/auth.js';
 import { hashPassword } from '../lib/security.js';
 import { asyncHandler } from '../lib/asyncHandler.js';
@@ -83,6 +83,22 @@ branchesRouter.delete('/:id', requireRole('admin'), asyncHandler(async (req, res
 export const usersRouter = Router();
 usersRouter.use(authMiddleware);
 
+// Who can approve MY gate passes: the manager(s) of my own department plus
+// every supermanager of my branch. Open to all roles (staff need it on the
+// create form) — returns minimal fields only.
+usersRouter.get('/approvers', asyncHandler(async (req, res) => {
+  const candidates = await dbc('users').find({
+    active: { $ne: false },
+    branch: req.user.branch,
+    role: { $in: ['manager', 'supermanager'] },
+  }, NO_ID).toArray();
+  const approvers = candidates
+    .filter(u => u.role === 'supermanager' ||
+      (req.user.departmentId && u.departmentId === req.user.departmentId))
+    .map(u => ({ id: u.id, name: u.name, role: u.role }));
+  res.json(approvers);
+}));
+
 usersRouter.get('/', requireRole('admin', 'manager', 'time_office'), asyncHandler(async (req, res) => {
   const [allUsers, departments] = await Promise.all([
     dbc('users').find({}, NO_ID).toArray(),
@@ -135,7 +151,7 @@ usersRouter.post('/', requireRole('admin'), asyncHandler(async (req, res) => {
   const branchObj = await dbc('branches').findOne({ id: branch }, NO_ID);
   if (!branchObj) return res.status(400).json({ error: 'Branch not found' });
 
-  if (role !== 'time_office' && !departmentId) {
+  if (!NO_DEPT_ROLES.includes(role) && !departmentId) {
     return res.status(400).json({ error: 'Department is required for this role' });
   }
   if (departmentId) {
@@ -154,7 +170,7 @@ usersRouter.post('/', requireRole('admin'), asyncHandler(async (req, res) => {
     passwordHash: hashPassword(password),
     role,
     branch,
-    departmentId: departmentId || null,
+    departmentId: NO_DEPT_ROLES.includes(role) ? null : (departmentId || null),
     active: true,
   };
   await dbc('users').insertOne({ ...user });
@@ -201,9 +217,9 @@ usersRouter.patch('/:id', requireRole('admin'), asyncHandler(async (req, res) =>
   const nextRole = role !== undefined ? role : user.role;
   const nextBranch = branch !== undefined ? branch : user.branch;
 
-  if (nextRole === 'time_office') {
-    // Gate accounts are branch-bound with no department — enforce server-side
-    // rather than trusting the client to send departmentId: null
+  if (NO_DEPT_ROLES.includes(nextRole)) {
+    // Gate and supermanager accounts are branch-bound with no department —
+    // enforce server-side rather than trusting the client to send null
     user.departmentId = null;
   } else {
     if (!nextDepartmentId) {

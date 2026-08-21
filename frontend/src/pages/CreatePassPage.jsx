@@ -7,7 +7,7 @@ import OutwardPassForm from '../components/OutwardPassForm';
 export default function CreatePassPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
-  const isManagerOrAdmin = ['manager', 'admin'].includes(user?.role);
+  const isManagerOrAdmin = ['manager', 'supermanager', 'admin'].includes(user?.role);
 
   const today = new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
 
@@ -46,7 +46,7 @@ export default function CreatePassPage() {
         submitLabel={isManagerOrAdmin ? 'Submit' : 'Submit for Approval'}
         submitIcon={isManagerOrAdmin ? Zap : ArrowRight}
         footerHint={!isManagerOrAdmin
-          ? 'Your pass will be reviewed by the branch manager before items can move.'
+          ? 'Your pass goes to the approver you select above before items can move.'
           : null}
         onSubmit={handleSubmit}
       />

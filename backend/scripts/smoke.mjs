@@ -111,6 +111,7 @@ const created = await api('POST', '/gate-passes', {
   body: {
     type: 'outward', direction: 'external', destinationPerson: 'Repair Shop',
     returnable: true, purpose: 'Chair repair', expectedReturnDate: '2099-01-01T00:00:00Z',
+    approverId: managerUser.json.id,
     items: [{ itemName: 'Office Chair', quantity: 4, unit: 'pcs' }],
   },
 });
@@ -330,6 +331,58 @@ check('second email-less user allowed (sparse email index)', secondNoEmail.statu
 
 const seedIdLogin = await api('POST', '/auth/login', { body: { identifier: 'admin', password: 'admin123' } });
 check('seed admin can log in by login ID', seedIdLogin.status === 200);
+
+// ─── Supermanager: staff choose who approves their pass ──────────────────────
+const superUser = await api('POST', '/users', {
+  token: admin,
+  body: { name: 'Super One', loginId: 'super.one', password: 'secret1', role: 'supermanager', branch: b1 },
+});
+check('supermanager created without department', superUser.status === 201 && superUser.json?.departmentId === null);
+
+const superLogin = await api('POST', '/auth/login', { body: { identifier: 'super.one', password: 'secret1' } });
+const superToken = superLogin.json?.token;
+const porterToken = idLogin.json?.token;   // staff 'porter.one' from the login-ID section
+
+const noApprover = await api('POST', '/gate-passes', {
+  token: porterToken,
+  body: {
+    type: 'outward', direction: 'external', destinationPerson: 'Vendor',
+    purpose: 'Test', items: [{ itemName: 'Box', quantity: 1, unit: 'pcs' }],
+  },
+});
+check('staff pass without an approver rejected', noApprover.status === 400);
+
+const routed = await api('POST', '/gate-passes', {
+  token: porterToken,
+  body: {
+    type: 'outward', direction: 'external', destinationPerson: 'Vendor',
+    purpose: 'Cutlery polish', approverId: superUser.json.id,
+    items: [{ itemName: 'Box', quantity: 1, unit: 'pcs' }],
+  },
+});
+check('staff pass routed to a supermanager', routed.status === 201 && routed.json?.status === 'pending' && routed.json?.approverUser?.name === 'Super One');
+
+const unchosen = await api('PATCH', `/gate-passes/${routed.json?.id}/status`, { token: manager, body: { action: 'approve' } });
+check('unchosen manager cannot approve a routed pass', unchosen.status === 403);
+
+const superApprove = await api('PATCH', `/gate-passes/${routed.json?.id}/status`, { token: superToken, body: { action: 'approve' } });
+check('chosen supermanager approves', superApprove.status === 200 && superApprove.json?.status === 'approved');
+
+const superOwnPass = await api('POST', '/gate-passes', {
+  token: superToken,
+  body: {
+    type: 'outward', direction: 'external', destinationPerson: 'Vendor',
+    purpose: 'Own errand', items: [{ itemName: 'Bag', quantity: 1, unit: 'pcs' }],
+  },
+});
+check('supermanager pass auto-approved', superOwnPass.status === 201 && superOwnPass.json?.status === 'approved' && superOwnPass.json?.autoApproved === true);
+
+const approverList = await api('GET', '/users/approvers', { token: porterToken });
+check('staff approver list = own dept manager + branch supermanagers',
+  approverList.status === 200 &&
+  approverList.json?.some(a => a.id === superUser.json.id) &&
+  approverList.json?.some(a => a.id === managerUser.json.id) &&
+  approverList.json?.every(a => ['manager', 'supermanager'].includes(a.role)));
 
 // ─── Done ─────────────────────────────────────────────────────────────────────
 console.log(failures === 0 ? '\nALL SMOKE TESTS PASSED' : `\n${failures} SMOKE TEST(S) FAILED`);

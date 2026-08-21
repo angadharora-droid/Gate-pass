@@ -49,7 +49,13 @@ export default function GatePassDetailPage() {
 
   useEffect(() => { load(); }, [id]);
 
-  const canApprove = ['manager', 'admin'].includes(user?.role);
+  // A routed pass may only be decided by its chosen approver (or an admin).
+  // Legacy passes without an approver fall back to any manager/supermanager
+  // of the source branch.
+  const canApprove = (p) => user?.role === 'admin' ||
+    (['manager', 'supermanager'].includes(user?.role) &&
+      user?.branch === p?.sourceBranch &&
+      (!p?.approverId || p.approverId === user?.id));
 
   const handleAction = async (action) => {
     setError('');
@@ -113,11 +119,12 @@ export default function GatePassDetailPage() {
   // Receiving leg of an internal branch transfer, done by the destination gate
   const canReceive      = canLog && atDest && isTransferAway && pass.destinationBranch &&
     pass.outwardLog && !pass.receivedLog;
-  // The receiver holding the items (or their branch manager) approves the send-back
+  // The receiver holding the items (or a manager/supermanager of their branch)
+  // approves the send-back
   const canApproveSendBack = isTransferAway && pass.returnable && pass.receivedLog && !pass.returnRequest &&
     (isAdmin ||
       user?.id === pass.receivedLog.receiverId ||
-      (user?.role === 'manager' && user?.branch === pass.destinationBranch));
+      (['manager', 'supermanager'].includes(user?.role) && user?.branch === pass.destinationBranch));
   // After approval, the destination gate marks the return physically out
   const canReturnOut    = canLog && atDest && isTransferAway && pass.returnable &&
     pass.returnRequest && !pass.returnOutwardLog;
@@ -154,7 +161,7 @@ export default function GatePassDetailPage() {
           <button className="btn btn-ghost" onClick={() => window.print()}>
             <Printer size={14} /> Print
           </button>
-          {pass.status === 'pending' && canApprove && (
+          {pass.status === 'pending' && canApprove(pass) && (
             <>
               {/* Manager can still correct the pass before deciding */}
               <Link to={`/passes/${pass.id}/edit`} className="btn btn-ghost">
@@ -300,6 +307,15 @@ export default function GatePassDetailPage() {
                   <div className="dl">Made On</div>
                   <div className="dv" style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5 }}>{fmt(pass.createdAt)}</div>
                 </div>
+                {pass.approverUser && (
+                  <div className="detail-item">
+                    <div className="dl">Routed To (Approver)</div>
+                    <div className="dv">
+                      {pass.approverUser.name}
+                      <span style={{ color: 'var(--text3)', fontSize: 12 }}> · {pass.approverUser.role === 'supermanager' ? 'Supermanager' : 'Manager'}</span>
+                    </div>
+                  </div>
+                )}
                 <div className="detail-item">
                   <div className="dl">Approved By</div>
                   <div className="dv">{pass.approvedByUser?.name || '—'}</div>
@@ -520,7 +536,9 @@ function LifecycleTimeline({ pass }) {
         : (pass.autoApproved ? 'Auto-Approved' : 'Approved'),
       sub: pass.approvedByUser?.name
         ? `${pass.approvedByUser.name}${pass.autoApproved ? ' (auto)' : ''}`
-        : undefined,
+        : (pass.status === 'pending' && pass.approverUser
+          ? `Waiting for ${pass.approverUser.name}`
+          : undefined),
       time: pass.approvedAt,
       done: ['approved', 'completed', 'closed', 'partial_return', 'rejected', 'in_transit'].includes(pass.status),
       Icon: pass.status === 'rejected' ? X : CheckCircle2,

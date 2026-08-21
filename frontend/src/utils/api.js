@@ -87,6 +87,8 @@ export const api = {
 
   // Users
   getUsers: () => request('/users'),
+  // Eligible approvers for MY passes: my department's manager(s) + my branch's supermanagers
+  getApprovers: () => request('/users/approvers'),
   createUser: (data) => request('/users', { method: 'POST', body: JSON.stringify(data) }),
   updateUser: (id, data) => request(`/users/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   deleteUser: (id) => request(`/users/${id}`, { method: 'DELETE' }),

@@ -73,11 +73,14 @@ router.get('/:id', asyncHandler(async (req, res) => {
 // ─── CREATE (OUTWARD ONLY) ────────────────────────────────────────────────────
 // Staff/managers create OUTWARD passes only. Inward is not a request flow:
 // Security (time_office) logs it directly at the gate via POST /inward below.
-router.post('/', requireRole('admin', 'manager', 'staff'), asyncHandler(async (req, res) => {
+// Staff must ROUTE their request to a chosen approver: their own department's
+// manager, or any supermanager of their branch. Managers, supermanagers and
+// admins self-approve on creation.
+router.post('/', requireRole('admin', 'supermanager', 'manager', 'staff'), asyncHandler(async (req, res) => {
   const {
     type, direction, sourceBranch, destinationBranch,
     destinationPerson, returnable, purpose, items,
-    expectedReturnDate, remarks, linkedPassId,
+    expectedReturnDate, remarks, linkedPassId, approverId,
   } = req.body;
 
   if (!type || !direction || !items?.length)
@@ -114,7 +117,22 @@ router.post('/', requireRole('admin', 'manager', 'staff'), asyncHandler(async (r
   if (returnable && expectedReturnDate && isNaN(new Date(expectedReturnDate).getTime()))
     return res.status(400).json({ error: 'Expected return date is not a valid date' });
 
-  const isManagerOrAdmin = ['manager', 'admin'].includes(req.user.role);
+  const selfApproving = ['manager', 'supermanager', 'admin'].includes(req.user.role);
+
+  // Staff route the request to a specific approver of their choosing
+  let approver = null;
+  if (!selfApproving) {
+    if (!approverId)
+      return res.status(400).json({ error: 'Select who should approve this pass' });
+    approver = await dbc('users').findOne({ id: approverId, active: { $ne: false } }, NO_ID);
+    if (!approver || !['manager', 'supermanager'].includes(approver.role))
+      return res.status(400).json({ error: 'Approver must be a manager or supermanager' });
+    if (approver.branch !== srcBranchId)
+      return res.status(400).json({ error: 'Approver must belong to your branch' });
+    if (approver.role === 'manager' && approver.departmentId !== req.user.departmentId)
+      return res.status(400).json({ error: 'A manager approver must be from your own department' });
+  }
+
   const now = new Date().toISOString();
 
   const newPass = {
@@ -122,18 +140,19 @@ router.post('/', requireRole('admin', 'manager', 'staff'), asyncHandler(async (r
     passNumber: await generatePassNumber({ type, direction, returnable: returnable ?? false }),
     type,
     direction,
-    status: isManagerOrAdmin ? 'approved' : 'pending',
+    status: selfApproving ? 'approved' : 'pending',
     createdBy: req.user.id,
     departmentId: req.user.departmentId || null,
+    approverId: selfApproving ? null : approver.id,   // who the staff routed it to
     sourceBranch:      srcBranchId,
     destinationBranch: direction === 'internal' ? destBranch.id : null,
     destinationPerson: direction === 'external' ? (destinationPerson?.trim() || null) : null,
     returnable: returnable ?? false,
     purpose: purpose.trim(),
     createdAt: now,
-    approvedBy:  isManagerOrAdmin ? req.user.id : null,
-    approvedAt:  isManagerOrAdmin ? now : null,
-    autoApproved: isManagerOrAdmin,
+    approvedBy:  selfApproving ? req.user.id : null,
+    approvedAt:  selfApproving ? now : null,
+    autoApproved: selfApproving,
     expectedReturnDate: (returnable && expectedReturnDate) ? expectedReturnDate : null,
     linkedPassId: linkedPassId || null,
     earlyReturn: false,
@@ -283,8 +302,19 @@ router.post('/inward', requireRole('time_office', 'admin'), asyncHandler(async (
   res.status(201).json(enrichPass(newPass, await getRefs()));
 }));
 
+// If the routed approver is gone (deactivated, moved to another branch, or
+// demoted), the exact-approver rule would strand the pass in pending forever.
+// This checks whether the stored approver can still act — when they can't,
+// callers fall back to the legacy rule (any manager/supermanager of the
+// source branch).
+async function approverStillValid(pass) {
+  if (!pass.approverId) return false;
+  const a = await dbc('users').findOne({ id: pass.approverId, active: { $ne: false } }, NO_ID);
+  return !!a && ['manager', 'supermanager'].includes(a.role) && a.branch === pass.sourceBranch;
+}
+
 // ─── APPROVE / REJECT ─────────────────────────────────────────────────────────
-router.patch('/:id/status', requireRole('manager', 'admin'), asyncHandler(async (req, res) => {
+router.patch('/:id/status', requireRole('manager', 'supermanager', 'admin'), asyncHandler(async (req, res) => {
   const pass = await dbc('gatePasses').findOne({ id: req.params.id }, NO_ID);
   if (!pass) return res.status(404).json({ error: 'Gate pass not found' });
 
@@ -293,9 +323,14 @@ router.patch('/:id/status', requireRole('manager', 'admin'), asyncHandler(async 
     return res.status(400).json({ error: 'action must be approve or reject' });
   if (pass.status !== 'pending')
     return res.status(400).json({ error: 'Only pending passes can be approved/rejected' });
-  // Goods LEAVE the source branch — only its manager (or admin) authorizes that
-  if (req.user.role === 'manager' && pass.sourceBranch !== req.user.branch) {
-    return res.status(403).json({ error: 'Only the source branch manager can approve this pass' });
+  // Goods LEAVE the source branch — only that branch authorizes it, and when
+  // the creator routed the request to a specific approver, only THAT person
+  // (or an admin) may decide it.
+  if (req.user.role !== 'admin') {
+    if (pass.sourceBranch !== req.user.branch)
+      return res.status(403).json({ error: 'Only the source branch can approve this pass' });
+    if (pass.approverId && pass.approverId !== req.user.id && await approverStillValid(pass))
+      return res.status(403).json({ error: 'This pass is routed to a specific approver' });
   }
 
   pass.status     = action === 'approve' ? 'approved' : 'rejected';
@@ -313,14 +348,18 @@ router.patch('/:id/status', requireRole('manager', 'admin'), asyncHandler(async 
 // items, destination, outward type, dates, purpose. Only while status is
 // 'pending'; once approved (or rejected) the pass is locked. The pass number
 // never changes on revision — it is the printed/quoted identifier.
-router.patch('/:id/revise', requireRole('manager', 'admin'), asyncHandler(async (req, res) => {
+router.patch('/:id/revise', requireRole('manager', 'supermanager', 'admin'), asyncHandler(async (req, res) => {
   const pass = await dbc('gatePasses').findOne({ id: req.params.id }, NO_ID);
   if (!pass) return res.status(404).json({ error: 'Gate pass not found' });
   if (pass.status !== 'pending')
     return res.status(400).json({ error: 'Only pending passes can be edited; this one is already ' + pass.status });
-  // Same authority rule as approval: the pass belongs to its source branch
-  if (req.user.role === 'manager' && pass.sourceBranch !== req.user.branch) {
-    return res.status(403).json({ error: 'Only the source branch manager can edit this pass' });
+  // Same authority rule as approval: source branch only, and a routed pass is
+  // only editable by its chosen approver (or admin)
+  if (req.user.role !== 'admin') {
+    if (pass.sourceBranch !== req.user.branch)
+      return res.status(403).json({ error: 'Only the source branch can edit this pass' });
+    if (pass.approverId && pass.approverId !== req.user.id && await approverStillValid(pass))
+      return res.status(403).json({ error: 'This pass is routed to a specific approver' });
   }
 
   const {
@@ -531,9 +570,9 @@ router.patch('/:id/return-request', asyncHandler(async (req, res) => {
     return res.status(400).json({ error: `Cannot approve a send-back in ${pass.status} status` });
 
   const isReceiver    = req.user.id === pass.receivedLog.receiverId;
-  const isDestManager = req.user.role === 'manager' && req.user.branch === pass.destinationBranch;
+  const isDestManager = ['manager', 'supermanager'].includes(req.user.role) && req.user.branch === pass.destinationBranch;
   if (!(req.user.role === 'admin' || isReceiver || isDestManager))
-    return res.status(403).json({ error: 'Only the receiver (or their branch manager) can approve the send-back' });
+    return res.status(403).json({ error: 'Only the receiver (or a manager/supermanager of their branch) can approve the send-back' });
 
   pass.returnRequest = {
     requestedAt: new Date().toISOString(),
@@ -742,6 +781,15 @@ router.get('/meta/stats', asyncHandler(async (req, res) => {
   const awaitingOutward = passes.filter(p =>
     p.type === 'outward' && p.status === 'approved' && !p.outwardLog && atMySource(p)
   );
+  // Pending passes THIS user can actually decide (approver-routing aware) —
+  // a pass routed to a colleague is not in my to-do
+  const myPendingApprovals = passes.filter(p =>
+    p.status === 'pending' &&
+    (req.user.role === 'admin' ||
+      (['manager', 'supermanager'].includes(req.user.role) &&
+       p.sourceBranch === req.user.branch &&
+       (!p.approverId || p.approverId === req.user.id)))
+  );
   // Returns the source gate could log RIGHT NOW: external items out, or branch
   // transfers whose return the destination has already dispatched. Transfers
   // still sitting with the destination receiver are not actionable here.
@@ -783,6 +831,7 @@ router.get('/meta/stats', asyncHandler(async (req, res) => {
     incomingTransfers: incomingTransfers.length,
     awaitingReturnOut: awaitingReturnOut.length,
     itemsWithMe:       itemsWithMe.length,
+    myPendingApprovals: myPendingApprovals.length,
     outward:         passes.filter(p => p.type === 'outward').length,
     inward:          passes.filter(p => p.type === 'inward').length,
   });
@@ -819,6 +868,7 @@ function enrichPass(pass, refs) {
 
   const createdByUser   = u(pass.createdBy);
   const approvedByUser  = u(pass.approvedBy);
+  const approverUser    = u(pass.approverId);
   const editedByUser    = u(pass.editedBy);
   const receiverUser    = u(pass.receiverId);
   const outwardLogUser  = u(pass.outwardLog?.loggedBy);
@@ -843,6 +893,7 @@ function enrichPass(pass, refs) {
     ...pass,
     createdByUser:        createdByUser  ? { id: createdByUser.id,  name: createdByUser.name,  role: createdByUser.role  } : null,
     approvedByUser:       approvedByUser ? { id: approvedByUser.id, name: approvedByUser.name, role: approvedByUser.role } : null,
+    approverUser:         approverUser   ? { id: approverUser.id,   name: approverUser.name,   role: approverUser.role   } : null,
     receiverUser:         receiverUser   ? { id: receiverUser.id,   name: receiverUser.name,   role: receiverUser.role   } : null,
     editedByUser:         editedByUser   ? { id: editedByUser.id,   name: editedByUser.name,   role: editedByUser.role   } : null,
     outwardLog:  pass.outwardLog  ? { ...pass.outwardLog,  loggedByUser: outwardLogUser  ? { id: outwardLogUser.id,  name: outwardLogUser.name  } : null } : null,

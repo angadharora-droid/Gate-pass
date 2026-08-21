@@ -2,18 +2,21 @@ import { useEffect, useState } from 'react';
 import { api } from '../utils/api';
 import { X, AlertTriangle, Building2, ScrollText } from 'lucide-react';
 
-const ROLES = ['admin', 'manager', 'staff', 'time_office'];
+const ROLES = ['admin', 'supermanager', 'manager', 'staff', 'time_office'];
+// Roles that are branch-bound with no department (mirrors backend NO_DEPT_ROLES)
+const NO_DEPT_ROLES = ['time_office', 'supermanager'];
 
 const roleColor = {
-  admin: 'var(--accent)', manager: 'var(--blue)',
+  admin: 'var(--accent)', supermanager: 'var(--green)', manager: 'var(--blue)',
   staff: 'var(--purple)', time_office: 'var(--orange)',
 };
 
 const roleDesc = {
-  admin:       'Full access — manage users, departments, and branches. View all passes across all branches.',
-  manager:     'Approve or reject their branch’s outgoing passes. Create passes (auto-approved). Can approve send-backs of transfers held at their branch.',
-  staff:       'Create gate pass requests for their branch. View own branch passes. Approve the send-back of transfer items they hold.',
-  time_office: 'Security at the gate of THEIR branch only: marks everything leaving the gate out (dispatches and send-backs) and everything arriving in (direct inward entries, incoming transfers, returns).',
+  admin:        'Full access — manage users, departments, and branches. View all passes across all branches.',
+  supermanager: 'Branch-level approver — no department. Staff can route any gate pass of the branch to a supermanager for approval. Creates passes (auto-approved) and can approve send-backs of transfers held at the branch.',
+  manager:      'Approve or reject passes their department’s staff route to them. Create passes (auto-approved). Can approve send-backs of transfers held at their branch.',
+  staff:        'Create gate pass requests and choose who approves each one: their department manager or a branch supermanager. Approve the send-back of transfer items they hold.',
+  time_office:  'Security at the gate of THEIR branch only: marks everything leaving the gate out (dispatches and send-backs) and everything arriving in (direct inward entries, incoming transfers, returns).',
 };
 
 /* ── Shared helpers ─────────────────────────────────────────────────────────── */
@@ -89,7 +92,7 @@ function UsersTab() {
 
   useEffect(() => {
     if (!modal) return;
-    if (form.role === 'time_office') return;
+    if (NO_DEPT_ROLES.includes(form.role)) return;
     const active = getActiveDepsForBranch(form.branch);
     if (!active.find(d => d.id === form.departmentId)) {
       setForm(f => ({ ...f, departmentId: active[0]?.id || '' }));
@@ -101,7 +104,7 @@ function UsersTab() {
     try {
       const payload = {
         ...form,
-        departmentId: form.role === 'time_office' ? null : (form.departmentId || null),
+        departmentId: NO_DEPT_ROLES.includes(form.role) ? null : (form.departmentId || null),
       };
       if (modal === 'create') {
         await api.createUser(payload);
@@ -227,9 +230,9 @@ function UsersTab() {
                 className="form-select"
                 value={form.departmentId}
                 onChange={e => set('departmentId', e.target.value)}
-                disabled={form.role === 'time_office'}
+                disabled={NO_DEPT_ROLES.includes(form.role)}
               >
-                <option value="">{form.role === 'time_office' ? 'Not applicable' : 'Select…'}</option>
+                <option value="">{NO_DEPT_ROLES.includes(form.role) ? 'Not applicable' : 'Select…'}</option>
                 {getActiveDepsForBranch(form.branch).map(d => (
                   <option key={d.id} value={d.id}>{d.name}</option>
                 ))}
