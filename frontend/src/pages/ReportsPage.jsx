@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../utils/api';
 import { useAuth } from '../context/AuthContext';
+import { hasRole } from '../utils/roles';
 import { StatusBadge, MovementBadge, movementFor, DirectionBadge, ReturnableBadge, STATUS_LABELS } from '../components/Badges';
 import { AlertTriangle, FileBarChart2, Timer, Download } from 'lucide-react';
 
@@ -53,7 +54,7 @@ function lastMovement(p) {
 
 export default function ReportsPage() {
   const { user } = useAuth();
-  const canEdit = user?.role === 'admin';
+  const canEdit = hasRole(user, 'admin');
 
   const [passes, setPasses] = useState([]);
   const [branches, setBranches] = useState([]);
@@ -279,7 +280,7 @@ export default function ReportsPage() {
                 offer only the type options to avoid a misleading "my branch" */}
             <select className="form-select" value={type} onChange={e => setType(e.target.value)}>
               <option value="">All</option>
-              {user?.role === 'admin' ? (
+              {hasRole(user, 'admin') ? (
                 <>
                   <option value="outward">Outward passes</option>
                   <option value="inward">Direct inward entries</option>

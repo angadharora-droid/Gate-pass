@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { api } from '../utils/api';
 import { useAuth } from '../context/AuthContext';
+import { hasRole } from '../utils/roles';
 import { StatusBadge, MovementBadge, movementFor, DirectionBadge, ReturnableBadge } from '../components/Badges';
 import { Plus, SearchX } from 'lucide-react';
 
@@ -48,7 +49,7 @@ function TabBar({ tabs, active, onChange }) {
 
 export default function GatePassListPage() {
   const { user } = useAuth();
-  const canCreate = ['admin', 'supermanager', 'manager', 'staff'].includes(user?.role);
+  const canCreate = hasRole(user, 'admin', 'supermanager', 'manager', 'staff');
   // Deep links work: /passes?status=in_transit, /passes?movement=in, /passes?overdue=true
   const [searchParams] = useSearchParams();
   const [passes, setPasses]     = useState([]);
@@ -96,7 +97,7 @@ export default function GatePassListPage() {
       <TabBar tabs={STATUS_TABS} active={statusFilter} onChange={setStatusFilter} />
 
       <div className="filters-bar" style={{ marginBottom: 20 }}>
-        {movementTabs(user?.role === 'admin').map(t => (
+        {movementTabs(hasRole(user, 'admin')).map(t => (
           <button
             key={t.key ?? '_all'}
             className={`filter-chip${movementFilter === t.key ? ' active' : ''}`}

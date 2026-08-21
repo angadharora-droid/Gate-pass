@@ -384,6 +384,37 @@ check('staff approver list = own dept manager + branch supermanagers',
   approverList.json?.some(a => a.id === managerUser.json.id) &&
   approverList.json?.every(a => ['manager', 'supermanager'].includes(a.role)));
 
+// ─── Multi-role: one account acting as supermanager AND time_office ──────────
+const dualUser = await api('POST', '/users', {
+  token: admin,
+  body: { name: 'Dual One', loginId: 'dual.one', password: 'secret1', roles: ['supermanager', 'time_office'], branch: b1 },
+});
+check('dual-role user created without department',
+  dualUser.status === 201 && dualUser.json?.role === 'supermanager' &&
+  Array.isArray(dualUser.json?.roles) && dualUser.json.roles.length === 2);
+
+const dualToken = (await api('POST', '/auth/login', { body: { identifier: 'dual.one', password: 'secret1' } })).json?.token;
+
+const routedToDual = await api('POST', '/gate-passes', {
+  token: porterToken,
+  body: {
+    type: 'outward', direction: 'external', destinationPerson: 'Vendor',
+    purpose: 'Bulb replacement', approverId: dualUser.json.id,
+    items: [{ itemName: 'Bulbs', quantity: 6, unit: 'pcs' }],
+  },
+});
+check('staff can route to a dual-role approver', routedToDual.status === 201);
+
+const dualApprove = await api('PATCH', `/gate-passes/${routedToDual.json?.id}/status`, { token: dualToken, body: { action: 'approve' } });
+check('dual-role account approves via its supermanager role', dualApprove.status === 200 && dualApprove.json?.status === 'approved');
+
+const dualOut = await api('PATCH', `/gate-passes/${routedToDual.json?.id}/log-outward`, { token: dualToken, body: { guardName: 'Dual' } });
+check('same account marks items out via its time_office role', dualOut.status === 200 && dualOut.json?.status === 'completed');
+
+const approverList2 = await api('GET', '/users/approvers', { token: porterToken });
+check('dual-role account listed as approver in the supermanager group',
+  approverList2.json?.some(a => a.id === dualUser.json.id && a.role === 'supermanager'));
+
 // ─── Done ─────────────────────────────────────────────────────────────────────
 console.log(failures === 0 ? '\nALL SMOKE TESTS PASSED' : `\n${failures} SMOKE TEST(S) FAILED`);
 await client.db(SMOKE_DB).dropDatabase();

@@ -1,3 +1,5 @@
+import { hasRole } from '../utils/roles';
+
 // Core terms (Outward/Inward, Returnable/Non-returnable, Internal/External)
 // stay as-is; statuses use simple everyday words.
 // Keys cover both stored statuses and the derived lifecycle stages the server
@@ -51,7 +53,7 @@ export function TypeBadge({ type }) {
 export function movementFor(pass, user) {
   if (pass.type === 'inward') return 'in';
   const isTransfer = pass.direction === 'internal' && pass.destinationBranch;
-  if (isTransfer && user?.role !== 'admin' &&
+  if (isTransfer && !hasRole(user, 'admin') &&
       pass.destinationBranch === user?.branch && pass.sourceBranch !== user?.branch) {
     return 'in';
   }
@@ -62,7 +64,7 @@ export function MovementBadge({ pass, user }) {
   const m = movementFor(pass, user);
   // Admin sees the org-wide stored type, so use the plain type words for them —
   // "Coming In / Going Out" is only truthful for branch-scoped viewers.
-  const admin = user?.role === 'admin';
+  const admin = hasRole(user, 'admin');
   return m === 'in'
     ? <span className="badge badge-inward">{admin ? 'Inward' : 'Coming In'}</span>
     : <span className="badge badge-outward">{admin ? 'Outward' : 'Going Out'}</span>;

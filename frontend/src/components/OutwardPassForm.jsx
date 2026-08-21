@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '../utils/api';
 import { useAuth } from '../context/AuthContext';
+import { hasRole } from '../utils/roles';
 import { AlertTriangle, FileSpreadsheet } from 'lucide-react';
 import ItemImportModal from './ItemImportModal';
 import ItemsGridEditor, { UNITS, emptyRow, rowsToItems } from './ItemsGridEditor';
@@ -41,8 +42,10 @@ export default function OutwardPassForm({
   const [showImport, setShowImport] = useState(false);
 
   // Staff route their request to a chosen approver: their department's
-  // manager or a supermanager of the branch. Other roles self-approve.
-  const isStaff = user?.role === 'staff';
+  // manager or a supermanager of the branch. Anyone holding a self-approving
+  // role (manager/supermanager/admin) skips routing — even if they also
+  // hold the staff role.
+  const isStaff = !hasRole(user, 'manager', 'supermanager', 'admin');
   const [approvers, setApprovers] = useState([]);
   const [approversLoaded, setApproversLoaded] = useState(false);
   const [approverId, setApproverId] = useState('');

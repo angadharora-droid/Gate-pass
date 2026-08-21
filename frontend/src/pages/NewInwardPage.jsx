@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../utils/api';
 import { useAuth } from '../context/AuthContext';
+import { hasRole } from '../utils/roles';
 import { AlertTriangle, ArrowDownLeft, ScanLine, ShieldCheck } from 'lucide-react';
 import ItemsGridEditor, { emptyRow, rowsToItems } from '../components/ItemsGridEditor';
 
@@ -174,7 +175,7 @@ export default function NewInwardPage() {
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 16 }}>
           <div className="form-group" style={{ marginBottom: 0 }}>
             <label className="form-label">Branch *</label>
-            {user?.role === 'time_office' ? (
+            {!hasRole(user, 'admin') ? (
               // Time Office is branch-bound — arrivals can only be logged at their own gate
               <div className="readonly-field">{user?.branchName || '—'}</div>
             ) : (

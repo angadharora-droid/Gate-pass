@@ -3,6 +3,7 @@ import { api } from '../utils/api';
 import { Link } from 'react-router-dom';
 import { StatusBadge, MovementBadge } from '../components/Badges';
 import { useAuth } from '../context/AuthContext';
+import { hasRole } from '../utils/roles';
 import {
   Package,
   Clock,
@@ -49,7 +50,7 @@ export default function DashboardPage() {
             Welcome back, <strong>{user?.name}</strong> · {user?.branchName}
           </div>
         </div>
-        {['admin', 'supermanager', 'manager', 'staff'].includes(user?.role) && (
+        {hasRole(user, 'admin', 'supermanager', 'manager', 'staff') && (
           <Link to="/passes/new" className="btn btn-primary">
             <Plus size={15} /> New Gate Pass
           </Link>
@@ -77,12 +78,12 @@ export default function DashboardPage() {
           <Truck size={16} />
           <span>
             <strong>{stats.incomingTransfers} transfer(s) from another branch</strong>{' '}
-            {['admin', 'time_office'].includes(user?.role)
+            {hasRole(user, 'admin', 'time_office')
               ? 'are on the way — mark the items in when they arrive.'
               : 'are on the way to your branch.'}
           </span>
           <Link
-            to={['admin', 'time_office'].includes(user?.role) ? '/time-office' : '/passes?movement=in'}
+            to={hasRole(user, 'admin', 'time_office') ? '/time-office' : '/passes?movement=in'}
             style={{ marginLeft: 'auto', textDecoration: 'underline', textUnderlineOffset: 3, fontSize: 13, fontWeight: 500, whiteSpace: 'nowrap' }}
           >
             View

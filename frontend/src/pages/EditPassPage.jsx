@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { api } from '../utils/api';
 import { useAuth } from '../context/AuthContext';
+import { hasRole } from '../utils/roles';
 import { ArrowLeft, Save, AlertTriangle, FileText } from 'lucide-react';
 import OutwardPassForm from '../components/OutwardPassForm';
 import { emptyRow } from '../components/ItemsGridEditor';
@@ -69,7 +70,7 @@ export default function EditPassPage() {
 
   // A routed pass is only editable by its chosen approver (or admin) — bounce
   // BEFORE the form so no one fills it out just to hit the server's 403
-  if (pass.approverId && pass.approverId !== user?.id && user?.role !== 'admin') return (
+  if (pass.approverId && pass.approverId !== user?.id && !hasRole(user, 'admin')) return (
     <div>
       <Link to={`/passes/${pass.id}`} className="btn btn-ghost btn-sm" style={{ marginBottom: 24 }}>
         <ArrowLeft size={14} /> Back to {pass.passNumber}
