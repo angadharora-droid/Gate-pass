@@ -415,6 +415,19 @@ const approverList2 = await api('GET', '/users/approvers', { token: porterToken 
 check('dual-role account listed as approver in the supermanager group',
   approverList2.json?.some(a => a.id === dualUser.json.id && a.role === 'supermanager'));
 
+// ─── Items master ────────────────────────────────────────────────────────────
+const itemSearch = await api('GET', '/items?q=charcoal', { token: porterToken });
+check('items master seeded from IDS list and searchable', itemSearch.status === 200 && itemSearch.json?.length > 0);
+
+// The 'Bulbs' item free-typed on the routed pass above must have been auto-added
+const autoAdded = await api('GET', '/items?q=bulbs', { token: porterToken });
+check('free-typed pass items auto-added to the master', autoAdded.json?.some(i => i.name?.toUpperCase() === 'BULBS'));
+
+const addItem1 = await api('POST', '/items', { token: porterToken, body: { name: 'Custom Widget', unit: 'pcs' } });
+const addItem2 = await api('POST', '/items', { token: porterToken, body: { name: 'custom  WIDGET', unit: 'box' } });
+check('adding an item is idempotent by normalized name',
+  addItem1.status === 201 && addItem2.status === 200 && addItem2.json?.id === addItem1.json?.id);
+
 // ─── Done ─────────────────────────────────────────────────────────────────────
 console.log(failures === 0 ? '\nALL SMOKE TESTS PASSED' : `\n${failures} SMOKE TEST(S) FAILED`);
 await client.db(SMOKE_DB).dropDatabase();

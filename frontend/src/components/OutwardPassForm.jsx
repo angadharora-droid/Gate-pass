@@ -66,7 +66,11 @@ export default function OutwardPassForm({
   const srcBranch = sourceBranchId || user?.branch;
 
   const importItems = (imported) => {
-    const mapped = imported.map(it => ({ ...emptyRow(), itemName: it.itemName, unit: it.unit, quantity: it.quantity }));
+    const mapped = imported.map(it => ({
+      ...emptyRow(),
+      itemName: it.itemName, unit: it.unit, quantity: it.quantity,
+      code: it.code || '', rate: it.rate ?? '', serialNo: it.serialNo || '', remarks: it.remarks || '',
+    }));
     setRows(rs => {
       const existing = rs.filter(r => r.itemName?.trim());
       return [...existing, ...mapped];

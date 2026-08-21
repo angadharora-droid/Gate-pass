@@ -3,7 +3,7 @@ import express from 'express';
 import cors from 'cors';
 import authRouter from './routes/auth.js';
 import gatePassRouter from './routes/gatePasses.js';
-import { branchesRouter, usersRouter, metaRouter, departmentsRouter } from './routes/misc.js';
+import { branchesRouter, usersRouter, metaRouter, departmentsRouter, itemsRouter } from './routes/misc.js';
 import { connectDb, pingDb, dbc, NO_ID } from './data/db.js';
 import { authMiddleware, requireRole } from './middleware/auth.js';
 import { asyncHandler } from './lib/asyncHandler.js';
@@ -55,6 +55,7 @@ app.use('/api/gate-passes', gatePassRouter);
 app.use('/api/branches', branchesRouter);
 app.use('/api/departments', departmentsRouter);
 app.use('/api/users', usersRouter);
+app.use('/api/items', itemsRouter);
 app.use('/api/meta', metaRouter);
 
 // Audit log (admin only)

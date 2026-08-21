@@ -313,7 +313,7 @@ export default function GatePassDetailPage() {
                     <div className="dl">Routed To (Approver)</div>
                     <div className="dv">
                       {pass.approverUser.name}
-                      <span style={{ color: 'var(--text3)', fontSize: 12 }}> · {pass.approverUser.role === 'supermanager' ? 'Supermanager' : 'Manager'}</span>
+                      <span style={{ color: 'var(--text3)', fontSize: 12 }}> · {pass.approverUser.role === 'manager' ? 'Manager' : 'Supermanager'}</span>
                     </div>
                   </div>
                 )}

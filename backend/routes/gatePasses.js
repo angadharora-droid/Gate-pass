@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { v4 as uuidv4 } from 'uuid';
-import { dbc, NO_ID, generatePassNumber, logAudit, INWARD_TYPES, DOCUMENT_TYPES, UNITS } from '../data/db.js';
+import { dbc, NO_ID, generatePassNumber, logAudit, upsertMasterItems, INWARD_TYPES, DOCUMENT_TYPES, UNITS } from '../data/db.js';
 import { authMiddleware, requireRole } from '../middleware/auth.js';
 import { hasRole } from '../lib/roles.js';
 import { asyncHandler } from '../lib/asyncHandler.js';
@@ -184,6 +184,8 @@ router.post('/', requireRole('admin', 'supermanager', 'manager', 'staff'), async
   };
 
   await dbc('gatePasses').insertOne({ ...newPass });
+  // Grow the shared items master with any names it doesn't know yet
+  try { await upsertMasterItems(newPass.items, req.user.id); } catch { /* non-fatal */ }
   await logAudit('CREATE_PASS', req.user.id, newPass.id, {
     passNumber:   newPass.passNumber,
     autoApproved: newPass.autoApproved,
@@ -296,6 +298,8 @@ router.post('/inward', requireRole('time_office', 'admin'), asyncHandler(async (
   };
 
   await dbc('gatePasses').insertOne({ ...newPass });
+  // Grow the shared items master with any names it doesn't know yet
+  try { await upsertMasterItems(newPass.items, req.user.id); } catch { /* non-fatal */ }
   await logAudit('LOG_INWARD_DIRECT', req.user.id, newPass.id, {
     passNumber: newPass.passNumber,
     inwardType,

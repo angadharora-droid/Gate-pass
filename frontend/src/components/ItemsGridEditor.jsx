@@ -1,7 +1,12 @@
+import { useRef, useState } from 'react';
 import { X, Plus } from 'lucide-react';
+import { api } from '../utils/api';
 
 // ERP-style material items grid shared by New Inward and New Gate Pass (outward).
 // Columns: Seq · Description · Code · Qty · Unit · Rate · Amount (auto) · Serial/Batch · Remarks
+// The Description cell live-searches the shared items master (seeded from the
+// IDS item list); picking a suggestion fills name + code + unit. Free-typed
+// names still work — the server adds them to the master automatically.
 
 export const UNITS = ['pcs', 'set', 'kg', 'litre', 'box', 'bag', 'roll', 'pair', 'dozen'];
 
@@ -30,6 +35,32 @@ export default function ItemsGridEditor({ rows, onChange, title = 'Items', heade
   const addRow    = () => onChange([...rows, emptyRow()]);
   const removeRow = (idx) => onChange(rows.filter((_, i) => i !== idx));
 
+  // Live suggestions from the items master for the row being typed in
+  const [suggest, setSuggest] = useState({ row: -1, list: [] });
+  const searchTimer = useRef(null);
+  const searchSeq = useRef(0);
+
+  const searchMaster = (idx, q) => {
+    clearTimeout(searchTimer.current);
+    if (!q || q.trim().length < 2) { setSuggest({ row: -1, list: [] }); return; }
+    searchTimer.current = setTimeout(async () => {
+      const seq = ++searchSeq.current;
+      try {
+        const list = await api.searchItems(q.trim());
+        if (seq === searchSeq.current) setSuggest({ row: idx, list });
+      } catch { /* master search is best-effort; typing still works */ }
+    }, 250);
+  };
+
+  const pickSuggestion = (idx, it) => {
+    updateRow(idx, {
+      itemName: it.name,
+      code: it.code || rows[idx].code,
+      unit: it.unit || rows[idx].unit,
+    });
+    setSuggest({ row: -1, list: [] });
+  };
+
   const total = rows.reduce((sum, r) => sum + (rowAmount(r) ?? 0), 0);
   const hasAnyRate = rows.some(r => rowAmount(r) != null);
 
@@ -39,7 +70,8 @@ export default function ItemsGridEditor({ rows, onChange, title = 'Items', heade
         <div>
           <h3 style={{ fontWeight: 700, fontSize: 15 }}>{title}</h3>
           <div style={{ fontSize: 11.5, color: 'var(--text3)', marginTop: 3 }}>
-            Only <strong>Description</strong> and <strong>Qty</strong> are required — Code, Rate, Serial No and Remarks are optional.
+            Type in <strong>Description</strong> to search the items master — or enter a brand-new
+            item (it joins the master automatically). Only Description and Qty are required.
           </div>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
@@ -67,10 +99,25 @@ export default function ItemsGridEditor({ rows, onChange, title = 'Items', heade
             {rows.map((r, i) => (
               <tr key={i}>
                 <td style={{ textAlign: 'center', color: 'var(--text3)', fontFamily: 'var(--font-mono)', fontSize: 12 }}>{i + 1}</td>
-                <td>
+                <td style={{ position: 'relative' }}>
                   <input className="form-input cell-input" value={r.itemName}
-                    onChange={e => updateRow(i, { itemName: e.target.value })}
-                    placeholder="Item description…" />
+                    onChange={e => { updateRow(i, { itemName: e.target.value }); searchMaster(i, e.target.value); }}
+                    onBlur={() => setTimeout(() => setSuggest(s => (s.row === i ? { row: -1, list: [] } : s)), 150)}
+                    onKeyDown={e => e.key === 'Escape' && setSuggest({ row: -1, list: [] })}
+                    placeholder="Search items or type a new one…" />
+                  {suggest.row === i && suggest.list.length > 0 && (
+                    <div className="suggest-menu">
+                      {suggest.list.map(it => (
+                        <button type="button" key={it.id} className="suggest-item"
+                          onMouseDown={e => { e.preventDefault(); pickSuggestion(i, it); }}>
+                          <span className="suggest-name">{it.name}</span>
+                          {(it.code || it.category) && (
+                            <span className="suggest-meta">{[it.code, it.category].filter(Boolean).join(' · ')}</span>
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </td>
                 <td>
                   <input className="form-input cell-input" value={r.code}
