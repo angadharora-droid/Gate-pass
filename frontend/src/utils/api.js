@@ -37,7 +37,8 @@ async function request(path, options = {}) {
 
 export const api = {
   // Auth
-  login: (email, password) => request('/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) }),
+  // `identifier` is a login ID or an email — the server matches either
+  login: (identifier, password) => request('/auth/login', { method: 'POST', body: JSON.stringify({ identifier, password }) }),
   me: () => request('/auth/me'),
 
   // Gate passes
