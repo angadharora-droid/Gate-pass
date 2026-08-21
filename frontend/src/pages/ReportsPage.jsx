@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../utils/api';
 import { useAuth } from '../context/AuthContext';
-import { StatusBadge, TypeBadge, DirectionBadge, ReturnableBadge, STATUS_LABELS } from '../components/Badges';
+import { StatusBadge, MovementBadge, movementFor, DirectionBadge, ReturnableBadge, STATUS_LABELS } from '../components/Badges';
 import { AlertTriangle, FileBarChart2, Timer, Download } from 'lucide-react';
 
 function pad2(n) {
@@ -30,6 +30,25 @@ function fmtDate(dateStr) {
     day: '2-digit', month: 'short', year: 'numeric',
     hour: '2-digit', minute: '2-digit',
   });
+}
+
+const fmtMoney = n => `₹ ${Number(n).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
+
+// The most recent custody leg stamped on a pass — what last physically
+// happened to the items, regardless of where in the lifecycle it sits.
+function lastMovement(p) {
+  if (p.type === 'inward') {
+    return p.inwardLog ? { label: 'Logged at gate', at: p.inwardLog.loggedAt } : null;
+  }
+  const legs = [
+    p.outwardLog       && { label: 'Dispatched',         at: p.outwardLog.loggedAt },
+    p.receivedLog      && { label: 'Received',           at: p.receivedLog.loggedAt },
+    p.returnRequest    && { label: 'Send-back approved', at: p.returnRequest.requestedAt },
+    p.returnOutwardLog && { label: 'Return dispatched',  at: p.returnOutwardLog.loggedAt },
+    p.inwardLog        && { label: 'Returned',           at: p.inwardLog.loggedAt },
+  ].filter(Boolean);
+  if (!legs.length) return null;
+  return legs.reduce((a, b) => (new Date(b.at) >= new Date(a.at) ? b : a));
 }
 
 export default function ReportsPage() {
@@ -88,13 +107,43 @@ export default function ReportsPage() {
           const inBranch = p.sourceBranch === branch || p.destinationBranch === branch;
           if (!inBranch) return false;
         }
-        if (departmentId && p.departmentId !== departmentId) return false;
-        if (type && p.type !== type) return false;
-        if (status && p.status !== status) return false;
+        // Match the requesting OR the receiving department, so a transfer is
+        // reportable from both ends of the movement
+        if (departmentId && p.departmentId !== departmentId && p.receivedLog?.departmentId !== departmentId) return false;
+        // Movement is relative to the viewer's branch: 'in' = coming to me,
+        // 'out' = leaving me. Stored-type filtering stays for 'inward'/'outward'.
+        if (type === 'in' || type === 'out') {
+          if (movementFor(p, user) !== type) return false;
+        } else if (type && p.type !== type) {
+          return false;
+        }
+        if (status) {
+          if (status === 'overdue') {
+            if (!p.isOverdue) return false;
+          } else if (status === 'out_any') {
+            // Umbrella: anything currently outside — including partly-returned
+            // passes whose remaining items are still out (matches the pill)
+            if (!['in_transit', 'partial_return'].includes(p.status)) return false;
+          } else if ((p.displayStatus || p.status) !== status) {
+            return false;
+          }
+        }
         return true;
       })
       .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-  }, [passes, month, branch, departmentId, type, status]);
+  }, [passes, month, branch, departmentId, type, status, user]);
+
+  // Live aggregates over whatever the filters currently select
+  const summary = useMemo(() => {
+    const s = { outward: 0, inward: 0, open: 0, late: 0, value: 0 };
+    for (const p of filtered) {
+      if (p.type === 'inward') s.inward++; else s.outward++;
+      if (['in_transit', 'partial_return'].includes(p.status)) s.open++;
+      if (p.isOverdue) s.late++;
+      s.value += (p.items || []).reduce((sum, li) => sum + (li.amount || 0), 0);
+    }
+    return s;
+  }, [filtered]);
 
   const openEdit = (p) => {
     setEditingId(p.id);
@@ -207,8 +256,8 @@ export default function ReportsPage() {
             <label className="form-label">Branch</label>
             <select className="form-select" value={branch} onChange={e => { setBranch(e.target.value); setDepartmentId(''); }}>
               <option value="">All (within access)</option>
-              {branches.filter(b => b.active !== false).map(b => (
-                <option key={b.id} value={b.id}>{b.name}</option>
+              {branches.map(b => (
+                <option key={b.id} value={b.id}>{b.name}{b.active === false ? ' (inactive)' : ''}</option>
               ))}
             </select>
           </div>
@@ -225,11 +274,26 @@ export default function ReportsPage() {
 
         <div className="form-row" style={{ gridTemplateColumns: '1fr 1fr 1fr', gap: 12, marginTop: 12 }}>
           <div className="form-group" style={{ marginBottom: 0 }}>
-            <label className="form-label">Type</label>
+            <label className="form-label">Movement</label>
+            {/* For admin the viewer-relative options equal the stored types, so
+                offer only the type options to avoid a misleading "my branch" */}
             <select className="form-select" value={type} onChange={e => setType(e.target.value)}>
               <option value="">All</option>
-              <option value="outward">Outward</option>
-              <option value="inward">Inward</option>
+              {user?.role === 'admin' ? (
+                <>
+                  <option value="outward">Outward passes</option>
+                  <option value="inward">Direct inward entries</option>
+                </>
+              ) : (
+                <>
+                  <option value="in">Coming In (to my branch)</option>
+                  <option value="out">Going Out (of my branch)</option>
+                  <optgroup label="By pass type">
+                    <option value="outward">Outward passes</option>
+                    <option value="inward">Direct inward entries</option>
+                  </optgroup>
+                </>
+              )}
             </select>
           </div>
           <div className="form-group" style={{ marginBottom: 0 }}>
@@ -238,11 +302,19 @@ export default function ReportsPage() {
               <option value="">All</option>
               <option value="pending">Waiting Approval</option>
               <option value="approved">Approved</option>
-              <option value="in_transit">Out / In Transit</option>
+              <option value="out_any">Out — any stage</option>
+              <optgroup label="Out — exact stage">
+                <option value="items_out">Items Out (external)</option>
+                <option value="in_transit">In Transit (between branches)</option>
+                <option value="at_destination">At Destination</option>
+                <option value="return_approved">Send-Back Approved</option>
+                <option value="returning">Returning</option>
+              </optgroup>
               <option value="partial_return">Partly Back</option>
               <option value="completed">Completed</option>
               <option value="closed">Closed</option>
               <option value="rejected">Rejected</option>
+              <option value="overdue">Late (overdue)</option>
             </select>
           </div>
           <div className="form-group" style={{ marginBottom: 0, display: 'flex', alignItems: 'flex-end', justifyContent: 'flex-end' }}>
@@ -250,6 +322,38 @@ export default function ReportsPage() {
           </div>
         </div>
       </div>
+
+      {/* Live summary of the filtered selection */}
+      {!loading && filtered.length > 0 && (
+        <div className="stat-pills">
+          <div className="stat-pill">
+            <span className="stat-pill-num">{filtered.length}</span>
+            <span className="stat-pill-label">Passes</span>
+          </div>
+          <div className="stat-pill">
+            <span className="stat-pill-num">{summary.outward}</span>
+            <span className="stat-pill-label">Outward</span>
+          </div>
+          <div className="stat-pill">
+            <span className="stat-pill-num">{summary.inward}</span>
+            <span className="stat-pill-label">Inward</span>
+          </div>
+          <div className="stat-pill">
+            <span className="stat-pill-num" style={{ color: summary.open ? 'var(--purple)' : undefined }}>{summary.open}</span>
+            <span className="stat-pill-label">Still Out</span>
+          </div>
+          <div className="stat-pill">
+            <span className="stat-pill-num" style={{ color: summary.late ? 'var(--red)' : undefined }}>{summary.late}</span>
+            <span className="stat-pill-label">Late</span>
+          </div>
+          {summary.value > 0 && (
+            <div className="stat-pill">
+              <span className="stat-pill-num" style={{ fontSize: 14 }}>{fmtMoney(summary.value)}</span>
+              <span className="stat-pill-label">Item Value</span>
+            </div>
+          )}
+        </div>
+      )}
 
       {loading ? (
         <div className="loading-page"><div className="spinner" /><span>Loading reports…</span></div>
@@ -272,6 +376,7 @@ export default function ReportsPage() {
                 <th>Department</th>
                 <th>Movement</th>
                 <th>Status</th>
+                <th>Last Movement</th>
                 <th>Early</th>
                 <th>Purpose</th>
                 <th>Remarks</th>
@@ -284,6 +389,7 @@ export default function ReportsPage() {
                 const fromTo = p.type === 'inward'
                   ? `${p.destinationPerson || 'Outside party'} → ${p.destinationBranchName || '—'}`
                   : `${p.sourceBranchName || '—'} → ${p.destinationBranchName || p.destinationPerson || '—'}`;
+                const move = lastMovement(p);
 
                 return (
                   <tr key={p.id}>
@@ -292,11 +398,21 @@ export default function ReportsPage() {
                     <td style={{ fontSize: 13, color: 'var(--text2)' }}>{fromTo}</td>
                     <td style={{ fontSize: 13, color: 'var(--text2)' }}>{p.departmentName || '—'}</td>
                     <td style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                      <TypeBadge type={p.type} />
+                      <MovementBadge pass={p} user={user} />
                       <DirectionBadge direction={p.direction} />
                       <ReturnableBadge returnable={p.returnable} />
                     </td>
                     <td><StatusBadge pass={p} /></td>
+                    <td>
+                      {move ? (
+                        <>
+                          <div style={{ fontSize: 12.5, color: 'var(--text2)' }}>{move.label}</div>
+                          <div style={{ fontSize: 11, color: 'var(--text3)', fontFamily: 'var(--font-mono)', whiteSpace: 'nowrap' }}>{fmtDate(move.at)}</div>
+                        </>
+                      ) : (
+                        <span style={{ color: 'var(--text3)' }}>—</span>
+                      )}
+                    </td>
                     <td>{p.earlyReturn ? <span className="badge badge-early_return" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><Timer size={11} strokeWidth={2.5} /> Early</span> : <span style={{ color: 'var(--text3)' }}>—</span>}</td>
                     <td style={{ maxWidth: 260 }}>
                       {isEditing ? (

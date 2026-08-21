@@ -43,9 +43,9 @@ export default function App() {
         <Route path="time-office" element={
           <RequireAuth roles={['admin','time_office']}><TimeOfficePage /></RequireAuth>
         } />
-        <Route path="reports" element={
-          <RequireAuth roles={['admin','manager']}><ReportsPage /></RequireAuth>
-        } />
+        {/* Reports are open to every role — the server already scopes the data
+            to the caller's branch, so each user reports on what they can see */}
+        <Route path="reports" element={<ReportsPage />} />
         <Route path="admin" element={
           <RequireAuth roles={['admin']}><AdminPage /></RequireAuth>
         } />

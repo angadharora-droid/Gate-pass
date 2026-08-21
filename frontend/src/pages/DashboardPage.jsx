@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '../utils/api';
 import { Link } from 'react-router-dom';
-import { StatusBadge, TypeBadge } from '../components/Badges';
+import { StatusBadge, MovementBadge } from '../components/Badges';
 import { useAuth } from '../context/AuthContext';
 import {
   Package,
@@ -82,7 +82,7 @@ export default function DashboardPage() {
               : 'are on the way to your branch.'}
           </span>
           <Link
-            to={['admin', 'time_office'].includes(user?.role) ? '/time-office' : '/passes'}
+            to={['admin', 'time_office'].includes(user?.role) ? '/time-office' : '/passes?movement=in'}
             style={{ marginLeft: 'auto', textDecoration: 'underline', textUnderlineOffset: 3, fontSize: 13, fontWeight: 500, whiteSpace: 'nowrap' }}
           >
             View
@@ -169,7 +169,7 @@ export default function DashboardPage() {
                       <StatusBadge pass={p} />
                     </div>
                     <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                      <TypeBadge type={p.type} />
+                      <MovementBadge pass={p} user={user} />
                       <span style={{ fontSize: 12, color: 'var(--text3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                         {p.purpose || '—'}
                       </span>

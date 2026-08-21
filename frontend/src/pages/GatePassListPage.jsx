@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { api } from '../utils/api';
 import { useAuth } from '../context/AuthContext';
-import { StatusBadge, TypeBadge, DirectionBadge, ReturnableBadge } from '../components/Badges';
+import { StatusBadge, MovementBadge, movementFor, DirectionBadge, ReturnableBadge } from '../components/Badges';
 import { Plus, SearchX } from 'lucide-react';
 
 const STATUS_TABS = [
@@ -16,10 +16,13 @@ const STATUS_TABS = [
   { key: 'rejected',       label: 'Rejected' },
 ];
 
-const TYPE_TABS = [
-  { key: null,      label: 'All types' },
-  { key: 'outward', label: 'Outward' },
-  { key: 'inward',  label: 'Inward' },
+// Viewer-relative: "Coming In" = anything arriving at MY branch (direct inward
+// entries + transfers sent to us); "Going Out" = anything leaving my branch.
+// Admin sees the org-wide stored type, so the chips use the plain type words.
+const movementTabs = (isAdmin) => [
+  { key: null,  label: 'All movements' },
+  { key: 'in',  label: isAdmin ? 'Inward' : 'Coming In' },
+  { key: 'out', label: isAdmin ? 'Outward' : 'Going Out' },
 ];
 
 function fmt(dateStr) {
@@ -46,7 +49,7 @@ function TabBar({ tabs, active, onChange }) {
 export default function GatePassListPage() {
   const { user } = useAuth();
   const canCreate = ['admin', 'manager', 'staff'].includes(user?.role);
-  // Deep links work: /passes?status=in_transit, /passes?type=inward, /passes?overdue=true
+  // Deep links work: /passes?status=in_transit, /passes?movement=in, /passes?overdue=true
   const [searchParams] = useSearchParams();
   const [passes, setPasses]     = useState([]);
   const [loading, setLoading]   = useState(true);
@@ -54,9 +57,10 @@ export default function GatePassListPage() {
     const s = searchParams.get('status');
     return STATUS_TABS.some(t => t.key === s) ? s : null;
   });
-  const [typeFilter, setTypeFilter] = useState(() => {
-    const t = searchParams.get('type');
-    return TYPE_TABS.some(x => x.key === t) ? t : null;
+  const [movementFilter, setMovementFilter] = useState(() => {
+    // `type=inward|outward` deep links from older bookmarks still map sensibly
+    const m = searchParams.get('movement') || { inward: 'in', outward: 'out' }[searchParams.get('type')];
+    return ['in', 'out'].includes(m) ? m : null;
   });
   const [overdueOnly, setOverdueOnly] = useState(() => searchParams.get('overdue') === 'true');
 
@@ -64,13 +68,14 @@ export default function GatePassListPage() {
     setLoading(true);
     const q = {};
     if (statusFilter) q.status = statusFilter;
-    if (typeFilter)   q.type   = typeFilter;
     api.getPasses(q).then(setPasses).finally(() => setLoading(false));
   };
 
-  useEffect(() => { load(); }, [statusFilter, typeFilter]);
+  useEffect(() => { load(); }, [statusFilter]);
 
-  const shown = overdueOnly ? passes.filter(p => p.isOverdue) : passes;
+  // Movement is relative to the viewer's branch, so it filters client-side
+  let shown = movementFilter ? passes.filter(p => movementFor(p, user) === movementFilter) : passes;
+  if (overdueOnly) shown = shown.filter(p => p.isOverdue);
   const pendingCount  = shown.filter(p => p.status === 'pending').length;
   const overdueCount  = passes.filter(p => p.isOverdue).length;
 
@@ -91,11 +96,11 @@ export default function GatePassListPage() {
       <TabBar tabs={STATUS_TABS} active={statusFilter} onChange={setStatusFilter} />
 
       <div className="filters-bar" style={{ marginBottom: 20 }}>
-        {TYPE_TABS.map(t => (
+        {movementTabs(user?.role === 'admin').map(t => (
           <button
             key={t.key ?? '_all'}
-            className={`filter-chip${typeFilter === t.key ? ' active' : ''}`}
-            onClick={() => setTypeFilter(t.key)}
+            className={`filter-chip${movementFilter === t.key ? ' active' : ''}`}
+            onClick={() => setMovementFilter(t.key)}
           >{t.label}</button>
         ))}
         <button
@@ -121,7 +126,7 @@ export default function GatePassListPage() {
             <thead>
               <tr>
                 <th>Pass #</th>
-                <th>Type</th>
+                <th>Movement</th>
                 <th>From → To</th>
                 <th>Status</th>
                 <th>Created</th>
@@ -141,7 +146,7 @@ export default function GatePassListPage() {
                   </td>
                   <td>
                     <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-                      <TypeBadge type={p.type} />
+                      <MovementBadge pass={p} user={user} />
                       <DirectionBadge direction={p.direction} />
                       {p.returnable && <ReturnableBadge returnable={true} />}
                     </div>
