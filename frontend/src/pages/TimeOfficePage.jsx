@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../utils/api';
 import { useAuth } from '../context/AuthContext';
+import { hasRole } from '../utils/roles';
 import { StatusBadge, TypeBadge, ReturnableBadge } from '../components/Badges';
 import {
   X, AlertTriangle, Info, ArrowUpRight, ArrowDownLeft, RotateCcw,
@@ -625,7 +626,7 @@ export default function TimeOfficePage() {
 
   // time_office is branch-bound: departures/returns happen at the SOURCE gate,
   // receiving a branch transfer happens at the DESTINATION gate. Admin sees all.
-  const isAdmin = user?.role === 'admin';
+  const isAdmin = hasRole(user, 'admin');
   const atMySource = p => isAdmin || p.sourceBranch === user?.branch;
   const atMyDest   = p => isAdmin || p.destinationBranch === user?.branch;
   const isTransfer = p => p.type === 'outward' && p.direction === 'internal' && !!p.destinationBranch;

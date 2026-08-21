@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { api } from '../utils/api';
 import { useAuth } from '../context/AuthContext';
+import { hasRole } from '../utils/roles';
 import { StatusBadge, MovementBadge, ReturnableBadge, DirectionBadge, STATUS_LABELS } from '../components/Badges';
 import { LogOutwardModal, LogInwardModal, ReceiveTransferModal, ReturnOutModal } from './TimeOfficePage';
 import {
@@ -52,8 +53,8 @@ export default function GatePassDetailPage() {
   // A routed pass may only be decided by its chosen approver (or an admin).
   // Legacy passes without an approver fall back to any manager/supermanager
   // of the source branch.
-  const canApprove = (p) => user?.role === 'admin' ||
-    (['manager', 'supermanager'].includes(user?.role) &&
+  const canApprove = (p) => hasRole(user, 'admin') ||
+    (hasRole(user, 'manager', 'supermanager') &&
       user?.branch === p?.sourceBranch &&
       (!p?.approverId || p.approverId === user?.id));
 
@@ -103,8 +104,8 @@ export default function GatePassDetailPage() {
   // /log-outward, /log-inward and /receive to time_office + admin. Time Office
   // is branch-bound: departures/returns at the SOURCE gate, receiving an
   // internal transfer at the DESTINATION gate. Admin can log anywhere.
-  const isAdmin = user?.role === 'admin';
-  const canLog = ['time_office', 'admin'].includes(user?.role);
+  const isAdmin = hasRole(user, 'admin');
+  const canLog = hasRole(user, 'time_office', 'admin');
   const atSource = isAdmin || user?.branch === pass.sourceBranch;
   const atDest   = isAdmin || user?.branch === pass.destinationBranch;
   const isTransferAway = pass.type === 'outward' && pass.direction === 'internal' &&
@@ -124,7 +125,7 @@ export default function GatePassDetailPage() {
   const canApproveSendBack = isTransferAway && pass.returnable && pass.receivedLog && !pass.returnRequest &&
     (isAdmin ||
       user?.id === pass.receivedLog.receiverId ||
-      (['manager', 'supermanager'].includes(user?.role) && user?.branch === pass.destinationBranch));
+      (hasRole(user, 'manager', 'supermanager') && user?.branch === pass.destinationBranch));
   // After approval, the destination gate marks the return physically out
   const canReturnOut    = canLog && atDest && isTransferAway && pass.returnable &&
     pass.returnRequest && !pass.returnOutwardLog;

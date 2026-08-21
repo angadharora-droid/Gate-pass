@@ -2,6 +2,7 @@ import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useEffect, useState } from 'react';
 import { api } from '../utils/api';
+import { hasRole, rolesOf } from '../utils/roles';
 import {
   LayoutDashboard,
   FileText,
@@ -40,7 +41,7 @@ export default function Layout() {
     { to: '/passes',     Icon: FileText,        label: 'Gate Passes',  roles: null,
       // The pending queue is the approvers' to-do, not everyone's
       // Routed-aware: only passes THIS approver can actually decide
-      badge: ['admin', 'supermanager', 'manager'].includes(user?.role) && stats.myPendingApprovals > 0
+      badge: hasRole(user, 'admin', 'supermanager', 'manager') && stats.myPendingApprovals > 0
         ? stats.myPendingApprovals : null },
     { to: '/passes/new', Icon: FilePlus2,       label: 'New Pass',     roles: ['admin', 'supermanager', 'manager', 'staff'] },
     { to: '/inward/new', Icon: PackagePlus,     label: 'New Inward',   roles: ['admin', 'time_office'] },
@@ -48,7 +49,7 @@ export default function Layout() {
       badge: gateWork > 0 ? gateWork : null },
     { to: '/reports',    Icon: BarChart2,       label: 'Reports',      roles: null },
     { to: '/admin',      Icon: Settings2,       label: 'Admin Panel',  roles: ['admin'] },
-  ].filter(item => !item.roles || item.roles.includes(user?.role));
+  ].filter(item => !item.roles || hasRole(user, ...item.roles));
 
   return (
     <div className="app-shell">
@@ -98,7 +99,7 @@ export default function Layout() {
           <div className="user-info">
             <div className="user-name">{user?.name}</div>
             <div className="user-role">
-              {user?.role?.replace('_', ' ')} · {user?.branchName?.split('–')[0]?.trim()}
+              {rolesOf(user).map(r => r.replace('_', ' ')).join(' + ')} · {user?.branchName?.split('–')[0]?.trim()}
             </div>
           </div>
           <button className="logout-btn" onClick={handleLogout} title="Sign out" aria-label="Sign out">

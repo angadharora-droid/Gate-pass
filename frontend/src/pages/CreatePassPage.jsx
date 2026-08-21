@@ -1,13 +1,14 @@
 import { useNavigate } from 'react-router-dom';
 import { api } from '../utils/api';
 import { useAuth } from '../context/AuthContext';
+import { hasRole } from '../utils/roles';
 import { Zap, ArrowRight } from 'lucide-react';
 import OutwardPassForm from '../components/OutwardPassForm';
 
 export default function CreatePassPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
-  const isManagerOrAdmin = ['manager', 'supermanager', 'admin'].includes(user?.role);
+  const isManagerOrAdmin = hasRole(user, 'manager', 'supermanager', 'admin');
 
   const today = new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
 

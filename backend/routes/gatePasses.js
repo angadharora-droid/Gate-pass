@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { dbc, NO_ID, generatePassNumber, logAudit, INWARD_TYPES, DOCUMENT_TYPES, UNITS } from '../data/db.js';
 import { authMiddleware, requireRole } from '../middleware/auth.js';
+import { hasRole } from '../lib/roles.js';
 import { asyncHandler } from '../lib/asyncHandler.js';
 
 const router = Router();
@@ -12,7 +13,7 @@ router.use(authMiddleware);
 // mans the gate of ONE branch — sees passes touching their branch (as source
 // or destination, so incoming inter-branch transfers are visible too).
 function scopePasses(passes, user) {
-  if (user.role === 'admin') return passes;
+  if (hasRole(user, 'admin')) return passes;
   return passes.filter(p =>
     p.sourceBranch === user.branch || p.destinationBranch === user.branch
   );
@@ -103,7 +104,7 @@ router.post('/', requireRole('admin', 'supermanager', 'manager', 'staff'), async
 
   // Source branch is the author's branch; only admins may author for another
   // branch, and every branch reference must be real and active.
-  const srcBranchId = (req.user.role === 'admin' && sourceBranch) ? sourceBranch : req.user.branch;
+  const srcBranchId = (hasRole(req.user, 'admin') && sourceBranch) ? sourceBranch : req.user.branch;
   const srcBranch = await dbc('branches').findOne({ id: srcBranchId, active: { $ne: false } }, NO_ID);
   if (!srcBranch) return res.status(400).json({ error: 'Source branch not found or inactive' });
 
@@ -117,7 +118,7 @@ router.post('/', requireRole('admin', 'supermanager', 'manager', 'staff'), async
   if (returnable && expectedReturnDate && isNaN(new Date(expectedReturnDate).getTime()))
     return res.status(400).json({ error: 'Expected return date is not a valid date' });
 
-  const selfApproving = ['manager', 'supermanager', 'admin'].includes(req.user.role);
+  const selfApproving = hasRole(req.user, 'manager', 'supermanager', 'admin');
 
   // Staff route the request to a specific approver of their choosing
   let approver = null;
@@ -125,11 +126,12 @@ router.post('/', requireRole('admin', 'supermanager', 'manager', 'staff'), async
     if (!approverId)
       return res.status(400).json({ error: 'Select who should approve this pass' });
     approver = await dbc('users').findOne({ id: approverId, active: { $ne: false } }, NO_ID);
-    if (!approver || !['manager', 'supermanager'].includes(approver.role))
+    if (!approver || !hasRole(approver, 'manager', 'supermanager'))
       return res.status(400).json({ error: 'Approver must be a manager or supermanager' });
     if (approver.branch !== srcBranchId)
       return res.status(400).json({ error: 'Approver must belong to your branch' });
-    if (approver.role === 'manager' && approver.departmentId !== req.user.departmentId)
+    // Supermanagers approve branch-wide; a plain manager only for their own department
+    if (!hasRole(approver, 'supermanager') && approver.departmentId !== req.user.departmentId)
       return res.status(400).json({ error: 'A manager approver must be from your own department' });
   }
 
@@ -209,8 +211,8 @@ router.post('/inward', requireRole('time_office', 'admin'), asyncHandler(async (
 
   const branch = await dbc('branches').findOne({ id: branchId, active: { $ne: false } }, NO_ID);
   if (!branch) return res.status(400).json({ error: 'Select a valid receiving branch' });
-  // time_office is branch-bound: it can only log arrivals at its own gate
-  if (req.user.role === 'time_office' && branch.id !== req.user.branch)
+  // Gate operators are branch-bound: only admins log arrivals for another branch
+  if (!hasRole(req.user, 'admin') && branch.id !== req.user.branch)
     return res.status(403).json({ error: 'You can only log inward entries for your own branch' });
 
   const dept = await dbc('departments').findOne({ id: departmentId, active: { $ne: false } }, NO_ID);
@@ -310,7 +312,7 @@ router.post('/inward', requireRole('time_office', 'admin'), asyncHandler(async (
 async function approverStillValid(pass) {
   if (!pass.approverId) return false;
   const a = await dbc('users').findOne({ id: pass.approverId, active: { $ne: false } }, NO_ID);
-  return !!a && ['manager', 'supermanager'].includes(a.role) && a.branch === pass.sourceBranch;
+  return !!a && hasRole(a, 'manager', 'supermanager') && a.branch === pass.sourceBranch;
 }
 
 // ─── APPROVE / REJECT ─────────────────────────────────────────────────────────
@@ -326,7 +328,7 @@ router.patch('/:id/status', requireRole('manager', 'supermanager', 'admin'), asy
   // Goods LEAVE the source branch — only that branch authorizes it, and when
   // the creator routed the request to a specific approver, only THAT person
   // (or an admin) may decide it.
-  if (req.user.role !== 'admin') {
+  if (!hasRole(req.user, 'admin')) {
     if (pass.sourceBranch !== req.user.branch)
       return res.status(403).json({ error: 'Only the source branch can approve this pass' });
     if (pass.approverId && pass.approverId !== req.user.id && await approverStillValid(pass))
@@ -355,7 +357,7 @@ router.patch('/:id/revise', requireRole('manager', 'supermanager', 'admin'), asy
     return res.status(400).json({ error: 'Only pending passes can be edited; this one is already ' + pass.status });
   // Same authority rule as approval: source branch only, and a routed pass is
   // only editable by its chosen approver (or admin)
-  if (req.user.role !== 'admin') {
+  if (!hasRole(req.user, 'admin')) {
     if (pass.sourceBranch !== req.user.branch)
       return res.status(403).json({ error: 'Only the source branch can edit this pass' });
     if (pass.approverId && pass.approverId !== req.user.id && await approverStillValid(pass))
@@ -463,7 +465,7 @@ router.patch('/:id/log-outward', requireRole('time_office', 'admin'), asyncHandl
   if (!pass) return res.status(404).json({ error: 'Gate pass not found' });
 
   // Authorization first, so state details never leak to the wrong gate
-  if (req.user.role === 'time_office' && pass.sourceBranch !== req.user.branch)
+  if (!hasRole(req.user, 'admin') && pass.sourceBranch !== req.user.branch)
     return res.status(403).json({ error: 'Only the source branch gate can mark these items out' });
   if (pass.type !== 'outward')
     return res.status(400).json({ error: 'log-outward is only for outward passes' });
@@ -506,7 +508,7 @@ router.patch('/:id/receive', requireRole('time_office', 'admin'), asyncHandler(a
 
   if (!(pass.type === 'outward' && pass.direction === 'internal' && pass.destinationBranch))
     return res.status(400).json({ error: 'Only internal branch-to-branch passes can be received' });
-  if (req.user.role === 'time_office' && pass.destinationBranch !== req.user.branch)
+  if (!hasRole(req.user, 'admin') && pass.destinationBranch !== req.user.branch)
     return res.status(403).json({ error: 'Only the destination branch gate can mark these items in' });
   if (!pass.outwardLog)
     return res.status(400).json({ error: 'Items have not been marked out by the source branch yet' });
@@ -570,8 +572,8 @@ router.patch('/:id/return-request', asyncHandler(async (req, res) => {
     return res.status(400).json({ error: `Cannot approve a send-back in ${pass.status} status` });
 
   const isReceiver    = req.user.id === pass.receivedLog.receiverId;
-  const isDestManager = ['manager', 'supermanager'].includes(req.user.role) && req.user.branch === pass.destinationBranch;
-  if (!(req.user.role === 'admin' || isReceiver || isDestManager))
+  const isDestManager = hasRole(req.user, 'manager', 'supermanager') && req.user.branch === pass.destinationBranch;
+  if (!(hasRole(req.user, 'admin') || isReceiver || isDestManager))
     return res.status(403).json({ error: 'Only the receiver (or a manager/supermanager of their branch) can approve the send-back' });
 
   pass.returnRequest = {
@@ -595,7 +597,7 @@ router.patch('/:id/return-outward', requireRole('time_office', 'admin'), asyncHa
 
   if (!(pass.type === 'outward' && pass.direction === 'internal' && pass.returnable && pass.destinationBranch))
     return res.status(400).json({ error: 'Only returnable branch transfers have a return dispatch' });
-  if (req.user.role === 'time_office' && pass.destinationBranch !== req.user.branch)
+  if (!hasRole(req.user, 'admin') && pass.destinationBranch !== req.user.branch)
     return res.status(403).json({ error: 'Only the destination branch gate can mark this return out' });
   if (!pass.returnRequest)
     return res.status(400).json({ error: 'The receiver has not approved the send-back yet' });
@@ -637,7 +639,7 @@ router.patch('/:id/log-inward', requireRole('time_office', 'admin'), asyncHandle
     if (!pass.returnable)
       return res.status(400).json({ error: 'This outward pass is non-returnable; no inward log needed' });
     // Items come BACK to the branch they left from — only that gate logs the return
-    if (req.user.role === 'time_office' && pass.sourceBranch !== req.user.branch)
+    if (!hasRole(req.user, 'admin') && pass.sourceBranch !== req.user.branch)
       return res.status(403).json({ error: 'Only the source branch gate can log this return' });
     if (!['in_transit', 'partial_return'].includes(pass.status))
       return res.status(400).json({ error: 'Pass must be in_transit or partial_return to log a return' });
@@ -767,8 +769,8 @@ router.get('/meta/stats', asyncHandler(async (req, res) => {
 
   // Departures and returns happen at the SOURCE branch gate; receiving a branch
   // transfer happens at the DESTINATION. Non-admins only count their own gate.
-  const atMySource = p => req.user.role === 'admin' || p.sourceBranch === req.user.branch;
-  const atMyDest   = p => req.user.role === 'admin' || p.destinationBranch === req.user.branch;
+  const atMySource = p => hasRole(req.user, 'admin') || p.sourceBranch === req.user.branch;
+  const atMyDest   = p => hasRole(req.user, 'admin') || p.destinationBranch === req.user.branch;
 
   // Overdue = my branch's returnable items that should have been back by now
   const overdue = passes.filter(p =>
@@ -785,8 +787,8 @@ router.get('/meta/stats', asyncHandler(async (req, res) => {
   // a pass routed to a colleague is not in my to-do
   const myPendingApprovals = passes.filter(p =>
     p.status === 'pending' &&
-    (req.user.role === 'admin' ||
-      (['manager', 'supermanager'].includes(req.user.role) &&
+    (hasRole(req.user, 'admin') ||
+      (hasRole(req.user, 'manager', 'supermanager') &&
        p.sourceBranch === req.user.branch &&
        (!p.approverId || p.approverId === req.user.id)))
   );

@@ -63,7 +63,7 @@ function UsersTab() {
   const [branches, setBranches] = useState([]);
   const [departments, setDepartments] = useState([]);
   const [modal, setModal] = useState(null);
-  const [form, setForm] = useState({ name: '', loginId: '', email: '', password: '', role: 'staff', branch: '', departmentId: '', active: true });
+  const [form, setForm] = useState({ name: '', loginId: '', email: '', password: '', role: 'staff', extraRoles: [], branch: '', departmentId: '', active: true });
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -81,30 +81,41 @@ function UsersTab() {
   const openCreate = () => {
     const branchId = branches[0]?.id || '';
     const defaultDept = getActiveDepsForBranch(branchId)[0]?.id || '';
-    setForm({ name: '', loginId: '', email: '', password: '', role: 'staff', branch: branchId, departmentId: defaultDept, active: true });
+    setForm({ name: '', loginId: '', email: '', password: '', role: 'staff', extraRoles: [], branch: branchId, departmentId: defaultDept, active: true });
     setError(''); setModal('create');
   };
 
   const openEdit = (u) => {
-    setForm({ name: u.name, loginId: u.loginId || '', email: u.email || '', password: '', role: u.role, branch: u.branch, departmentId: u.departmentId || '', active: u.active });
+    const held = Array.isArray(u.roles) && u.roles.length ? u.roles : [u.role];
+    setForm({
+      name: u.name, loginId: u.loginId || '', email: u.email || '', password: '',
+      role: u.role, extraRoles: held.filter(r => r !== u.role),
+      branch: u.branch, departmentId: u.departmentId || '', active: u.active,
+    });
     setError(''); setModal(u);
   };
 
+  // The full role set the form currently describes
+  const formRoles = [form.role, ...form.extraRoles];
+  const needsDept = formRoles.some(r => !NO_DEPT_ROLES.includes(r));
+
   useEffect(() => {
     if (!modal) return;
-    if (NO_DEPT_ROLES.includes(form.role)) return;
+    if (!needsDept) return;
     const active = getActiveDepsForBranch(form.branch);
     if (!active.find(d => d.id === form.departmentId)) {
       setForm(f => ({ ...f, departmentId: active[0]?.id || '' }));
     }
-  }, [modal, form.role, form.branch, departments]);
+  }, [modal, form.role, form.extraRoles, form.branch, departments]);
 
   const handleSave = async () => {
     setError(''); setLoading(true);
     try {
+      const { extraRoles, ...rest } = form;
       const payload = {
-        ...form,
-        departmentId: NO_DEPT_ROLES.includes(form.role) ? null : (form.departmentId || null),
+        ...rest,
+        roles: formRoles,
+        departmentId: needsDept ? (form.departmentId || null) : null,
       };
       if (modal === 'create') {
         await api.createUser(payload);
@@ -158,16 +169,20 @@ function UsersTab() {
                     )}
                   </td>
                   <td>
-                    <span style={{
-                      padding: '3px 9px', borderRadius: 20, fontSize: 11,
-                      fontFamily: 'var(--font-mono)', fontWeight: 600,
-                      background: `${roleColor[u.role]}12`,
-                      color: roleColor[u.role],
-                      border: `1px solid ${roleColor[u.role]}28`,
-                      textTransform: 'uppercase', letterSpacing: '0.04em',
-                    }}>
-                      {u.role.replace('_', ' ')}
-                    </span>
+                    <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                      {(Array.isArray(u.roles) && u.roles.length ? u.roles : [u.role]).map(r => (
+                        <span key={r} style={{
+                          padding: '3px 9px', borderRadius: 20, fontSize: 11,
+                          fontFamily: 'var(--font-mono)', fontWeight: 600,
+                          background: `${roleColor[r]}12`,
+                          color: roleColor[r],
+                          border: `1px solid ${roleColor[r]}28`,
+                          textTransform: 'uppercase', letterSpacing: '0.04em',
+                        }}>
+                          {r.replace('_', ' ')}
+                        </span>
+                      ))}
+                    </div>
                   </td>
                   <td style={{ fontSize: 13, color: 'var(--text2)' }}>{branch?.name || u.branch}</td>
                   <td style={{ fontSize: 13, color: 'var(--text2)' }}>{u.departmentName || '—'}</td>
@@ -211,8 +226,15 @@ function UsersTab() {
             </div>
             <div className="form-row">
               <div className="form-group">
-                <label className="form-label">Role</label>
-                <select className="form-select" value={form.role} onChange={e => set('role', e.target.value)}>
+                <label className="form-label">Primary Role</label>
+                <select
+                  className="form-select"
+                  value={form.role}
+                  onChange={e => setForm(f => ({
+                    ...f, role: e.target.value,
+                    extraRoles: f.extraRoles.filter(r => r !== e.target.value),
+                  }))}
+                >
                   {ROLES.map(r => <option key={r} value={r}>{r.replace('_', ' ').replace(/^\w/, c => c.toUpperCase())}</option>)}
                 </select>
               </div>
@@ -225,14 +247,36 @@ function UsersTab() {
               </div>
             </div>
             <div className="form-group">
+              <label className="form-label">
+                Additional Roles <span style={{ fontWeight: 400, color: 'var(--text3)' }}>(one account can act as several)</span>
+              </label>
+              <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', padding: '8px 2px' }}>
+                {ROLES.filter(r => r !== form.role && r !== 'admin').map(r => (
+                  <label key={r} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: 'pointer' }}>
+                    <input
+                      type="checkbox"
+                      checked={form.extraRoles.includes(r)}
+                      onChange={e => setForm(f => ({
+                        ...f,
+                        extraRoles: e.target.checked
+                          ? [...f.extraRoles, r]
+                          : f.extraRoles.filter(x => x !== r),
+                      }))}
+                    />
+                    {r.replace('_', ' ').replace(/^\w/, c => c.toUpperCase())}
+                  </label>
+                ))}
+              </div>
+            </div>
+            <div className="form-group">
               <label className="form-label">Department</label>
               <select
                 className="form-select"
                 value={form.departmentId}
                 onChange={e => set('departmentId', e.target.value)}
-                disabled={NO_DEPT_ROLES.includes(form.role)}
+                disabled={!needsDept}
               >
-                <option value="">{NO_DEPT_ROLES.includes(form.role) ? 'Not applicable' : 'Select…'}</option>
+                <option value="">{!needsDept ? 'Not applicable' : 'Select…'}</option>
                 {getActiveDepsForBranch(form.branch).map(d => (
                   <option key={d.id} value={d.id}>{d.name}</option>
                 ))}
@@ -240,13 +284,19 @@ function UsersTab() {
               <div className="form-hint">Departments are defined per branch.</div>
             </div>
 
-            {form.role && (
+            {formRoles.length > 0 && (
               <div style={{
                 padding: '10px 14px', background: 'var(--bg3)',
                 border: '1px solid var(--border)', borderRadius: 'var(--radius)',
                 fontSize: 12.5, color: 'var(--text2)', lineHeight: 1.7,
+                display: 'flex', flexDirection: 'column', gap: 6,
               }}>
-                {roleDesc[form.role]}
+                {formRoles.map(r => (
+                  <div key={r}>
+                    <strong style={{ color: roleColor[r], textTransform: 'capitalize' }}>{r.replace('_', ' ')}:</strong>{' '}
+                    {roleDesc[r]}
+                  </div>
+                ))}
               </div>
             )}
 

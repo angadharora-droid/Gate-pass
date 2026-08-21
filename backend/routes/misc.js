@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { dbc, NO_ID, ROLES, NO_DEPT_ROLES, UNITS, CATEGORIES } from '../data/db.js';
 import { authMiddleware, requireRole } from '../middleware/auth.js';
+import { hasRole, rolesOf, primaryRole } from '../lib/roles.js';
 import { hashPassword } from '../lib/security.js';
 import { asyncHandler } from '../lib/asyncHandler.js';
 
@@ -90,12 +91,17 @@ usersRouter.get('/approvers', asyncHandler(async (req, res) => {
   const candidates = await dbc('users').find({
     active: { $ne: false },
     branch: req.user.branch,
-    role: { $in: ['manager', 'supermanager'] },
+    // Match a primary OR secondary approver role
+    $or: [
+      { role:  { $in: ['manager', 'supermanager'] } },
+      { roles: { $in: ['manager', 'supermanager'] } },
+    ],
   }, NO_ID).toArray();
   const approvers = candidates
-    .filter(u => u.role === 'supermanager' ||
+    .filter(u => hasRole(u, 'supermanager') ||
       (req.user.departmentId && u.departmentId === req.user.departmentId))
-    .map(u => ({ id: u.id, name: u.name, role: u.role }));
+    // Grouping role for the picker: supermanager wins when someone holds both
+    .map(u => ({ id: u.id, name: u.name, role: hasRole(u, 'supermanager') ? 'supermanager' : 'manager' }));
   res.json(approvers);
 }));
 
@@ -105,14 +111,15 @@ usersRouter.get('/', requireRole('admin', 'manager', 'time_office'), asyncHandle
     dbc('departments').find({}, NO_ID).toArray(),
   ]);
   let users = allUsers.map(u => enrichUser(u, departments));
-  // Managers only see users in their branch
-  if (req.user.role === 'manager') {
+  if (hasRole(req.user, 'admin')) {
+    // full directory
+  } else if (hasRole(req.user, 'manager')) {
+    // Managers only see users in their branch
     users = users.filter(u => u.branch === req.user.branch);
-  }
-  // time_office only needs names to pick a Receiver on inward entries and
-  // transfer receipts — active users of THEIR OWN branch, minimal fields,
-  // no emails. A gate account never needs the whole staff directory.
-  if (req.user.role === 'time_office') {
+  } else {
+    // Gate-only accounts need names to pick a Receiver on inward entries and
+    // transfer receipts — active users of THEIR OWN branch, minimal fields,
+    // no emails. A gate account never needs the whole staff directory.
     users = users
       .filter(u => u.active !== false && u.branch === req.user.branch)
       .map(u => ({ id: u.id, name: u.name, role: u.role, branch: u.branch, departmentId: u.departmentId, departmentName: u.departmentName }));
@@ -128,9 +135,12 @@ function normalizeLoginId(raw) {
 }
 
 usersRouter.post('/', requireRole('admin'), asyncHandler(async (req, res) => {
-  const { name, email, loginId, password, role, branch, departmentId } = req.body;
-  if (!name?.trim() || !password || !role || !branch) {
-    return res.status(400).json({ error: 'name, password, role, branch are required' });
+  const { name, email, loginId, password, role, roles, branch, departmentId } = req.body;
+  // A user can hold SEVERAL roles (e.g. supermanager + time_office). Clients
+  // send `roles` (array); a bare `role` still works for single-role accounts.
+  const finalRoles = [...new Set(Array.isArray(roles) && roles.length ? roles : (role ? [role] : []))];
+  if (!name?.trim() || !password || !finalRoles.length || !branch) {
+    return res.status(400).json({ error: 'name, password, role(s), branch are required' });
   }
   const cleanEmail = email?.trim() ? email.toLowerCase().trim() : null;
   const cleanLoginId = normalizeLoginId(loginId) || null;
@@ -141,7 +151,10 @@ usersRouter.post('/', requireRole('admin'), asyncHandler(async (req, res) => {
   if (cleanLoginId && !LOGIN_ID_RE.test(cleanLoginId)) {
     return res.status(400).json({ error: 'Login ID must be 3-30 characters: letters, numbers, dot, dash or underscore' });
   }
-  if (!ROLES.includes(role)) return res.status(400).json({ error: `Role must be one of: ${ROLES.join(', ')}` });
+  if (!finalRoles.every(r => ROLES.includes(r)))
+    return res.status(400).json({ error: `Roles must be from: ${ROLES.join(', ')}` });
+  // Department applies as soon as ANY held role needs one
+  const needsDept = finalRoles.some(r => !NO_DEPT_ROLES.includes(r));
   if (cleanEmail && await dbc('users').findOne({ email: cleanEmail })) {
     return res.status(400).json({ error: 'Email already in use' });
   }
@@ -151,10 +164,10 @@ usersRouter.post('/', requireRole('admin'), asyncHandler(async (req, res) => {
   const branchObj = await dbc('branches').findOne({ id: branch }, NO_ID);
   if (!branchObj) return res.status(400).json({ error: 'Branch not found' });
 
-  if (!NO_DEPT_ROLES.includes(role) && !departmentId) {
+  if (needsDept && !departmentId) {
     return res.status(400).json({ error: 'Department is required for this role' });
   }
-  if (departmentId) {
+  if (needsDept && departmentId) {
     const dept = await dbc('departments').findOne({ id: departmentId }, NO_ID);
     if (!dept || dept.active === false) return res.status(400).json({ error: 'Department not found or inactive' });
     if (dept.branchId !== branch) return res.status(400).json({ error: 'Department must belong to the selected branch' });
@@ -168,9 +181,10 @@ usersRouter.post('/', requireRole('admin'), asyncHandler(async (req, res) => {
     ...(cleanEmail ? { email: cleanEmail } : {}),
     ...(cleanLoginId ? { loginId: cleanLoginId } : {}),
     passwordHash: hashPassword(password),
-    role,
+    role: primaryRole(finalRoles),   // display / legacy primary
+    roles: finalRoles,               // the full held set
     branch,
-    departmentId: NO_DEPT_ROLES.includes(role) ? null : (departmentId || null),
+    departmentId: needsDept ? (departmentId || null) : null,
     active: true,
   };
   await dbc('users').insertOne({ ...user });
@@ -181,10 +195,19 @@ usersRouter.post('/', requireRole('admin'), asyncHandler(async (req, res) => {
 usersRouter.patch('/:id', requireRole('admin'), asyncHandler(async (req, res) => {
   const user = await dbc('users').findOne({ id: req.params.id }, NO_ID);
   if (!user) return res.status(404).json({ error: 'User not found' });
-  if (req.params.id === req.user.id && req.body.role && req.body.role !== 'admin') {
-    return res.status(400).json({ error: 'Cannot remove your own admin role' });
+  const { name, email, loginId, password, role, roles, branch, departmentId, active } = req.body;
+
+  // Role changes: accept `roles` (array) or a bare `role` from older clients
+  if (roles !== undefined || role !== undefined) {
+    const nextRoles = [...new Set(Array.isArray(roles) && roles.length ? roles : (role ? [role] : []))];
+    if (!nextRoles.length || !nextRoles.every(r => ROLES.includes(r)))
+      return res.status(400).json({ error: `Roles must be from: ${ROLES.join(', ')}` });
+    if (req.params.id === req.user.id && !nextRoles.includes('admin'))
+      return res.status(400).json({ error: 'Cannot remove your own admin role' });
+    user.roles = nextRoles;
+    user.role = primaryRole(nextRoles);
   }
-  const { name, email, loginId, password, role, branch, departmentId, active } = req.body;
+
   if (name !== undefined) user.name = name.trim();
   if (email !== undefined) {
     const cleanEmail = email?.trim() ? email.toLowerCase().trim() : null;
@@ -210,15 +233,15 @@ usersRouter.patch('/:id', requireRole('admin'), asyncHandler(async (req, res) =>
     return res.status(400).json({ error: 'User must keep a login ID or an email address to sign in' });
   }
   if (password !== undefined && password) user.passwordHash = hashPassword(password);
-  if (role !== undefined) user.role = role;
   if (branch !== undefined) user.branch = branch;
 
   const nextDepartmentId = departmentId !== undefined ? (departmentId || null) : user.departmentId;
-  const nextRole = role !== undefined ? role : user.role;
   const nextBranch = branch !== undefined ? branch : user.branch;
+  // Department applies as soon as ANY held role needs one
+  const needsDept = rolesOf(user).some(r => !NO_DEPT_ROLES.includes(r));
 
-  if (NO_DEPT_ROLES.includes(nextRole)) {
-    // Gate and supermanager accounts are branch-bound with no department —
+  if (!needsDept) {
+    // Gate/supermanager-only accounts are branch-bound with no department —
     // enforce server-side rather than trusting the client to send null
     user.departmentId = null;
   } else {
