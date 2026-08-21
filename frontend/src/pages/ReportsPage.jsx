@@ -145,6 +145,29 @@ export default function ReportsPage() {
       .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
   }, [passes, fromDate, toDate, branch, departmentId, type, status, user]);
 
+  // Dynamic breakdown of whatever the filters currently select
+  const [groupBy, setGroupBy] = useState('');
+  const breakdown = useMemo(() => {
+    if (!groupBy) return null;
+    const keyOf = (p) => {
+      if (groupBy === 'branch') return (p.type === 'inward' ? p.destinationBranchName : p.sourceBranchName) || '—';
+      if (groupBy === 'department') return p.departmentName || p.receivedLog?.departmentName || '—';
+      if (groupBy === 'status') return STATUS_LABELS[p.isOverdue ? 'overdue' : (p.displayStatus || p.status)] || p.status;
+      return '—';
+    };
+    const groups = new Map();
+    for (const p of filtered) {
+      const k = keyOf(p);
+      const g = groups.get(k) || { count: 0, outward: 0, inward: 0, late: 0, value: 0 };
+      g.count += 1;
+      if (p.type === 'inward') g.inward += 1; else g.outward += 1;
+      if (p.isOverdue) g.late += 1;
+      g.value += (p.items || []).reduce((s, li) => s + (li.amount || 0), 0);
+      groups.set(k, g);
+    }
+    return [...groups.entries()].sort((a, b) => b[1].count - a[1].count);
+  }, [filtered, groupBy]);
+
   // Quick range presets
   const setRange = (from, to) => { setFromDate(from); setToDate(to); };
   const presets = [
@@ -245,9 +268,19 @@ export default function ReportsPage() {
       );
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, 'Report');
+      // The active breakdown exports as its own sheet
+      if (breakdown?.length) {
+        const bs = XLSX.utils.json_to_sheet(breakdown.map(([k, g]) => ({
+          [groupBy === 'branch' ? 'Branch' : groupBy === 'department' ? 'Department' : 'Status']: k,
+          'Passes': g.count, 'Outward': g.outward, 'Inward': g.inward,
+          'Late': g.late, 'Item Value': g.value || '—',
+        })));
+        bs['!cols'] = [{ wch: 26 }, { wch: 8 }, { wch: 9 }, { wch: 8 }, { wch: 6 }, { wch: 12 }];
+        XLSX.utils.book_append_sheet(wb, bs, 'Breakdown');
+      }
       const branchName = branch ? (branches.find(b => b.id === branch)?.name || branch) : 'all-branches';
       const safe = String(branchName).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
-      XLSX.writeFile(wb, `gatepass-report-${month}-${safe}.xlsx`);
+      XLSX.writeFile(wb, `gatepass-report-${fromDate || 'start'}_to_${toDate || 'today'}-${safe}.xlsx`);
     } catch (e) {
       setError(e.message || 'Could not export the report.');
     } finally {
@@ -403,7 +436,7 @@ export default function ReportsPage() {
         <div className="table-wrapper">
           <div className="empty-state">
             <div className="empty-icon"><FileBarChart2 size={32} strokeWidth={1.5} /></div>
-            <div className="empty-title">No passes for this month</div>
+            <div className="empty-title">No passes in this date range</div>
             <div className="empty-sub">Try changing the filters</div>
           </div>
         </div>
