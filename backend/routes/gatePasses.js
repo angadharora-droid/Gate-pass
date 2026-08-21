@@ -2,21 +2,54 @@ import { Router } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { dbc, NO_ID, generatePassNumber, logAudit, upsertMasterItems, INWARD_TYPES, DOCUMENT_TYPES, UNITS } from '../data/db.js';
 import { authMiddleware, requireRole } from '../middleware/auth.js';
-import { hasRole } from '../lib/roles.js';
+import { hasRole, rolesOf } from '../lib/roles.js';
 import { asyncHandler } from '../lib/asyncHandler.js';
 
 const router = Router();
 router.use(authMiddleware);
 
 // ─── SCOPING HELPER ───────────────────────────────────────────────────────────
-// Only admin sees all branches. Everyone else — including time_office, which
-// mans the gate of ONE branch — sees passes touching their branch (as source
-// or destination, so incoming inter-branch transfers are visible too).
+// Visibility follows INVOLVEMENT, not just the branch:
+//   admin        → everything
+//   time_office  → every pass crossing THEIR gate (source or destination = their
+//                  branch) — the gate must log all of it
+//   staff        → only passes they created, and transfer items in their custody
+//   manager      → their own department's passes, anything routed to / decided
+//                  by them, the branch's unrouted pending pool, and internal
+//                  transfers arriving at their branch
+//   supermanager → anything routed to / decided by them, the unrouted pending
+//                  pool, and internal transfers arriving at their branch
+// A user holding several roles sees the union of those views.
 function scopePasses(passes, user) {
   if (hasRole(user, 'admin')) return passes;
-  return passes.filter(p =>
-    p.sourceBranch === user.branch || p.destinationBranch === user.branch
-  );
+  const roles = rolesOf(user);
+  return passes.filter(p => {
+    // Gate view: everything physically crossing my branch's gate
+    if (roles.includes('time_office') &&
+        (p.sourceBranch === user.branch || p.destinationBranch === user.branch)) return true;
+
+    // Personal involvement — applies to every role
+    if (p.createdBy === user.id) return true;
+    if (p.approverId === user.id || p.approvedBy === user.id) return true;
+    if (p.receivedLog?.receiverId === user.id) return true;
+    if (p.returnRequest?.requestedBy === user.id) return true;
+
+    const isApproverRole = roles.includes('manager') || roles.includes('supermanager');
+    if (isApproverRole) {
+      // The branch's unrouted pending passes are the shared approval pool
+      // (legacy passes and routed passes whose approver has left)
+      if (p.status === 'pending' && !p.approverId && p.sourceBranch === user.branch) return true;
+      // Incoming transfers land at my branch — receipts and send-back
+      // approvals are this branch's approvers' responsibility
+      if (p.direction === 'internal' && p.destinationBranch === user.branch) return true;
+    }
+    if (roles.includes('manager')) {
+      // My department's traffic is my responsibility
+      if (p.departmentId && p.departmentId === user.departmentId && p.sourceBranch === user.branch) return true;
+      if (p.receivedLog?.departmentId && p.receivedLog.departmentId === user.departmentId) return true;
+    }
+    return false;
+  });
 }
 
 // Reference data used to enrich passes with user/branch/department names —

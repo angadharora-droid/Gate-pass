@@ -428,6 +428,27 @@ const addItem2 = await api('POST', '/items', { token: porterToken, body: { name:
 check('adding an item is idempotent by normalized name',
   addItem1.status === 201 && addItem2.status === 200 && addItem2.json?.id === addItem1.json?.id);
 
+// ─── Involvement-based visibility ────────────────────────────────────────────
+// Staff see only their own passes; approvers see only what involves them.
+const porterList = await api('GET', '/gate-passes', { token: porterToken });
+check('staff see only the passes they created',
+  porterList.status === 200 && porterList.json?.length === 2 &&
+  porterList.json.every(p => p.createdByUser?.id === loginIdUser.json.id));
+
+const superList = await api('GET', '/gate-passes', { token: superToken });
+check('supermanager sees only related passes (routed to them + their own)',
+  superList.json?.length === 2 &&
+  superList.json.every(p => [routed.json?.id, superOwnPass.json?.id].includes(p.id)));
+
+const mgrList = await api('GET', '/gate-passes', { token: manager });
+check('manager does not see the unrelated supermanager pass',
+  mgrList.status === 200 && mgrList.json?.every(p => p.id !== superOwnPass.json?.id));
+check('manager still sees their department staff\'s routed passes',
+  mgrList.json?.some(p => p.id === routed.json?.id));
+
+const probe = await api('GET', `/gate-passes/${superOwnPass.json?.id}`, { token: porterToken });
+check('staff cannot open an unrelated pass (scoped 404)', probe.status === 404);
+
 // ─── Done ─────────────────────────────────────────────────────────────────────
 console.log(failures === 0 ? '\nALL SMOKE TESTS PASSED' : `\n${failures} SMOKE TEST(S) FAILED`);
 await client.db(SMOKE_DB).dropDatabase();
