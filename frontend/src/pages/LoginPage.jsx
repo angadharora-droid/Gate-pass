@@ -41,16 +41,16 @@ export default function LoginPage() {
         <div className="login-card-sub">Enter your credentials to continue</div>
 
         <div className="form-group">
-          <label className="form-label" htmlFor="login-email">Email address</label>
+          <label className="form-label" htmlFor="login-id">Login ID or Email</label>
           <input
-            id="login-email"
+            id="login-id"
             className="form-input"
-            type="email"
-            autoComplete="email"
+            type="text"
+            autoComplete="username"
             required
             value={email}
             onChange={e => setEmail(e.target.value)}
-            placeholder="you@example.com"
+            placeholder="e.g. rakesh.k or you@example.com"
             autoFocus
           />
         </div>

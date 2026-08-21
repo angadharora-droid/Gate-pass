@@ -294,6 +294,43 @@ check('admin deactivates user', deact.status === 200);
 const deadLogin = await api('POST', '/auth/login', { body: { email: 'staff@test.com', password: 'secret1' } });
 check('deactivated user cannot log in', deadLogin.status === 401);
 
+// ─── Login IDs (staff without email) ─────────────────────────────────────────
+const noIdUser = await api('POST', '/users', {
+  token: admin,
+  body: { name: 'No Identifier', password: 'secret1', role: 'staff', branch: b1, departmentId: d1 },
+});
+check('user without login ID or email rejected', noIdUser.status === 400);
+
+const loginIdUser = await api('POST', '/users', {
+  token: admin,
+  body: { name: 'Porter One', loginId: 'Porter.One', password: 'secret1', role: 'staff', branch: b1, departmentId: d1 },
+});
+check('email-less user created with login ID (normalized)', loginIdUser.status === 201 && loginIdUser.json?.loginId === 'porter.one' && loginIdUser.json?.email === undefined);
+
+const idLogin = await api('POST', '/auth/login', { body: { identifier: 'PORTER.ONE', password: 'secret1' } });
+check('login by login ID works (case-insensitive)', idLogin.status === 200 && idLogin.json?.user?.loginId === 'porter.one');
+
+const dupLoginId = await api('POST', '/users', {
+  token: admin,
+  body: { name: 'Dup Porter', loginId: 'porter.one', password: 'x', role: 'staff', branch: b1, departmentId: d1 },
+});
+check('duplicate login ID rejected', dupLoginId.status === 400);
+
+const badLoginId = await api('POST', '/users', {
+  token: admin,
+  body: { name: 'Bad Id', loginId: 'has spaces!', password: 'x', role: 'staff', branch: b1, departmentId: d1 },
+});
+check('malformed login ID rejected', badLoginId.status === 400);
+
+const secondNoEmail = await api('POST', '/users', {
+  token: admin,
+  body: { name: 'Porter Two', loginId: 'porter.two', password: 'secret1', role: 'staff', branch: b1, departmentId: d1 },
+});
+check('second email-less user allowed (sparse email index)', secondNoEmail.status === 201);
+
+const seedIdLogin = await api('POST', '/auth/login', { body: { identifier: 'admin', password: 'admin123' } });
+check('seed admin can log in by login ID', seedIdLogin.status === 200);
+
 // ─── Done ─────────────────────────────────────────────────────────────────────
 console.log(failures === 0 ? '\nALL SMOKE TESTS PASSED' : `\n${failures} SMOKE TEST(S) FAILED`);
 await client.db(SMOKE_DB).dropDatabase();

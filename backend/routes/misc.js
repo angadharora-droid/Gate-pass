@@ -104,14 +104,33 @@ usersRouter.get('/', requireRole('admin', 'manager', 'time_office'), asyncHandle
   res.json(users);
 }));
 
+// Login IDs let staff without an email address sign in: short usernames,
+// no '@' (so the login endpoint can tell them apart from emails).
+const LOGIN_ID_RE = /^[a-z0-9._-]{3,30}$/;
+function normalizeLoginId(raw) {
+  return String(raw || '').toLowerCase().trim();
+}
+
 usersRouter.post('/', requireRole('admin'), asyncHandler(async (req, res) => {
-  const { name, email, password, role, branch, departmentId } = req.body;
-  if (!name?.trim() || !email?.trim() || !password || !role || !branch) {
-    return res.status(400).json({ error: 'name, email, password, role, branch are required' });
+  const { name, email, loginId, password, role, branch, departmentId } = req.body;
+  if (!name?.trim() || !password || !role || !branch) {
+    return res.status(400).json({ error: 'name, password, role, branch are required' });
+  }
+  const cleanEmail = email?.trim() ? email.toLowerCase().trim() : null;
+  const cleanLoginId = normalizeLoginId(loginId) || null;
+  // Not everyone has an email — but everyone needs SOME way to sign in
+  if (!cleanEmail && !cleanLoginId) {
+    return res.status(400).json({ error: 'Provide a login ID or an email address' });
+  }
+  if (cleanLoginId && !LOGIN_ID_RE.test(cleanLoginId)) {
+    return res.status(400).json({ error: 'Login ID must be 3-30 characters: letters, numbers, dot, dash or underscore' });
   }
   if (!ROLES.includes(role)) return res.status(400).json({ error: `Role must be one of: ${ROLES.join(', ')}` });
-  if (await dbc('users').findOne({ email: email.toLowerCase().trim() })) {
+  if (cleanEmail && await dbc('users').findOne({ email: cleanEmail })) {
     return res.status(400).json({ error: 'Email already in use' });
+  }
+  if (cleanLoginId && await dbc('users').findOne({ loginId: cleanLoginId })) {
+    return res.status(400).json({ error: 'Login ID already in use' });
   }
   const branchObj = await dbc('branches').findOne({ id: branch }, NO_ID);
   if (!branchObj) return res.status(400).json({ error: 'Branch not found' });
@@ -128,7 +147,10 @@ usersRouter.post('/', requireRole('admin'), asyncHandler(async (req, res) => {
   const user = {
     id: uuidv4(),
     name: name.trim(),
-    email: email.toLowerCase().trim(),
+    // Absent identifiers are OMITTED (not null) — the sparse unique indexes
+    // skip missing fields but would collide on repeated nulls
+    ...(cleanEmail ? { email: cleanEmail } : {}),
+    ...(cleanLoginId ? { loginId: cleanLoginId } : {}),
     passwordHash: hashPassword(password),
     role,
     branch,
@@ -146,9 +168,31 @@ usersRouter.patch('/:id', requireRole('admin'), asyncHandler(async (req, res) =>
   if (req.params.id === req.user.id && req.body.role && req.body.role !== 'admin') {
     return res.status(400).json({ error: 'Cannot remove your own admin role' });
   }
-  const { name, email, password, role, branch, departmentId, active } = req.body;
+  const { name, email, loginId, password, role, branch, departmentId, active } = req.body;
   if (name !== undefined) user.name = name.trim();
-  if (email !== undefined) user.email = email.toLowerCase().trim();
+  if (email !== undefined) {
+    const cleanEmail = email?.trim() ? email.toLowerCase().trim() : null;
+    if (cleanEmail && cleanEmail !== user.email &&
+        await dbc('users').findOne({ email: cleanEmail, id: { $ne: user.id } })) {
+      return res.status(400).json({ error: 'Email already in use' });
+    }
+    // Clearing an identifier removes the field (sparse index skips missing keys)
+    if (cleanEmail) user.email = cleanEmail; else delete user.email;
+  }
+  if (loginId !== undefined) {
+    const cleanLoginId = normalizeLoginId(loginId) || null;
+    if (cleanLoginId && !LOGIN_ID_RE.test(cleanLoginId)) {
+      return res.status(400).json({ error: 'Login ID must be 3-30 characters: letters, numbers, dot, dash or underscore' });
+    }
+    if (cleanLoginId && cleanLoginId !== user.loginId &&
+        await dbc('users').findOne({ loginId: cleanLoginId, id: { $ne: user.id } })) {
+      return res.status(400).json({ error: 'Login ID already in use' });
+    }
+    if (cleanLoginId) user.loginId = cleanLoginId; else delete user.loginId;
+  }
+  if (!user.email && !user.loginId) {
+    return res.status(400).json({ error: 'User must keep a login ID or an email address to sign in' });
+  }
   if (password !== undefined && password) user.passwordHash = hashPassword(password);
   if (role !== undefined) user.role = role;
   if (branch !== undefined) user.branch = branch;

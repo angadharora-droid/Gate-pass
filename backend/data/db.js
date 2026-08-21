@@ -84,9 +84,21 @@ export async function pingDb() {
 }
 
 async function ensureIndexes() {
+  // Email became OPTIONAL when login IDs were introduced (not every staff
+  // member has one) — its unique index must be sparse so several email-less
+  // users can coexist. Replace the old non-sparse index if this database
+  // predates the change.
+  const users = handle.collection('users');
+  try {
+    const existing = await users.indexes();
+    const emailIdx = existing.find(i => i.key?.email === 1 && !i.sparse);
+    if (emailIdx) await users.dropIndex(emailIdx.name);
+  } catch { /* fresh database — no indexes yet */ }
+
   await Promise.all([
-    handle.collection('users').createIndex({ id: 1 }, { unique: true }),
-    handle.collection('users').createIndex({ email: 1 }, { unique: true }),
+    users.createIndex({ id: 1 }, { unique: true }),
+    users.createIndex({ email: 1 }, { unique: true, sparse: true }),
+    users.createIndex({ loginId: 1 }, { unique: true, sparse: true }),
     handle.collection('branches').createIndex({ id: 1 }, { unique: true }),
     handle.collection('departments').createIndex({ id: 1 }, { unique: true }),
     handle.collection('gatePasses').createIndex({ id: 1 }, { unique: true }),
@@ -103,7 +115,7 @@ async function ensureIndexes() {
 // admin from inside the app. The seed password is hashed before insert; change
 // it after the first login.
 const SEED_USERS = [
-  { id: 'u1', name: 'Administrator', role: 'admin', branch: 'b1', departmentId: 'd1', email: 'arjun@hotel.com', password: 'admin123', active: true },
+  { id: 'u1', name: 'Administrator', role: 'admin', branch: 'b1', departmentId: 'd1', loginId: 'admin', email: 'arjun@hotel.com', password: 'admin123', active: true },
 ];
 
 const SEED_BRANCHES = [

@@ -60,7 +60,7 @@ function UsersTab() {
   const [branches, setBranches] = useState([]);
   const [departments, setDepartments] = useState([]);
   const [modal, setModal] = useState(null);
-  const [form, setForm] = useState({ name: '', email: '', password: '', role: 'staff', branch: '', departmentId: '', active: true });
+  const [form, setForm] = useState({ name: '', loginId: '', email: '', password: '', role: 'staff', branch: '', departmentId: '', active: true });
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -78,12 +78,12 @@ function UsersTab() {
   const openCreate = () => {
     const branchId = branches[0]?.id || '';
     const defaultDept = getActiveDepsForBranch(branchId)[0]?.id || '';
-    setForm({ name: '', email: '', password: '', role: 'staff', branch: branchId, departmentId: defaultDept, active: true });
+    setForm({ name: '', loginId: '', email: '', password: '', role: 'staff', branch: branchId, departmentId: defaultDept, active: true });
     setError(''); setModal('create');
   };
 
   const openEdit = (u) => {
-    setForm({ name: u.name, email: u.email, password: '', role: u.role, branch: u.branch, departmentId: u.departmentId || '', active: u.active });
+    setForm({ name: u.name, loginId: u.loginId || '', email: u.email || '', password: '', role: u.role, branch: u.branch, departmentId: u.departmentId || '', active: u.active });
     setError(''); setModal(u);
   };
 
@@ -137,7 +137,7 @@ function UsersTab() {
         <table>
           <thead>
             <tr>
-              <th>Name</th><th>Email</th><th>Role</th>
+              <th>Name</th><th>Login ID / Email</th><th>Role</th>
               <th>Branch</th><th>Department</th><th>Status</th><th>Actions</th>
             </tr>
           </thead>
@@ -148,7 +148,12 @@ function UsersTab() {
               return (
                 <tr key={u.id} style={{ opacity: isActive ? 1 : 0.5 }}>
                   <td style={{ fontWeight: 600 }}>{u.name}</td>
-                  <td style={{ fontSize: 12.5, color: 'var(--text2)', fontFamily: 'var(--font-mono)' }}>{u.email}</td>
+                  <td style={{ fontSize: 12.5, color: 'var(--text2)', fontFamily: 'var(--font-mono)' }}>
+                    {u.loginId || '—'}
+                    {u.email && (
+                      <div style={{ fontSize: 11.5, color: 'var(--text3)' }}>{u.email}</div>
+                    )}
+                  </td>
                   <td>
                     <span style={{
                       padding: '3px 9px', borderRadius: 20, fontSize: 11,
@@ -189,9 +194,13 @@ function UsersTab() {
                 <input className="form-input" value={form.name} onChange={e => set('name', e.target.value)} placeholder="John Doe" />
               </div>
               <div className="form-group">
-                <label className="form-label">Email</label>
-                <input className="form-input" type="email" value={form.email} onChange={e => set('email', e.target.value)} placeholder="john@hotel.com" />
+                <label className="form-label">Login ID</label>
+                <input className="form-input" value={form.loginId} onChange={e => set('loginId', e.target.value)} placeholder="e.g. john.d" />
               </div>
+            </div>
+            <div className="form-group">
+              <label className="form-label">Email <span style={{ fontWeight: 400, color: 'var(--text3)' }}>(optional — needs a login ID or an email)</span></label>
+              <input className="form-input" type="email" value={form.email} onChange={e => set('email', e.target.value)} placeholder="john@hotel.com" />
             </div>
             <div className="form-group">
               <label className="form-label">Password {modal !== 'create' && <span style={{ fontWeight: 400, color: 'var(--text3)' }}>(leave blank to keep)</span>}</label>
