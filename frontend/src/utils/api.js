@@ -93,6 +93,10 @@ export const api = {
   updateUser: (id, data) => request(`/users/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   deleteUser: (id) => request(`/users/${id}`, { method: 'DELETE' }),
 
+  // Items master (shared searchable list, seeded from the IDS export)
+  searchItems: (q, limit = 20) => request(`/items?q=${encodeURIComponent(q)}&limit=${limit}`),
+  addItem: (data) => request('/items', { method: 'POST', body: JSON.stringify(data) }),
+
   // Meta
   getMeta: () => Promise.all([
     request('/meta/roles'),

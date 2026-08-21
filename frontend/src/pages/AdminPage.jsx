@@ -5,6 +5,14 @@ import { X, AlertTriangle, Building2, ScrollText } from 'lucide-react';
 const ROLES = ['admin', 'supermanager', 'manager', 'staff', 'time_office'];
 // Roles that are branch-bound with no department (mirrors backend NO_DEPT_ROLES)
 const NO_DEPT_ROLES = ['time_office', 'supermanager'];
+// The server stores the highest-ranked held role as the primary — keep the
+// form in sync so what the admin sees is what gets saved (mirrors backend)
+const ROLE_PRECEDENCE = ['admin', 'supermanager', 'manager', 'staff', 'time_office'];
+function normalizeRoles(primary, extras) {
+  const set = [...new Set([primary, ...extras])];
+  const role = ROLE_PRECEDENCE.find(r => set.includes(r)) || set[0];
+  return { role, extraRoles: set.filter(r => r !== role) };
+}
 
 const roleColor = {
   admin: 'var(--accent)', supermanager: 'var(--green)', manager: 'var(--blue)',
@@ -231,8 +239,7 @@ function UsersTab() {
                   className="form-select"
                   value={form.role}
                   onChange={e => setForm(f => ({
-                    ...f, role: e.target.value,
-                    extraRoles: f.extraRoles.filter(r => r !== e.target.value),
+                    ...f, ...normalizeRoles(e.target.value, f.extraRoles.filter(r => r !== e.target.value)),
                   }))}
                 >
                   {ROLES.map(r => <option key={r} value={r}>{r.replace('_', ' ').replace(/^\w/, c => c.toUpperCase())}</option>)}
@@ -258,15 +265,16 @@ function UsersTab() {
                       checked={form.extraRoles.includes(r)}
                       onChange={e => setForm(f => ({
                         ...f,
-                        extraRoles: e.target.checked
+                        ...normalizeRoles(f.role, e.target.checked
                           ? [...f.extraRoles, r]
-                          : f.extraRoles.filter(x => x !== r),
+                          : f.extraRoles.filter(x => x !== r)),
                       }))}
                     />
                     {r.replace('_', ' ').replace(/^\w/, c => c.toUpperCase())}
                   </label>
                 ))}
               </div>
+              <div className="form-hint">The highest-ranked role held becomes the primary automatically.</div>
             </div>
             <div className="form-group">
               <label className="form-label">Department</label>

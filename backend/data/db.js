@@ -1,6 +1,11 @@
 import { MongoClient } from 'mongodb';
 import { v4 as uuidv4 } from 'uuid';
+import { readFileSync } from 'fs';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
 import { hashPassword } from '../lib/security.js';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // ─── ROLES ────────────────────────────────────────────────────────────────────
 // admin       → full access: manage users, items, branches, view all passes
@@ -104,6 +109,10 @@ async function ensureIndexes() {
     handle.collection('gatePasses').createIndex({ id: 1 }, { unique: true }),
     handle.collection('gatePasses').createIndex({ createdAt: -1 }),
     handle.collection('auditLog').createIndex({ timestamp: -1 }),
+    // Items master: searched constantly from the pass forms
+    handle.collection('items').createIndex({ id: 1 }, { unique: true }),
+    handle.collection('items').createIndex({ nameKey: 1 }),
+    handle.collection('items').createIndex({ code: 1 }),
   ]);
 }
 
@@ -146,6 +155,32 @@ async function seedIfEmpty() {
   if (await handle.collection('departments').countDocuments() === 0) {
     await handle.collection('departments').insertMany(SEED_DEPARTMENTS.map(d => ({ ...d })));
   }
+  // Items master: seeded once from the IDS item list export (data/itemsSeed.json,
+  // ~17k items). After that it grows organically — new item names typed on any
+  // pass are added automatically, so everyone searches one shared list.
+  if (await handle.collection('items').countDocuments() === 0) {
+    try {
+      const seed = JSON.parse(readFileSync(join(__dirname, 'itemsSeed.json'), 'utf8'));
+      const docs = seed.map(it => ({
+        id: uuidv4(),
+        code: it.code || '',
+        name: it.name,
+        nameKey: normalizeItemName(it.name),
+        category: it.category || '',
+        unit: it.unit || 'pcs',
+        uom: it.uom || '',
+        active: true,
+        source: 'ids',
+      }));
+      for (let i = 0; i < docs.length; i += 1000) {
+        await handle.collection('items').insertMany(docs.slice(i, i + 1000));
+      }
+      console.log(`✓ Items master seeded: ${docs.length} items`);
+    } catch (err) {
+      console.warn('⚠  Items master not seeded (data/itemsSeed.json missing or invalid):', err.message);
+    }
+  }
+
   // Initialise the pass-number counter from whatever passes exist (none on a
   // fresh database → numbering starts at GP-…-0001).
   if (!await handle.collection('counters').findOne({ _id: 'passNumber' })) {
@@ -172,6 +207,35 @@ export async function generatePassNumber({ type, direction, returnable } = {}) {
   const d = direction === 'internal' ? 'I' : 'E';
   const r = returnable ? 'R' : 'N';
   return `GP-${t}${d}${r}-${year}-${String(doc.seq).padStart(4, '0')}`;
+}
+
+// Case/space-insensitive identity for item names, so "Dinner Plate" typed on a
+// pass matches "DINNER  PLATE" in the master instead of creating a duplicate.
+export function normalizeItemName(name) {
+  return String(name || '').trim().toUpperCase().replace(/\s+/g, ' ');
+}
+
+// Add any names the master doesn't know yet — called whenever a pass or a
+// direct inward entry is logged, so the shared list grows organically.
+export async function upsertMasterItems(items, userId) {
+  for (const li of items || []) {
+    const nameKey = normalizeItemName(li.itemName);
+    if (!nameKey) continue;
+    const exists = await dbc('items').findOne({ nameKey }, NO_ID);
+    if (exists) continue;
+    await dbc('items').insertOne({
+      id: uuidv4(),
+      code: li.code?.trim() || '',
+      name: li.itemName.trim(),
+      nameKey,
+      category: '',
+      unit: li.unit || 'pcs',
+      uom: '',
+      active: true,
+      source: 'user',
+      addedBy: userId || null,
+    });
+  }
 }
 
 export async function logAudit(action, userId, targetId, details) {

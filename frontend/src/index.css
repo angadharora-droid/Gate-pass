@@ -638,6 +638,38 @@ strong { font-weight: 600; }
 .badge-inward         { background: rgba(22, 163, 74, 0.07);   color: var(--green);  border: 1px solid rgba(22, 163, 74, 0.2); }
 .badge-early_return   { background: var(--accent-soft);        color: var(--accent); border: 1px solid rgba(37, 99, 235, 0.2); }
 
+/* ─── ITEM MASTER SUGGESTIONS (grid Description cell) ── */
+.suggest-menu {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  min-width: 100%;
+  width: max-content;
+  max-width: 420px;
+  z-index: 60;
+  background: var(--bg2);
+  border: 1px solid var(--border2);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+  max-height: 240px;
+  overflow-y: auto;
+  margin-top: 2px;
+}
+.suggest-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 8px 12px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border);
+}
+.suggest-item:last-child { border-bottom: none; }
+.suggest-item:hover { background: var(--bg3); }
+.suggest-name { display: block; font-size: 13px; color: var(--text); }
+.suggest-meta { display: block; font-size: 11px; color: var(--text3); font-family: var(--font-mono); margin-top: 1px; }
+
 /* ─── TABLE ────────────────────────────────── */
 .table-wrapper {
   background: var(--bg2);

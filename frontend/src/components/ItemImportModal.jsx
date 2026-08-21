@@ -3,7 +3,8 @@ import { X, UploadCloud, Download, FileSpreadsheet, AlertTriangle, Check } from 
 
 /*
  * Bulk item importer.
- * Accepts .xlsx / .xls / .csv with columns: Item Name, Unit, Quantity.
+ * Accepts .xlsx / .xls / .csv. Required columns: Item Name, Quantity; optional:
+ * Unit, Code, Rate, Serial No, Remarks — everything the items grid carries.
  * Header names are matched loosely; a file with no header row is read positionally
  * (col 1 = name, col 2 = unit, col 3 = qty). xlsx (SheetJS) is loaded lazily so it
  * stays out of the main bundle until the user actually opens this modal.
@@ -16,6 +17,10 @@ const UNIT_KEYS = ['unit', 'uom', 'units', 'unitofmeasure'];
 // matches anywhere in the header row.
 const QTY_KEYS_STRONG = ['qty', 'quantity', 'qnty', 'qantity', 'count'];
 const QTY_KEYS_WEAK   = ['nos', 'no'];
+const CODE_KEYS   = ['code', 'itemcode', 'materialcode', 'sku', 'partno'];
+const RATE_KEYS   = ['rate', 'price', 'unitprice', 'unitrate', 'cost'];
+const SERIAL_KEYS = ['serialno', 'serial', 'serialbatchno', 'batchno', 'batch', 'sno', 'slno'];
+const REMARK_KEYS = ['remarks', 'remark', 'notes', 'note', 'comments', 'comment'];
 
 const normKey = (k) => String(k ?? '').trim().toLowerCase().replace(/[\s_\-.]+/g, '');
 
@@ -26,18 +31,22 @@ async function loadXLSX() {
 }
 
 function detectColumns(headerRow, units) {
-  const map = { name: -1, unit: -1, qty: -1 };
+  const map = { name: -1, unit: -1, qty: -1, code: -1, rate: -1, serialNo: -1, remarks: -1 };
   const norm = headerRow.map(normKey);
   norm.forEach((n, i) => {
     if (map.name === -1 && NAME_KEYS.includes(n)) map.name = i;
     else if (map.unit === -1 && UNIT_KEYS.includes(n)) map.unit = i;
     else if (map.qty === -1 && QTY_KEYS_STRONG.includes(n)) map.qty = i;
+    else if (map.code === -1 && CODE_KEYS.includes(n)) map.code = i;
+    else if (map.rate === -1 && RATE_KEYS.includes(n)) map.rate = i;
+    else if (map.serialNo === -1 && SERIAL_KEYS.includes(n)) map.serialNo = i;
+    else if (map.remarks === -1 && REMARK_KEYS.includes(n)) map.remarks = i;
   });
   // Fall back to weak qty headers only when no strong one exists at all —
   // a "No. | Item Name | Qty" layout must map Qty, not the serial column.
   if (map.qty === -1) {
     norm.forEach((n, i) => {
-      if (map.qty === -1 && i !== map.name && i !== map.unit && QTY_KEYS_WEAK.includes(n)) map.qty = i;
+      if (map.qty === -1 && !Object.values(map).includes(i) && QTY_KEYS_WEAK.includes(n)) map.qty = i;
     });
   }
   return map;
@@ -66,7 +75,19 @@ function buildItem(row, cols, units) {
     else warnings.push(`Invalid qty "${rawQty}" → 1`);
   }
 
-  return { itemName, unit, quantity, warnings };
+  const code = cols.code >= 0 ? String(row[cols.code] ?? '').trim() : '';
+  const serialNo = cols.serialNo >= 0 ? String(row[cols.serialNo] ?? '').trim() : '';
+  const remarks = cols.remarks >= 0 ? String(row[cols.remarks] ?? '').trim() : '';
+
+  let rate = '';
+  const rawRate = cols.rate >= 0 ? row[cols.rate] : '';
+  if (rawRate !== '' && rawRate != null) {
+    const n = Number(rawRate);
+    if (Number.isFinite(n) && n >= 0) rate = n;
+    else warnings.push(`Invalid rate "${rawRate}" → blank`);
+  }
+
+  return { itemName, unit, quantity, code, rate, serialNo, remarks, warnings };
 }
 
 async function parseFile(file, units) {
@@ -135,12 +156,12 @@ export default function ItemImportModal({ units, onClose, onImport }) {
     try {
       const XLSX = await loadXLSX();
       const ws = XLSX.utils.aoa_to_sheet([
-        ['Item Name', 'Unit', 'Quantity'],
-        ['Steel Rod', 'pcs', 10],
-        ['Cement', 'bag', 25],
-        ['Cable', 'roll', 4],
+        ['Item Name', 'Unit', 'Quantity', 'Code', 'Rate', 'Serial No', 'Remarks'],
+        ['Steel Rod', 'pcs', 10, 'HW-1042', 350, '', 'For scaffolding'],
+        ['Cement', 'bag', 25, 'BM-0007', 420, '', ''],
+        ['Cable', 'roll', 4, '', '', 'SN-8841', ''],
       ]);
-      ws['!cols'] = [{ wch: 28 }, { wch: 10 }, { wch: 10 }];
+      ws['!cols'] = [{ wch: 28 }, { wch: 8 }, { wch: 10 }, { wch: 12 }, { wch: 10 }, { wch: 14 }, { wch: 22 }];
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, 'Items');
       XLSX.writeFile(wb, 'gatepass-items-template.xlsx');
@@ -166,7 +187,8 @@ export default function ItemImportModal({ units, onClose, onImport }) {
         <div className="modal-body">
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, gap: 12 }}>
             <div style={{ fontSize: 12.5, color: 'var(--text3)', lineHeight: 1.5 }}>
-              Columns: <strong style={{ color: 'var(--text2)' }}>Item Name</strong>, <strong style={{ color: 'var(--text2)' }}>Unit</strong>, <strong style={{ color: 'var(--text2)' }}>Quantity</strong>.
+              Columns: <strong style={{ color: 'var(--text2)' }}>Item Name</strong> and <strong style={{ color: 'var(--text2)' }}>Quantity</strong>{' '}
+              (required) · Unit, Code, Rate, Serial No, Remarks (optional).
               <br />Accepts .xlsx, .xls and .csv files.
             </div>
             <button className="btn btn-ghost btn-sm" onClick={downloadTemplate} style={{ flexShrink: 0 }}>
@@ -238,8 +260,10 @@ export default function ItemImportModal({ units, onClose, onImport }) {
                     <thead>
                       <tr style={{ position: 'sticky', top: 0, background: 'var(--bg3)' }}>
                         <th style={thStyle}>Item Name</th>
+                        <th style={{ ...thStyle, width: 90 }}>Code</th>
                         <th style={{ ...thStyle, width: 70 }}>Unit</th>
                         <th style={{ ...thStyle, width: 60, textAlign: 'center' }}>Qty</th>
+                        <th style={{ ...thStyle, width: 70, textAlign: 'right' }}>Rate</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -253,8 +277,10 @@ export default function ItemImportModal({ units, onClose, onImport }) {
                               </span>
                             )}
                           </td>
+                          <td style={{ ...tdStyle, fontFamily: 'var(--font-mono)', fontSize: 11.5 }}>{it.code || '—'}</td>
                           <td style={tdStyle}>{it.unit}</td>
                           <td style={{ ...tdStyle, textAlign: 'center' }}>{it.quantity}</td>
+                          <td style={{ ...tdStyle, textAlign: 'right' }}>{it.rate === '' ? '—' : it.rate}</td>
                         </tr>
                       ))}
                     </tbody>

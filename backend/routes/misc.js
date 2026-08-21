@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { v4 as uuidv4 } from 'uuid';
-import { dbc, NO_ID, ROLES, NO_DEPT_ROLES, UNITS, CATEGORIES } from '../data/db.js';
+import { dbc, NO_ID, ROLES, NO_DEPT_ROLES, UNITS, CATEGORIES, normalizeItemName } from '../data/db.js';
 import { authMiddleware, requireRole } from '../middleware/auth.js';
 import { hasRole, rolesOf, primaryRole } from '../lib/roles.js';
 import { hashPassword } from '../lib/security.js';
@@ -266,6 +266,55 @@ usersRouter.delete('/:id', requireRole('admin'), asyncHandler(async (req, res) =
   const { matchedCount } = await dbc('users').updateOne({ id: req.params.id }, { $set: { active: false } });
   if (!matchedCount) return res.status(404).json({ error: 'User not found' });
   res.json({ success: true });
+}));
+
+// ─── ITEMS MASTER ─────────────────────────────────────────────────────────────
+// One shared, searchable item list (seeded from the IDS export, ~17k items).
+// Every pass form searches it; any authenticated user can add a missing item,
+// and items typed free-hand on passes are added automatically server-side.
+export const itemsRouter = Router();
+itemsRouter.use(authMiddleware);
+
+itemsRouter.get('/', asyncHandler(async (req, res) => {
+  const q = String(req.query.q || '').trim();
+  const limit = Math.min(Number(req.query.limit) || 20, 50);
+  const filter = { active: { $ne: false } };
+  if (q) {
+    const esc = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    filter.$or = [
+      { name: { $regex: esc, $options: 'i' } },
+      { code: { $regex: '^' + esc, $options: 'i' } },
+    ];
+  }
+  const items = await dbc('items')
+    .find(filter, { projection: { _id: 0, id: 1, code: 1, name: 1, category: 1, unit: 1 } })
+    .sort({ name: 1 })
+    .limit(limit)
+    .toArray();
+  res.json(items);
+}));
+
+// Idempotent by normalized name: adding an existing item returns it unchanged
+itemsRouter.post('/', asyncHandler(async (req, res) => {
+  const { name, unit, category, code } = req.body || {};
+  if (!name?.trim()) return res.status(400).json({ error: 'Item name is required' });
+  const nameKey = normalizeItemName(name);
+  const existing = await dbc('items').findOne({ nameKey }, NO_ID);
+  if (existing) return res.json(existing);
+  const item = {
+    id: uuidv4(),
+    code: code?.trim() || '',
+    name: name.trim(),
+    nameKey,
+    category: category?.trim() || '',
+    unit: UNITS.includes(unit) ? unit : 'pcs',
+    uom: '',
+    active: true,
+    source: 'user',
+    addedBy: req.user.id,
+  };
+  await dbc('items').insertOne({ ...item });
+  res.status(201).json(item);
 }));
 
 // ─── META (reference lists) ────────────────────────────────────────────────────
