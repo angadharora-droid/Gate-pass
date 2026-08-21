@@ -44,7 +44,7 @@ export default function Layout() {
     { to: '/inward/new', Icon: PackagePlus,     label: 'New Inward',   roles: ['admin', 'time_office'] },
     { to: '/time-office',Icon: Clock,           label: 'Time Office',  roles: ['admin', 'time_office'],
       badge: gateWork > 0 ? gateWork : null },
-    { to: '/reports',    Icon: BarChart2,       label: 'Reports',      roles: ['admin', 'manager'] },
+    { to: '/reports',    Icon: BarChart2,       label: 'Reports',      roles: null },
     { to: '/admin',      Icon: Settings2,       label: 'Admin Panel',  roles: ['admin'] },
   ].filter(item => !item.roles || item.roles.includes(user?.role));
 

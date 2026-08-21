@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { api } from '../utils/api';
 import { useAuth } from '../context/AuthContext';
-import { StatusBadge, TypeBadge, ReturnableBadge, DirectionBadge, STATUS_LABELS } from '../components/Badges';
+import { StatusBadge, MovementBadge, ReturnableBadge, DirectionBadge, STATUS_LABELS } from '../components/Badges';
 import { LogOutwardModal, LogInwardModal, ReceiveTransferModal, ReturnOutModal } from './TimeOfficePage';
 import {
   ArrowLeft, Check, X, RotateCcw, Printer, Pencil,
@@ -141,7 +141,9 @@ export default function GatePassDetailPage() {
             <StatusBadge pass={pass} />
           </div>
           <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginBottom: 6 }}>
-            <TypeBadge type={pass.type} />
+            {/* Same viewer-relative label as the list pages, so a pass badged
+                "Coming In" on /passes doesn't flip to "Outward" when opened */}
+            <MovementBadge pass={pass} user={user} />
             <DirectionBadge direction={pass.direction} />
             <ReturnableBadge returnable={pass.returnable} />
           </div>
