@@ -8,12 +8,20 @@ import { hashPassword } from '../lib/security.js';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // ─── ROLES ────────────────────────────────────────────────────────────────────
-// admin       → full access: manage users, items, branches, view all passes
-// manager     → manage passes for their branch; auto-approve own requests
-// staff       → create pass requests for their branch
-// time_office → BRANCH-BOUND gate role: confirms actual physical movement at
-//               their own branch's gate only — logs departures/returns as the
-//               source branch, and receives internal transfers as the destination
+// admin       → full access: manage users, items, branches, sees every pass
+// supermanager→ branch-level approver (no department); staff may route passes
+//               to them; sees routed/decided passes + unrouted pending pool +
+//               incoming branch transfers
+// manager     → department-level approver; sees their department's passes,
+//               anything routed to/decided by them, incoming branch transfers;
+//               auto-approves own requests
+// staff       → creates pass requests routed to a chosen approver; sees ONLY
+//               their own passes and transfer items in their custody
+// time_office → BRANCH-BOUND gate role: sees every pass crossing their gate;
+//               logs departures/returns as the source branch, receives internal
+//               transfers as the destination
+// (visibility rules live in scopePasses, routes/gatePasses.js — a user holding
+//  several roles sees the union)
 
 // ─── STATUS FLOW ──────────────────────────────────────────────────────────────
 // pending      → created by staff, awaiting manager approval

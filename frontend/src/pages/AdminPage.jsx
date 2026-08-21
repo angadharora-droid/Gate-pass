@@ -20,11 +20,11 @@ const roleColor = {
 };
 
 const roleDesc = {
-  admin:        'Full access — manage users, departments, and branches. View all passes across all branches.',
-  supermanager: 'Branch-level approver — no department. Staff can route any gate pass of the branch to a supermanager for approval. Creates passes (auto-approved) and can approve send-backs of transfers held at the branch.',
-  manager:      'Approve or reject passes their department’s staff route to them. Create passes (auto-approved). Can approve send-backs of transfers held at their branch.',
-  staff:        'Create gate pass requests and choose who approves each one: their department manager or a branch supermanager. Approve the send-back of transfer items they hold.',
-  time_office:  'Security at the gate of THEIR branch only: marks everything leaving the gate out (dispatches and send-backs) and everything arriving in (direct inward entries, incoming transfers, returns).',
+  admin:        'Full access — manage users, departments, and branches. Sees all passes across all branches.',
+  supermanager: 'Branch-level approver — no department. Staff can route any gate pass of the branch to a supermanager. Sees passes routed to or decided by them, the branch’s unrouted pending pool, and incoming branch transfers. Creates passes (auto-approved); can approve send-backs of transfers held at the branch.',
+  manager:      'Approves passes their department’s staff route to them. Sees their own department’s passes, anything routed to or decided by them, and incoming branch transfers. Creates passes (auto-approved); can approve send-backs.',
+  staff:        'Creates gate pass requests and chooses who approves each one: their department manager or a branch supermanager. Sees only their own passes and transfer items in their custody.',
+  time_office:  'Security at the gate of THEIR branch only: sees every pass crossing that gate, marks everything leaving out (dispatches and send-backs) and everything arriving in (direct inward entries, incoming transfers, returns).',
 };
 
 /* ── Shared helpers ─────────────────────────────────────────────────────────── */
