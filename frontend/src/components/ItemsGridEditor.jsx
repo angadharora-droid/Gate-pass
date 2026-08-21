@@ -35,19 +35,23 @@ export default function ItemsGridEditor({ rows, onChange, title = 'Items', heade
   const addRow    = () => onChange([...rows, emptyRow()]);
   const removeRow = (idx) => onChange(rows.filter((_, i) => i !== idx));
 
-  // Live suggestions from the items master for the row being typed in
-  const [suggest, setSuggest] = useState({ row: -1, list: [] });
+  // Live suggestions from the items master for the row being typed in.
+  // The menu is position:FIXED (anchored to the input's viewport rect) so it
+  // floats above the grid instead of being clipped by — or adding scrollbars
+  // to — the table's overflow-x container.
+  const [suggest, setSuggest] = useState({ row: -1, list: [], rect: null });
+  const closeSuggest = () => setSuggest({ row: -1, list: [], rect: null });
   const searchTimer = useRef(null);
   const searchSeq = useRef(0);
 
-  const searchMaster = (idx, q) => {
+  const searchMaster = (idx, q, rect) => {
     clearTimeout(searchTimer.current);
-    if (!q || q.trim().length < 2) { setSuggest({ row: -1, list: [] }); return; }
+    if (!q || q.trim().length < 2) { closeSuggest(); return; }
     searchTimer.current = setTimeout(async () => {
       const seq = ++searchSeq.current;
       try {
         const list = await api.searchItems(q.trim());
-        if (seq === searchSeq.current) setSuggest({ row: idx, list });
+        if (seq === searchSeq.current) setSuggest({ row: idx, list, rect });
       } catch { /* master search is best-effort; typing still works */ }
     }, 250);
   };
@@ -58,7 +62,7 @@ export default function ItemsGridEditor({ rows, onChange, title = 'Items', heade
       code: it.code || rows[idx].code,
       unit: it.unit || rows[idx].unit,
     });
-    setSuggest({ row: -1, list: [] });
+    closeSuggest();
   };
 
   const total = rows.reduce((sum, r) => sum + (rowAmount(r) ?? 0), 0);
@@ -79,7 +83,7 @@ export default function ItemsGridEditor({ rows, onChange, title = 'Items', heade
           <button className="btn btn-ghost btn-sm" onClick={addRow}><Plus size={13} /> Add Row</button>
         </div>
       </div>
-      <div style={{ overflowX: 'auto' }}>
+      <div style={{ overflowX: 'auto' }} onScroll={closeSuggest}>
         <table className="inward-table" style={{ minWidth: 900 }}>
           <thead>
             <tr>
@@ -99,14 +103,24 @@ export default function ItemsGridEditor({ rows, onChange, title = 'Items', heade
             {rows.map((r, i) => (
               <tr key={i}>
                 <td style={{ textAlign: 'center', color: 'var(--text3)', fontFamily: 'var(--font-mono)', fontSize: 12 }}>{i + 1}</td>
-                <td style={{ position: 'relative' }}>
+                <td>
                   <input className="form-input cell-input" value={r.itemName}
-                    onChange={e => { updateRow(i, { itemName: e.target.value }); searchMaster(i, e.target.value); }}
-                    onBlur={() => setTimeout(() => setSuggest(s => (s.row === i ? { row: -1, list: [] } : s)), 150)}
-                    onKeyDown={e => e.key === 'Escape' && setSuggest({ row: -1, list: [] })}
+                    onChange={e => {
+                      updateRow(i, { itemName: e.target.value });
+                      searchMaster(i, e.target.value, e.target.getBoundingClientRect());
+                    }}
+                    onBlur={() => setTimeout(() => setSuggest(s => (s.row === i ? { row: -1, list: [], rect: null } : s)), 150)}
+                    onKeyDown={e => e.key === 'Escape' && closeSuggest()}
                     placeholder="Search items or type a new one…" />
-                  {suggest.row === i && suggest.list.length > 0 && (
-                    <div className="suggest-menu">
+                  {suggest.row === i && suggest.list.length > 0 && suggest.rect && (
+                    <div
+                      className="suggest-menu"
+                      style={{
+                        top: Math.min(suggest.rect.bottom + 2, window.innerHeight - 250),
+                        left: Math.min(suggest.rect.left, window.innerWidth - 340),
+                        width: Math.max(suggest.rect.width, 300),
+                      }}
+                    >
                       {suggest.list.map(it => (
                         <button type="button" key={it.id} className="suggest-item"
                           onMouseDown={e => { e.preventDefault(); pickSuggestion(i, it); }}>
