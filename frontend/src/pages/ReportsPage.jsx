@@ -347,7 +347,7 @@ export default function ReportsPage() {
           </div>
         </div>
 
-        <div className="form-row" style={{ gridTemplateColumns: '1fr 1fr 1fr', gap: 12, marginTop: 12 }}>
+        <div className="form-row" style={{ gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 12, marginTop: 12 }}>
           <div className="form-group" style={{ marginBottom: 0 }}>
             <label className="form-label">Movement</label>
             {/* For admin the viewer-relative options equal the stored types, so
@@ -392,6 +392,15 @@ export default function ReportsPage() {
               <option value="overdue">Late (overdue)</option>
             </select>
           </div>
+          <div className="form-group" style={{ marginBottom: 0 }}>
+            <label className="form-label">Breakdown</label>
+            <select className="form-select" value={groupBy} onChange={e => setGroupBy(e.target.value)}>
+              <option value="">None</option>
+              <option value="branch">By Branch</option>
+              <option value="department">By Department</option>
+              <option value="status">By Status</option>
+            </select>
+          </div>
           <div className="form-group" style={{ marginBottom: 0, display: 'flex', alignItems: 'flex-end', justifyContent: 'flex-end' }}>
             <div style={{ fontSize: 13, color: 'var(--text2)' }}>{filtered.length} result{filtered.length !== 1 ? 's' : ''}</div>
           </div>
@@ -427,6 +436,43 @@ export default function ReportsPage() {
               <span className="stat-pill-label">Item Value</span>
             </div>
           )}
+        </div>
+      )}
+
+      {/* Breakdown table — recalculates live with every filter change */}
+      {!loading && breakdown && filtered.length > 0 && (
+        <div style={{ marginBottom: 20 }}>
+          <div className="section-head">
+            <h3 className="section-title">
+              Breakdown by {groupBy === 'branch' ? 'Branch' : groupBy === 'department' ? 'Department' : 'Status'}
+            </h3>
+          </div>
+          <div className="table-wrapper">
+            <table>
+              <thead>
+                <tr>
+                  <th>{groupBy === 'branch' ? 'Branch' : groupBy === 'department' ? 'Department' : 'Status'}</th>
+                  <th>Passes</th>
+                  <th>Outward</th>
+                  <th>Inward</th>
+                  <th>Late</th>
+                  <th>Item Value</th>
+                </tr>
+              </thead>
+              <tbody>
+                {breakdown.map(([k, g]) => (
+                  <tr key={k}>
+                    <td style={{ fontWeight: 600 }}>{k}</td>
+                    <td>{g.count}</td>
+                    <td>{g.outward || '—'}</td>
+                    <td>{g.inward || '—'}</td>
+                    <td style={{ color: g.late ? 'var(--red)' : 'var(--text3)' }}>{g.late || '—'}</td>
+                    <td style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5 }}>{g.value ? fmtMoney(g.value) : '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 
