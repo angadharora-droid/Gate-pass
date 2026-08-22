@@ -63,6 +63,8 @@ export const api = {
   receivePass: (id, payload) => request(`/gate-passes/${id}/receive`, { method: 'PATCH', body: JSON.stringify(payload) }),
   // Receiver approves the items going back to the source branch
   requestReturn: (id, payload = {}) => request(`/gate-passes/${id}/return-request`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  // Receiver / destination manager corrects a returnable transfer's item quantities
+  adjustQuantity: (id, items) => request(`/gate-passes/${id}/adjust-quantity`, { method: 'PATCH', body: JSON.stringify({ items }) }),
   // Destination branch gate marks the approved return physically out
   returnOutward: (id, payload) => request(`/gate-passes/${id}/return-outward`, { method: 'PATCH', body: JSON.stringify(payload) }),
   getStats: () => request('/gate-passes/meta/stats'),
