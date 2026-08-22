@@ -18,6 +18,13 @@ export default function CreatePassPage() {
     navigate(`/passes/${created.id}`);
   };
 
+  // Self-approving roles skip straight to 'approved' on normal submit — a
+  // draft instead saves without deciding it yet, so it stays freely editable.
+  const handleSaveDraft = async (payload) => {
+    const created = await api.createPass({ type: 'outward', ...payload, saveAsDraft: true });
+    navigate(`/passes/${created.id}`);
+  };
+
   return (
     <div>
       <div className="page-header">
@@ -50,6 +57,7 @@ export default function CreatePassPage() {
           ? 'Your pass goes to the approver you select above before items can move.'
           : null}
         onSubmit={handleSubmit}
+        onSaveDraft={isManagerOrAdmin ? handleSaveDraft : undefined}
       />
     </div>
   );

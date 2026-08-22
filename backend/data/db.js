@@ -24,6 +24,9 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 //  several roles sees the union)
 
 // ─── STATUS FLOW ──────────────────────────────────────────────────────────────
+// draft        → saved by a self-approving role (manager/supermanager/admin)
+//                without deciding it yet; private to its creator until they
+//                PATCH /:id/submit-draft, which self-approves it like normal
 // pending      → created by staff, awaiting manager approval
 // approved     → manager approved; source-branch Time Office must now log departure
 // in_transit   → items are OUT: a returnable pass awaiting return, or an internal

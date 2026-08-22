@@ -87,6 +87,19 @@ export default function GatePassDetailPage() {
     }
   };
 
+  // Creator finalizing a draft — self-approves it, same as a normal submit
+  const handleSubmitDraft = async () => {
+    setError('');
+    setActionLoading(true);
+    try {
+      setPass(await api.submitDraft(id));
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
   if (loading) return <div className="loading-page"><div className="spinner" /><span>Loading pass…</span></div>;
 
   if (!pass) return (
@@ -106,6 +119,7 @@ export default function GatePassDetailPage() {
   // is branch-bound: departures/returns at the SOURCE gate, receiving an
   // internal transfer at the DESTINATION gate. Admin can log anywhere.
   const isAdmin = hasRole(user, 'admin');
+  const isCreator = pass.createdBy === user?.id;
   const canLog = hasRole(user, 'time_office', 'admin');
   const atSource = isAdmin || user?.branch === pass.sourceBranch;
   const atDest   = isAdmin || user?.branch === pass.destinationBranch;
@@ -170,12 +184,23 @@ export default function GatePassDetailPage() {
           <button className="btn btn-ghost" onClick={() => window.print()}>
             <Printer size={14} /> Print
           </button>
-          {pass.status === 'pending' && canApprove(pass) && (
+          {pass.status === 'draft' && (isCreator || isAdmin) && (
             <>
-              {/* Manager can still correct the pass before deciding */}
               <Link to={`/passes/${pass.id}/edit`} className="btn btn-ghost">
                 <Pencil size={14} /> Edit
               </Link>
+              <button className="btn btn-success" onClick={handleSubmitDraft} disabled={actionLoading}>
+                <Check size={14} /> Submit
+              </button>
+            </>
+          )}
+          {pass.status === 'pending' && (canApprove(pass) || isCreator) && (
+            <Link to={`/passes/${pass.id}/edit`} className="btn btn-ghost">
+              <Pencil size={14} /> Edit
+            </Link>
+          )}
+          {pass.status === 'pending' && canApprove(pass) && (
+            <>
               <button className="btn btn-success" onClick={() => handleAction('approve')} disabled={actionLoading}>
                 <Check size={14} /> Approve
               </button>
@@ -664,10 +689,14 @@ function LifecycleTimeline({ pass }) {
     },
     {
       key: 'approved',
-      label: pass.status === 'rejected'
+      label: pass.status === 'draft'
+        ? 'Still a Draft'
+        : pass.status === 'rejected'
         ? 'Rejected'
         : (pass.autoApproved ? 'Auto-Approved' : 'Approved'),
-      sub: pass.approvedByUser?.name
+      sub: pass.status === 'draft'
+        ? 'Not submitted yet — only you can see or edit it'
+        : pass.approvedByUser?.name
         ? `${pass.approvedByUser.name}${pass.autoApproved ? ' (auto)' : ''}`
         : (pass.status === 'pending' && pass.approverUser
           ? `Waiting for ${pass.approverUser.name}`

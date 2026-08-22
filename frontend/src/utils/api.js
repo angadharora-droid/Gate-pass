@@ -55,8 +55,10 @@ export const api = {
   // Direct inward entry logged by Security at the gate (no approval flow)
   createInward: (data) => request('/gate-passes/inward', { method: 'POST', body: JSON.stringify(data) }),
   approvePass: (id, action) => request(`/gate-passes/${id}/status`, { method: 'PATCH', body: JSON.stringify({ action }) }),
-  // Manager/admin edit of a still-pending pass (before approval)
+  // Creator/manager/admin edit of a still-pending or draft pass (before approval)
   revisePass: (id, data) => request(`/gate-passes/${id}/revise`, { method: 'PATCH', body: JSON.stringify(data) }),
+  // Finalizes a draft — self-approves it, same as a normal manager/admin submit
+  submitDraft: (id) => request(`/gate-passes/${id}/submit-draft`, { method: 'PATCH' }),
   logOutward: (id, payload) => request(`/gate-passes/${id}/log-outward`, { method: 'PATCH', body: JSON.stringify(payload) }),
   logInward: (id, payload) => request(`/gate-passes/${id}/log-inward`, { method: 'PATCH', body: JSON.stringify(payload) }),
   // Destination branch marks an internal transfer's items in (with dept + receiver)
