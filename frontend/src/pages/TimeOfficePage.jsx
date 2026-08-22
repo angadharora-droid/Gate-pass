@@ -741,7 +741,7 @@ export default function TimeOfficePage() {
               value={search}
               onChange={e => { setSearch(e.target.value); setSearchActive(false); }}
               onKeyDown={e => e.key === 'Enter' && setSearchActive(true)}
-              placeholder="e.g. GP-OIR-2026-002"
+              placeholder="e.g. GP-OR-2026-0002"
             />
           </div>
           <button className="btn btn-primary" onClick={() => setSearchActive(true)} disabled={!search.trim()}>

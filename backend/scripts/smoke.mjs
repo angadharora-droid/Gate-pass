@@ -116,7 +116,7 @@ const created = await api('POST', '/gate-passes', {
   },
 });
 check('staff creates pending pass', created.status === 201 && created.json?.status === 'pending', JSON.stringify(created.json));
-check('numbering starts at 0001 on fresh db', created.json?.passNumber === 'GP-OER-' + new Date().getFullYear() + '-0001', created.json?.passNumber);
+check('numbering starts at 0001 on fresh db', created.json?.passNumber === 'GP-OR-' + new Date().getFullYear() + '-0001', created.json?.passNumber);
 const passId = created.json?.id;
 
 const staffApprove = await api('PATCH', `/gate-passes/${passId}/status`, { token: staff, body: { action: 'approve' } });

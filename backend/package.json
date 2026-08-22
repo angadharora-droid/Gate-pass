@@ -5,7 +5,8 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "test:smoke": "node scripts/smoke.mjs"
+    "test:smoke": "node scripts/smoke.mjs",
+    "migrate:pass-numbers": "node scripts/renumber-pass-numbers.mjs"
   },
   "dependencies": {
     "cors": "^2.8.5",
