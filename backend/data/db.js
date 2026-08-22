@@ -203,8 +203,13 @@ async function seedIfEmpty() {
 }
 
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
-// Code segment of a pass number — type crossed with returnable, direction
-// (internal/external) does not appear in it:
+// Prefix of a pass number — which side of the gate it crosses:
+//   GPI = internal (branch-to-branch transfer)   GPE = external (vendor/person)
+export function passNumberPrefix(direction) {
+  return direction === 'internal' ? 'GPI' : 'GPE';
+}
+
+// Code segment of a pass number — type crossed with returnable:
 //   IR  = inward,  returnable      INR = inward,  non-returnable
 //   OR  = outward, returnable      ONR = outward, non-returnable
 export function passNumberCode(type, returnable) {
@@ -214,14 +219,14 @@ export function passNumberCode(type, returnable) {
 }
 
 // Atomic counter — safe even with concurrent pass creation.
-export async function generatePassNumber({ type, returnable } = {}) {
+export async function generatePassNumber({ type, direction, returnable } = {}) {
   const doc = await dbc('counters').findOneAndUpdate(
     { _id: 'passNumber' },
     { $inc: { seq: 1 } },
     { upsert: true, returnDocument: 'after' },
   );
   const year = new Date().getFullYear();
-  return `GP-${passNumberCode(type, returnable)}-${year}-${String(doc.seq).padStart(4, '0')}`;
+  return `${passNumberPrefix(direction)}-${passNumberCode(type, returnable)}-${year}-${String(doc.seq).padStart(4, '0')}`;
 }
 
 // Case/space-insensitive identity for item names, so "Dinner Plate" typed on a
