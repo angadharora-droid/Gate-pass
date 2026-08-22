@@ -172,7 +172,7 @@ router.post('/', requireRole('admin', 'supermanager', 'manager', 'staff'), async
 
   const newPass = {
     id: uuidv4(),
-    passNumber: await generatePassNumber({ type, direction, returnable: returnable ?? false }),
+    passNumber: await generatePassNumber({ type, returnable: returnable ?? false }),
     type,
     direction,
     status: selfApproving ? 'approved' : 'pending',
@@ -277,7 +277,7 @@ router.post('/inward', requireRole('time_office', 'admin'), asyncHandler(async (
 
   const newPass = {
     id: uuidv4(),
-    passNumber: await generatePassNumber({ type: 'inward', direction: 'external', returnable }),
+    passNumber: await generatePassNumber({ type: 'inward', returnable }),
     type: 'inward',
     direction: 'external',
     status: 'completed',
