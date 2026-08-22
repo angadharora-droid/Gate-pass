@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../utils/api';
 import { useAuth } from '../context/AuthContext';
@@ -31,6 +31,26 @@ export default function NewInwardPage() {
     sourceParty: '', remarks: '',
   });
   const [rows, setRows] = useState([emptyRow()]);
+
+  // Live suggestions from the vendors master as "Received From" is typed —
+  // same idea as the item suggestions in ItemsGridEditor, positioned off the
+  // input's own rect since the menu is position:fixed.
+  const [vendorSuggest, setVendorSuggest] = useState({ list: [], rect: null });
+  const closeVendorSuggest = () => setVendorSuggest({ list: [], rect: null });
+  const vendorTimer = useRef(null);
+  const vendorSeq = useRef(0);
+
+  const searchVendors = (q, rect) => {
+    clearTimeout(vendorTimer.current);
+    if (!q || q.trim().length < 2) { closeVendorSuggest(); return; }
+    vendorTimer.current = setTimeout(async () => {
+      const seq = ++vendorSeq.current;
+      try {
+        const list = await api.searchVendors(q.trim());
+        if (seq === vendorSeq.current) setVendorSuggest({ list, rect });
+      } catch { /* vendor search is best-effort; typing still works */ }
+    }, 250);
+  };
 
   useEffect(() => {
     Promise.all([api.getBranches(), api.getDepartments(), api.getUsers()])
@@ -128,8 +148,30 @@ export default function NewInwardPage() {
           <div className="form-group">
             <label className="form-label">Received From <span style={{ color: 'var(--text3)', fontWeight: 400 }}>(vendor / party)</span></label>
             <input className="form-input" value={form.sourceParty}
-              onChange={e => set('sourceParty', e.target.value)}
+              onChange={e => {
+                set('sourceParty', e.target.value);
+                searchVendors(e.target.value, e.target.getBoundingClientRect());
+              }}
+              onBlur={() => setTimeout(closeVendorSuggest, 150)}
+              onKeyDown={e => e.key === 'Escape' && closeVendorSuggest()}
               placeholder="e.g. ABC Suppliers, Blue Dart…" />
+            {vendorSuggest.list.length > 0 && vendorSuggest.rect && (
+              <div
+                className="suggest-menu"
+                style={{
+                  top: Math.min(vendorSuggest.rect.bottom + 2, window.innerHeight - 250),
+                  left: Math.min(vendorSuggest.rect.left, window.innerWidth - 340),
+                  width: Math.max(vendorSuggest.rect.width, 300),
+                }}
+              >
+                {vendorSuggest.list.map(v => (
+                  <button type="button" key={v.id} className="suggest-item"
+                    onMouseDown={e => { e.preventDefault(); set('sourceParty', v.name); closeVendorSuggest(); }}>
+                    <span className="suggest-name">{v.name}</span>
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         </div>
 

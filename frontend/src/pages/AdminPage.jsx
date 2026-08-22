@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '../utils/api';
-import { X, AlertTriangle, Building2, ScrollText } from 'lucide-react';
+import { X, AlertTriangle, Building2, ScrollText, Package, Truck } from 'lucide-react';
 
 const ROLES = ['admin', 'supermanager', 'manager', 'staff', 'time_office'];
 // Roles that are branch-bound with no department (mirrors backend NO_DEPT_ROLES)
@@ -595,6 +595,110 @@ function fmtAuditDetails(details) {
   return entries.slice(0, 2).map(([k, v]) => `${k}: ${v}`).join(' · ');
 }
 
+/* ── Items Tab ──────────────────────────────────────────────────────────────── */
+function ItemsTab() {
+  const [q, setQ] = useState('');
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    setLoading(true);
+    const t = setTimeout(() => {
+      api.searchItems(q, 50).then(setItems).finally(() => setLoading(false));
+    }, 250);
+    return () => clearTimeout(t);
+  }, [q]);
+
+  return (
+    <div>
+      <SectionHeader
+        title="Items Master"
+        sub="Shared item list used across every pass form — seeded from the IDS export, and grows automatically whenever someone types a new item name."
+      />
+      <div className="form-group" style={{ maxWidth: 360 }}>
+        <input className="form-input" value={q} onChange={e => setQ(e.target.value)} placeholder="Search items…" />
+      </div>
+      {loading ? (
+        <div className="loading-page"><div className="spinner" /></div>
+      ) : items.length === 0 ? (
+        <div className="empty-state">
+          <div className="empty-icon"><Package size={24} strokeWidth={1.75} /></div>
+          <div className="empty-title">No items found</div>
+        </div>
+      ) : (
+        <div className="table-wrapper">
+          <table>
+            <thead><tr><th>Name</th><th>Code</th><th>Category</th><th>Unit</th></tr></thead>
+            <tbody>
+              {items.map(it => (
+                <tr key={it.id}>
+                  <td style={{ fontWeight: 500 }}>{it.name}</td>
+                  <td style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>{it.code || '—'}</td>
+                  <td>{it.category || '—'}</td>
+                  <td>{it.unit}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div style={{ fontSize: 12, color: 'var(--text3)', marginTop: 10 }}>
+            {q ? `Showing up to 50 matches for "${q}"` : 'Showing the first 50 items alphabetically — search to find a specific one'}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── Vendors Tab ────────────────────────────────────────────────────────────── */
+function VendorsTab() {
+  const [q, setQ] = useState('');
+  const [vendors, setVendors] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    setLoading(true);
+    const t = setTimeout(() => {
+      api.searchVendors(q, 50).then(setVendors).finally(() => setLoading(false));
+    }, 250);
+    return () => clearTimeout(t);
+  }, [q]);
+
+  return (
+    <div>
+      <SectionHeader
+        title="Vendors"
+        sub="Source parties logged on inward gate entries — grows automatically as Security types a new 'Received From' name."
+      />
+      <div className="form-group" style={{ maxWidth: 360 }}>
+        <input className="form-input" value={q} onChange={e => setQ(e.target.value)} placeholder="Search vendors…" />
+      </div>
+      {loading ? (
+        <div className="loading-page"><div className="spinner" /></div>
+      ) : vendors.length === 0 ? (
+        <div className="empty-state">
+          <div className="empty-icon"><Truck size={24} strokeWidth={1.75} /></div>
+          <div className="empty-title">No vendors {q ? 'found' : 'yet'}</div>
+          {!q && <div className="empty-sub">They're added automatically the first time Security logs an inward entry from them.</div>}
+        </div>
+      ) : (
+        <div className="table-wrapper">
+          <table>
+            <thead><tr><th>Name</th></tr></thead>
+            <tbody>
+              {vendors.map(v => (
+                <tr key={v.id}><td style={{ fontWeight: 500 }}>{v.name}</td></tr>
+              ))}
+            </tbody>
+          </table>
+          <div style={{ fontSize: 12, color: 'var(--text3)', marginTop: 10 }}>
+            {q ? `Showing up to 50 matches for "${q}"` : 'Showing the first 50 alphabetically — search to find a specific one'}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AuditTab() {
   const [logs, setLogs] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -658,6 +762,8 @@ const TABS = [
   { key: 'users',       label: 'Users'       },
   { key: 'departments', label: 'Departments' },
   { key: 'branches',    label: 'Branches'    },
+  { key: 'items',       label: 'Items'       },
+  { key: 'vendors',     label: 'Vendors'     },
   { key: 'audit',       label: 'Audit Log'   },
 ];
 
@@ -669,7 +775,7 @@ export default function AdminPage() {
       <div className="page-header">
         <div>
           <div className="page-title">Admin Panel</div>
-          <div className="page-subtitle">Manage users, departments, branches, and audit trail</div>
+          <div className="page-subtitle">Manage users, departments, branches, items, vendors, and audit trail</div>
         </div>
       </div>
 
@@ -684,6 +790,8 @@ export default function AdminPage() {
       {tab === 'users'       && <UsersTab />}
       {tab === 'departments' && <DepartmentsTab />}
       {tab === 'branches'    && <BranchesTab />}
+      {tab === 'items'       && <ItemsTab />}
+      {tab === 'vendors'     && <VendorsTab />}
       {tab === 'audit'       && <AuditTab />}
     </div>
   );

@@ -101,6 +101,9 @@ export const api = {
   searchItems: (q, limit = 20) => request(`/items?q=${encodeURIComponent(q)}&limit=${limit}`),
   addItem: (data) => request('/items', { method: 'POST', body: JSON.stringify(data) }),
 
+  // Vendors master (grows automatically from inward "Received From" entries)
+  searchVendors: (q, limit = 10) => request(`/vendors?q=${encodeURIComponent(q)}&limit=${limit}`),
+
   // Meta
   getMeta: () => Promise.all([
     request('/meta/roles'),
