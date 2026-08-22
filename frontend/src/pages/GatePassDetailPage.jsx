@@ -7,7 +7,7 @@ import { StatusBadge, MovementBadge, ReturnableBadge, DirectionBadge, STATUS_LAB
 import { LogOutwardModal, LogInwardModal, ReceiveTransferModal, ReturnOutModal } from './TimeOfficePage';
 import {
   ArrowLeft, Check, X, RotateCcw, Printer, Pencil,
-  AlertTriangle, CheckCircle2,
+  AlertTriangle, CheckCircle2, Info,
   FileText, ArrowUpRight, Truck, ArrowDownLeft, PackageCheck,
   Zap, Clock,
 } from 'lucide-react';
@@ -43,6 +43,7 @@ export default function GatePassDetailPage() {
   const [actionLoading, setActionLoading] = useState(false);
   // Which Time Office logging modal is open: 'outward' (departure) or 'inward' (arrival/return)
   const [logModal, setLogModal] = useState(null);
+  const [adjustModalOpen, setAdjustModalOpen] = useState(false);
 
   const load = () => {
     api.getPass(id).then(p => { setPass(p); setLoading(false); }).catch(() => setLoading(false));
@@ -126,6 +127,13 @@ export default function GatePassDetailPage() {
     (isAdmin ||
       user?.id === pass.receivedLog.receiverId ||
       (hasRole(user, 'manager', 'supermanager') && user?.branch === pass.destinationBranch));
+  // Same authority as send-back approval, but open from the moment items are
+  // received until the return physically leaves — covers correcting quantity
+  // right when custody is taken, and again right before approving send-back.
+  const canAdjustQty = isTransferAway && pass.returnable && pass.receivedLog && !pass.returnOutwardLog &&
+    (isAdmin ||
+      user?.id === pass.receivedLog.receiverId ||
+      (hasRole(user, 'manager', 'supermanager') && user?.branch === pass.destinationBranch));
   // After approval, the destination gate marks the return physically out
   const canReturnOut    = canLog && atDest && isTransferAway && pass.returnable &&
     pass.returnRequest && !pass.returnOutwardLog;
@@ -184,6 +192,11 @@ export default function GatePassDetailPage() {
           {canReceive && (
             <button className="btn btn-primary" onClick={() => setLogModal('receive')}>
               <ArrowDownLeft size={14} /> Mark Items In
+            </button>
+          )}
+          {canAdjustQty && (
+            <button className="btn btn-ghost" onClick={() => setAdjustModalOpen(true)}>
+              <Pencil size={14} /> Adjust Quantities
             </button>
           )}
           {canApproveSendBack && (
@@ -424,6 +437,30 @@ export default function GatePassDetailPage() {
             )}
           </div>
 
+          {/* Quantity corrections made by the destination branch, for observability */}
+          {pass.quantityAdjustments?.length > 0 && (
+            <div className="card">
+              <h3 style={{ fontWeight: 700, marginBottom: 16, fontSize: 15, display: 'flex', alignItems: 'center', gap: 8 }}>
+                <Pencil size={15} style={{ color: 'var(--blue)' }} /> Quantity Corrections
+              </h3>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                {pass.quantityAdjustments.map((qa, qi) => (
+                  <div key={qi} style={{ borderLeft: '2px solid var(--blue)', paddingLeft: 12 }}>
+                    <div style={{ fontSize: 11, color: 'var(--text3)', fontFamily: 'var(--font-mono)', marginBottom: 6 }}>
+                      {fmt(qa.adjustedAt)}{qa.adjustedByUser ? ` · by ${qa.adjustedByUser.name}` : ''}
+                    </div>
+                    {qa.changes?.map((c, ci) => (
+                      <div key={ci} style={{ fontSize: 13, marginBottom: 2 }}>
+                        <strong>{c.itemName}</strong>
+                        <span style={{ color: 'var(--text2)' }}> — {c.from} → {c.to}</span>
+                      </div>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Closed items — written off with a reason, for observability */}
           {pass.closures?.length > 0 && (
             <div className="card">
@@ -474,6 +511,101 @@ export default function GatePassDetailPage() {
       {logModal === 'returnOut' && (
         <ReturnOutModal pass={pass} onClose={() => setLogModal(null)} onDone={handleLogDone} />
       )}
+      {adjustModalOpen && (
+        <AdjustQuantityModal pass={pass} onClose={() => setAdjustModalOpen(false)} onDone={() => { setAdjustModalOpen(false); load(); }} />
+      )}
+    </div>
+  );
+}
+
+/* ── Adjust Quantity Modal ──────────────────────────────────────────────────── */
+// Lets the receiver (or a manager/supermanager of the destination branch)
+// correct a returnable transfer's item quantities — what actually arrived, or
+// what's actually going back — any time between receiving and dispatch back.
+function AdjustQuantityModal({ pass, onClose, onDone }) {
+  const [values, setValues] = useState(() =>
+    Object.fromEntries((pass.items || []).map((li, i) => [i, li.quantity]))
+  );
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const handleSave = async () => {
+    setError('');
+    const items = (pass.items || [])
+      .map((li, i) => ({ index: i, quantity: Number(values[i]) }))
+      .filter(it => it.quantity !== pass.items[it.index].quantity);
+    if (!items.length) { setError('Change at least one quantity'); return; }
+    for (const it of items) {
+      const li = pass.items[it.index];
+      if (!Number.isFinite(it.quantity) || it.quantity <= 0) {
+        setError(`Quantity must be > 0 for "${li.itemName}"`); return;
+      }
+      const alreadyAccounted = (li.returnedQuantity || 0) + (li.closedQuantity || 0);
+      if (it.quantity < alreadyAccounted) {
+        setError(`Cannot set ${li.itemName} below ${alreadyAccounted} — that much is already returned/closed`);
+        return;
+      }
+    }
+    setLoading(true);
+    try {
+      await api.adjustQuantity(pass.id, items);
+      onDone();
+    } catch (e) { setError(e.message); } finally { setLoading(false); }
+  };
+
+  return (
+    <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="modal">
+        <div className="modal-header">
+          <div>
+            <div className="modal-title">Adjust Quantities</div>
+            <div style={{ fontSize: 12, color: 'var(--text3)', marginTop: 3 }}>{pass.passNumber}</div>
+          </div>
+          <button className="modal-close" onClick={onClose}><X size={16} /></button>
+        </div>
+        <div className="modal-body">
+          <div className="alert alert-info" style={{ marginBottom: 20 }}>
+            <Info size={15} />
+            Correct what actually arrived, or what's actually going back to <strong>{pass.sourceBranchName || 'the source branch'}</strong>.
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {pass.items?.map((li, i) => {
+              const alreadyAccounted = (li.returnedQuantity || 0) + (li.closedQuantity || 0);
+              return (
+                <div key={i} className="item-row" style={{ alignItems: 'center' }}>
+                  <div>
+                    <div className="item-name">{li.itemName}</div>
+                    <div style={{ fontSize: 11, color: 'var(--text3)', fontFamily: 'var(--font-mono)' }}>
+                      {li.unit}{alreadyAccounted > 0 ? ` · ${alreadyAccounted} already accounted for` : ''}
+                    </div>
+                  </div>
+                  <input
+                    type="number"
+                    className="form-input"
+                    style={{ width: 90, textAlign: 'right' }}
+                    min={alreadyAccounted || 1}
+                    value={values[i]}
+                    onChange={e => setValues(v => ({ ...v, [i]: e.target.value }))}
+                  />
+                </div>
+              );
+            })}
+          </div>
+          {error && (
+            <div className="alert alert-danger" style={{ marginTop: 16 }}>
+              <AlertTriangle size={15} /> {error}
+            </div>
+          )}
+        </div>
+        <div className="modal-footer">
+          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+          <button className="btn btn-primary" onClick={handleSave} disabled={loading}>
+            {loading
+              ? <><div className="spinner" style={{ width: 15, height: 15 }} /> Saving…</>
+              : <><Check size={14} /> Save Changes</>}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

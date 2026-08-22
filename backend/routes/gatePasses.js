@@ -588,6 +588,74 @@ router.patch('/:id/receive', requireRole('time_office', 'admin'), asyncHandler(a
   res.json(enrichPass(pass, await getRefs()));
 }));
 
+// Who speaks for the destination side of a branch transfer once it's arrived:
+// the specific person who took custody, or any manager/supermanager of the
+// destination branch (their backup when the receiver is unavailable). Used by
+// both the send-back approval and the quantity-adjustment endpoint below.
+function canActForDestination(pass, user) {
+  if (hasRole(user, 'admin')) return true;
+  if (user.id === pass.receivedLog?.receiverId) return true;
+  return hasRole(user, 'manager', 'supermanager') && user.branch === pass.destinationBranch;
+}
+
+// ─── RECEIVER/DEST MANAGER: ADJUST RETURNABLE QUANTITIES ────────────────────
+// What actually arrived (or what's actually going back) can differ from what
+// the source branch originally dispatched — items get consumed, damaged, or
+// miscounted while they're with the destination branch. The receiver (or a
+// manager/supermanager of the destination branch) can correct a line item's
+// quantity any time from the moment items are marked in through to the
+// moment the return physically leaves — right when they take custody, or
+// again right before approving the send-back. Once returnOutwardLog is
+// stamped the quantity is locked; it's what's physically moving by then.
+router.patch('/:id/adjust-quantity', asyncHandler(async (req, res) => {
+  const pass = await dbc('gatePasses').findOne({ id: req.params.id }, NO_ID);
+  if (!pass) return res.status(404).json({ error: 'Gate pass not found' });
+  if (!scopePasses([pass], req.user).length)
+    return res.status(404).json({ error: 'Gate pass not found' });
+
+  if (!(pass.type === 'outward' && pass.direction === 'internal' && pass.returnable && pass.destinationBranch))
+    return res.status(400).json({ error: 'Only returnable branch transfers have adjustable quantities' });
+  if (!pass.receivedLog)
+    return res.status(400).json({ error: 'Items have not been marked in at the destination branch yet' });
+  if (pass.returnOutwardLog)
+    return res.status(400).json({ error: 'Return already marked out at the destination branch; quantity is locked' });
+  if (!['in_transit', 'partial_return'].includes(pass.status))
+    return res.status(400).json({ error: `Cannot adjust quantity in ${pass.status} status` });
+  if (!canActForDestination(pass, req.user))
+    return res.status(403).json({ error: 'Only the receiver (or a manager/supermanager of their branch) can adjust quantity' });
+
+  const { items } = req.body;
+  if (!Array.isArray(items) || !items.length)
+    return res.status(400).json({ error: 'Provide at least one item to adjust' });
+
+  const changes = [];
+  for (const it of items) {
+    const li = pass.items[it.index];
+    if (!li) return res.status(400).json({ error: `No item at index ${it.index}` });
+    const qty = Number(it.quantity);
+    if (!Number.isFinite(qty) || qty <= 0)
+      return res.status(400).json({ error: `Quantity must be > 0 for "${li.itemName}"` });
+    const alreadyAccounted = (li.returnedQuantity || 0) + (li.closedQuantity || 0);
+    if (qty < alreadyAccounted)
+      return res.status(400).json({ error: `Cannot set ${li.itemName} below ${alreadyAccounted} — that much is already returned/closed` });
+    if (qty !== li.quantity) changes.push({ index: it.index, itemName: li.itemName, from: li.quantity, to: qty });
+  }
+  if (!changes.length)
+    return res.status(400).json({ error: 'No quantities actually changed' });
+
+  for (const c of changes) {
+    const li = pass.items[c.index];
+    li.quantity = c.to;
+    li.amount = li.rate != null ? Math.round(li.rate * c.to * 100) / 100 : null;
+  }
+  pass.quantityAdjustments = pass.quantityAdjustments || [];
+  pass.quantityAdjustments.push({ adjustedAt: new Date().toISOString(), adjustedBy: req.user.id, changes });
+
+  await dbc('gatePasses').replaceOne({ id: pass.id }, pass);
+  await logAudit('ADJUST_QUANTITY', req.user.id, pass.id, { passNumber: pass.passNumber, changes });
+  res.json(enrichPass(pass, await getRefs()));
+}));
+
 // ─── RECEIVER: APPROVE THE SEND-BACK ─────────────────────────────────────────
 // A returnable transfer sits "with" the receiver at the destination branch.
 // When they are done with the items, they approve them going back out — that
@@ -608,9 +676,7 @@ router.patch('/:id/return-request', asyncHandler(async (req, res) => {
   if (!['in_transit', 'partial_return'].includes(pass.status))
     return res.status(400).json({ error: `Cannot approve a send-back in ${pass.status} status` });
 
-  const isReceiver    = req.user.id === pass.receivedLog.receiverId;
-  const isDestManager = hasRole(req.user, 'manager', 'supermanager') && req.user.branch === pass.destinationBranch;
-  if (!(hasRole(req.user, 'admin') || isReceiver || isDestManager))
+  if (!canActForDestination(pass, req.user))
     return res.status(403).json({ error: 'Only the receiver (or a manager/supermanager of their branch) can approve the send-back' });
 
   pass.returnRequest = {
@@ -953,6 +1019,9 @@ function enrichPass(pass, refs) {
     } : null,
     closures: Array.isArray(pass.closures)
       ? pass.closures.map(c => { const cu = u(c.closedBy); return { ...c, closedByUser: cu ? { id: cu.id, name: cu.name } : null }; })
+      : [],
+    quantityAdjustments: Array.isArray(pass.quantityAdjustments)
+      ? pass.quantityAdjustments.map(qa => { const au = u(qa.adjustedBy); return { ...qa, adjustedByUser: au ? { id: au.id, name: au.name } : null }; })
       : [],
     sourceBranchName:     sourceBranchObj?.name || null,
     destinationBranchName: destBranchObj?.name  || null,
