@@ -92,7 +92,6 @@ export default function GatePassListPage() {
   });
   const [overdueOnly, setOverdueOnly] = useState(() => searchParams.get('overdue') === 'true');
   const [search, setSearch] = useState('');
-  const [searchActive, setSearchActive] = useState(false);
   const [fromDate, setFromDate] = useState('');
   const [toDate, setToDate] = useState('');
 
@@ -109,10 +108,11 @@ export default function GatePassListPage() {
   let shown = movementFilter ? passes.filter(p => movementFor(p, user) === movementFilter) : passes;
   if (overdueOnly) shown = shown.filter(p => p.isOverdue);
   const searchTerm = search.trim().toLowerCase();
-  if (searchActive && searchTerm) shown = shown.filter(p =>
-    [p.passNumber, p.sourceBranchName, p.destinationBranchName, p.destinationPerson]
-      .some(v => v && String(v).toLowerCase().includes(searchTerm))
-  );
+  if (searchTerm) shown = shown.filter(p => [
+    p.passNumber, p.sourceBranchName, p.destinationBranchName, p.destinationPerson,
+    p.purpose, p.departmentName,
+    ...(p.items || []).map(li => li.itemName),
+  ].some(v => v && String(v).toLowerCase().includes(searchTerm)));
   const { start: rangeStart, end: rangeEnd } = rangeToBounds(fromDate, toDate);
   if (rangeStart || rangeEnd) shown = shown.filter(p => {
     const created = p.createdAt ? new Date(p.createdAt) : null;
@@ -151,20 +151,16 @@ export default function GatePassListPage() {
       <div className="card" style={{ padding: '16px 20px', marginBottom: 20 }}>
         <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap' }}>
           <div style={{ flex: 1, minWidth: 260 }}>
-            <label className="form-label">Search by Pass Number, From or To</label>
+            <label className="form-label">Search</label>
             <input
               className="form-input"
               value={search}
-              onChange={e => { setSearch(e.target.value); setSearchActive(false); }}
-              onKeyDown={e => e.key === 'Enter' && setSearchActive(true)}
-              placeholder="e.g. GPI-OR-2026-0002, or a branch/vendor name"
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Pass number, branch, vendor, purpose, or item name…"
             />
           </div>
-          <button className="btn btn-primary" onClick={() => setSearchActive(true)} disabled={!search.trim()}>
-            Search
-          </button>
-          {searchActive && (
-            <button className="btn btn-ghost" onClick={() => { setSearch(''); setSearchActive(false); }}>
+          {search && (
+            <button className="btn btn-ghost" onClick={() => setSearch('')}>
               Clear
             </button>
           )}
