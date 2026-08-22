@@ -125,20 +125,13 @@ export default function GatePassListPage() {
   const overdueCount  = passes.filter(p => p.isOverdue).length;
 
   const setRange = (from, to) => { setFromDate(from); setToDate(to); };
+  const today = new Date();
+  const lastMonthDate = new Date(today.getFullYear(), today.getMonth() - 1, 1);
   const datePresets = [
-    { label: 'This Month', apply: () => setRange(firstOfMonth(), toDateInput(new Date())) },
-    { label: 'Last Month', apply: () => {
-      const d = new Date();
-      setRange(
-        toDateInput(new Date(d.getFullYear(), d.getMonth() - 1, 1)),
-        toDateInput(new Date(d.getFullYear(), d.getMonth(), 0)),
-      );
-    } },
-    { label: 'Last 30 Days', apply: () => {
-      const d = new Date();
-      setRange(toDateInput(new Date(d.getFullYear(), d.getMonth(), d.getDate() - 29)), toDateInput(d));
-    } },
-    { label: 'All Time', apply: () => setRange('', '') },
+    { label: 'This Month', from: firstOfMonth(), to: toDateInput(today) },
+    { label: 'Last Month', from: toDateInput(lastMonthDate), to: toDateInput(new Date(today.getFullYear(), today.getMonth(), 0)) },
+    { label: 'Last 30 Days', from: toDateInput(new Date(today.getFullYear(), today.getMonth(), today.getDate() - 29)), to: toDateInput(today) },
+    { label: 'All Time', from: '', to: '' },
   ];
 
   return (
@@ -177,19 +170,29 @@ export default function GatePassListPage() {
           )}
         </div>
 
-        <div className="filters-bar" style={{ margin: '14px 0 12px' }}>
-          {datePresets.map(p => (
-            <button key={p.label} className="filter-chip" onClick={p.apply}>{p.label}</button>
-          ))}
-        </div>
-        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-          <div className="form-group" style={{ marginBottom: 0, minWidth: 200 }}>
-            <label className="form-label">From <span style={{ fontWeight: 400, color: 'var(--text3)' }}>(blank = beginning)</span></label>
+        <div style={{
+          display: 'flex', gap: 20, flexWrap: 'wrap', alignItems: 'flex-end',
+          marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--border)',
+        }}>
+          <div style={{ flex: 1, minWidth: 240 }}>
+            <label className="form-label">Date Range</label>
+            <div className="filters-bar" style={{ margin: 0 }}>
+              {datePresets.map(p => (
+                <button
+                  key={p.label}
+                  className={`filter-chip${fromDate === p.from && toDate === p.to ? ' active' : ''}`}
+                  onClick={() => setRange(p.from, p.to)}
+                >{p.label}</button>
+              ))}
+            </div>
+          </div>
+          <div className="form-group" style={{ marginBottom: 0, width: 170 }}>
+            <label className="form-label">From</label>
             <input className="form-input" type="date" value={fromDate} max={toDate || undefined}
               onChange={e => setFromDate(e.target.value)} />
           </div>
-          <div className="form-group" style={{ marginBottom: 0, minWidth: 200 }}>
-            <label className="form-label">To <span style={{ fontWeight: 400, color: 'var(--text3)' }}>(blank = today)</span></label>
+          <div className="form-group" style={{ marginBottom: 0, width: 170 }}>
+            <label className="form-label">To</label>
             <input className="form-input" type="date" value={toDate} min={fromDate || undefined}
               onChange={e => setToDate(e.target.value)} />
           </div>
