@@ -317,6 +317,30 @@ itemsRouter.post('/', asyncHandler(async (req, res) => {
   res.status(201).json(item);
 }));
 
+// ─── VENDORS MASTER ───────────────────────────────────────────────────────────
+// Shared, searchable list of inward source parties (vendors/couriers/etc.).
+// Grows automatically — Security never adds one directly, it's captured from
+// the "Received From" field whenever a direct inward entry is logged (see
+// upsertVendor in data/db.js, called from POST /gate-passes/inward).
+export const vendorsRouter = Router();
+vendorsRouter.use(authMiddleware);
+
+vendorsRouter.get('/', asyncHandler(async (req, res) => {
+  const q = String(req.query.q || '').trim();
+  const limit = Math.min(Number(req.query.limit) || 10, 50);
+  const filter = { active: { $ne: false } };
+  if (q) {
+    const esc = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    filter.name = { $regex: esc, $options: 'i' };
+  }
+  const vendors = await dbc('vendors')
+    .find(filter, { projection: { _id: 0, id: 1, name: 1 } })
+    .sort({ name: 1 })
+    .limit(limit)
+    .toArray();
+  res.json(vendors);
+}));
+
 // ─── META (reference lists) ────────────────────────────────────────────────────
 export const metaRouter = Router();
 metaRouter.use(authMiddleware);

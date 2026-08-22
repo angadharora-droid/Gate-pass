@@ -124,6 +124,9 @@ async function ensureIndexes() {
     handle.collection('items').createIndex({ id: 1 }, { unique: true }),
     handle.collection('items').createIndex({ nameKey: 1 }),
     handle.collection('items').createIndex({ code: 1 }),
+    // Vendors master: searched from the New Inward form
+    handle.collection('vendors').createIndex({ id: 1 }, { unique: true }),
+    handle.collection('vendors').createIndex({ nameKey: 1 }),
   ]);
 }
 
@@ -259,6 +262,26 @@ export async function upsertMasterItems(items, userId) {
       addedBy: userId || null,
     });
   }
+}
+
+// Add the source party to the vendors master if it's a name we don't already
+// know — called whenever a direct inward entry is logged, so the shared list
+// (used for autocomplete on later entries) grows organically.
+export async function upsertVendor(name, userId) {
+  const trimmed = String(name || '').trim();
+  if (!trimmed) return;
+  const nameKey = normalizeItemName(trimmed);
+  const exists = await dbc('vendors').findOne({ nameKey }, NO_ID);
+  if (exists) return;
+  await dbc('vendors').insertOne({
+    id: uuidv4(),
+    name: trimmed,
+    nameKey,
+    active: true,
+    source: 'user',
+    addedBy: userId || null,
+    createdAt: new Date().toISOString(),
+  });
 }
 
 export async function logAudit(action, userId, targetId, details) {
