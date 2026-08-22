@@ -14,6 +14,7 @@ import {
   LogOut,
   ShieldCheck,
   PackagePlus,
+  Stamp,
 } from 'lucide-react';
 
 const NAV_ICON_SIZE = 16;
@@ -51,6 +52,19 @@ export default function Layout() {
     { to: '/admin',      Icon: Settings2,       label: 'Admin Panel',  roles: ['admin'] },
   ].filter(item => !item.roles || hasRole(user, ...item.roles));
 
+  // Things that need someone to act, surfaced separately from navigation.
+  // Late returns are the only red one — the rest are ordinary queues.
+  const alerts = [
+    stats.overdueReturns > 0 && {
+      to: '/passes?overdue=true', Icon: AlertTriangle, color: 'var(--red)',
+      label: `${stats.overdueReturns} Late`, title: `${stats.overdueReturns} returnable pass(es) past their return date`,
+    },
+    hasRole(user, 'admin', 'supermanager', 'manager') && stats.myPendingApprovals > 0 && {
+      to: '/passes?status=pending', Icon: Stamp, color: 'var(--amber)',
+      label: `${stats.myPendingApprovals} To Approve`, title: 'Passes waiting for your decision',
+    },
+  ].filter(Boolean);
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -78,18 +92,15 @@ export default function Layout() {
             </NavLink>
           ))}
 
-          {stats.overdueReturns > 0 && (
+          {alerts.length > 0 && (
             <>
               <div className="nav-section-label" style={{ marginTop: 14 }}>Alerts</div>
-              <NavLink
-                to="/passes?overdue=true"
-                className="nav-item"
-                title={`${stats.overdueReturns} late`}
-                style={{ color: 'var(--red)' }}
-              >
-                <span className="nav-icon"><AlertTriangle size={NAV_ICON_SIZE} /></span>
-                <span className="nav-label">{stats.overdueReturns} Late</span>
-              </NavLink>
+              {alerts.map(({ to, Icon, label, title, color }) => (
+                <NavLink key={to} to={to} className="nav-item" title={title} style={{ color }}>
+                  <span className="nav-icon"><Icon size={NAV_ICON_SIZE} /></span>
+                  <span className="nav-label">{label}</span>
+                </NavLink>
+              ))}
             </>
           )}
         </nav>
