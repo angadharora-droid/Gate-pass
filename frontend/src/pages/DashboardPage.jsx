@@ -15,7 +15,31 @@ import {
   ArrowRight,
   Plus,
   Truck,
+  Stamp,
+  ArrowUpRight,
 } from 'lucide-react';
+
+// "1 item is" / "3 items are" — the old copy said "item(s) are", which reads
+// wrong in the (common) single-item case.
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+
+// Whole days a returnable pass is past its expected return date.
+function daysLate(pass) {
+  if (!pass.expectedReturnDate) return 0;
+  const ms = Date.now() - new Date(pass.expectedReturnDate).getTime();
+  return Math.max(0, Math.floor(ms / 86400000));
+}
+
+function AlertBanner({ tone = 'info', Icon, children, to, actionLabel = 'View', detail }) {
+  return (
+    <div className={`alert alert-${tone}`} style={{ marginBottom: 14, flexWrap: 'wrap' }}>
+      <Icon size={16} />
+      <span>{children}</span>
+      {to && <Link to={to} className="alert-action">{actionLabel}</Link>}
+      {detail}
+    </div>
+  );
+}
 
 export default function DashboardPage() {
   const [stats, setStats] = useState(null);
@@ -41,6 +65,16 @@ export default function DashboardPage() {
     </div>
   );
 
+  const isGate     = hasRole(user, 'admin', 'time_office');
+  const isApprover = hasRole(user, 'admin', 'supermanager', 'manager');
+  // Lateness is the ranking that matters — surface the worst few by name
+  const worstOverdue = [...overduePasses].sort((a, b) => daysLate(b) - daysLate(a)).slice(0, 4);
+  const anyAlert =
+    (isApprover && stats?.myPendingApprovals > 0) ||
+    stats?.itemsWithMe > 0 ||
+    (isGate && (stats?.awaitingOutward > 0 || stats?.awaitingReturnOut > 0)) ||
+    stats?.incomingTransfers > 0;
+
   return (
     <div>
       <div className="page-header">
@@ -57,55 +91,86 @@ export default function DashboardPage() {
         )}
       </div>
 
-      {stats?.itemsWithMe > 0 && (
-        <div className="alert alert-info" style={{ marginBottom: 24 }}>
-          <PackageCheck size={16} />
-          <span>
-            <strong>{stats.itemsWithMe} transfer pass(es) are with you.</strong>{' '}
-            When you're done with the items, open the pass and approve the send-back.
-          </span>
-          <Link
-            to="/passes"
-            style={{ marginLeft: 'auto', textDecoration: 'underline', textUnderlineOffset: 3, fontSize: 13, fontWeight: 500, whiteSpace: 'nowrap' }}
-          >
-            View
-          </Link>
-        </div>
-      )}
-
-      {stats?.incomingTransfers > 0 && (
-        <div className="alert alert-info" style={{ marginBottom: 24 }}>
-          <Truck size={16} />
-          <span>
-            <strong>{stats.incomingTransfers} transfer(s) from another branch</strong>{' '}
-            {hasRole(user, 'admin', 'time_office')
-              ? 'are on the way — mark the items in when they arrive.'
-              : 'are on the way to your branch.'}
-          </span>
-          <Link
-            to={hasRole(user, 'admin', 'time_office') ? '/time-office' : '/passes?movement=in'}
-            style={{ marginLeft: 'auto', textDecoration: 'underline', textUnderlineOffset: 3, fontSize: 13, fontWeight: 500, whiteSpace: 'nowrap' }}
-          >
-            View
-          </Link>
-        </div>
-      )}
-
-      {overduePasses.length > 0 && (
-        <div className="alert alert-danger" style={{ marginBottom: 24 }}>
-          <AlertTriangle size={16} />
-          <span>
-            <strong>{overduePasses.length} item(s) are late coming back.</strong>{' '}
-            Please follow up.
-          </span>
-          <Link
+      {/* Alerts — most urgent first: overdue, then what's waiting on ME, then
+          what's merely heading my way. */}
+      <div style={{ marginBottom: overduePasses.length || anyAlert ? 24 : 0 }}>
+        {overduePasses.length > 0 && (
+          <AlertBanner
+            tone="danger"
+            Icon={AlertTriangle}
             to="/passes?overdue=true"
-            style={{ marginLeft: 'auto', textDecoration: 'underline', textUnderlineOffset: 3, fontSize: 13, fontWeight: 500, whiteSpace: 'nowrap' }}
+            actionLabel="View all"
+            detail={
+              // A bare count isn't actionable — name the worst offenders and
+              // how late each one is, so follow-up can start from the banner.
+              <div className="alert-detail" style={{ width: '100%' }}>
+                {worstOverdue.map(p => (
+                  <Link key={p.id} to={`/passes/${p.id}`} className="alert-detail-chip">
+                    <span className="mono">{p.passNumber}</span>
+                    <span>{daysLate(p) === 0 ? 'due today' : `${plural(daysLate(p), 'day', 'days')} late`}</span>
+                  </Link>
+                ))}
+                {overduePasses.length > worstOverdue.length && (
+                  <span style={{ fontSize: 'var(--fs-xs)', alignSelf: 'center', opacity: 0.8 }}>
+                    +{overduePasses.length - worstOverdue.length} more
+                  </span>
+                )}
+              </div>
+            }
           >
-            View all
-          </Link>
-        </div>
-      )}
+            <strong>{plural(overduePasses.length, 'item is', 'items are')} late coming back.</strong>{' '}
+            Please follow up.
+          </AlertBanner>
+        )}
+
+        {/* Approvers get a sidebar badge for this but previously no dashboard
+            alert — it's the most actionable thing a manager can do here. */}
+        {isApprover && stats?.myPendingApprovals > 0 && (
+          <AlertBanner
+            tone="warning"
+            Icon={Stamp}
+            to="/passes?status=pending"
+            actionLabel="Review"
+          >
+            <strong>{plural(stats.myPendingApprovals, 'pass is', 'passes are')} waiting for your approval.</strong>{' '}
+            Nothing can leave the gate until you decide.
+          </AlertBanner>
+        )}
+
+        {stats?.itemsWithMe > 0 && (
+          <AlertBanner tone="info" Icon={PackageCheck} to="/passes">
+            <strong>{plural(stats.itemsWithMe, 'transfer pass is', 'transfer passes are')} with you.</strong>{' '}
+            When you're done with the items, open the pass and approve the send-back.
+          </AlertBanner>
+        )}
+
+        {isGate && stats?.awaitingOutward > 0 && (
+          <AlertBanner tone="info" Icon={ArrowUpRight} to="/time-office" actionLabel="Log">
+            <strong>{plural(stats.awaitingOutward, 'approved pass is', 'approved passes are')} ready to go out.</strong>{' '}
+            Mark the items out when they leave your gate.
+          </AlertBanner>
+        )}
+
+        {isGate && stats?.awaitingReturnOut > 0 && (
+          <AlertBanner tone="info" Icon={RefreshCw} to="/time-office" actionLabel="Log">
+            <strong>{plural(stats.awaitingReturnOut, 'send-back is', 'send-backs are')} approved and waiting to leave.</strong>{' '}
+            Mark the return out so it can head back.
+          </AlertBanner>
+        )}
+
+        {stats?.incomingTransfers > 0 && (
+          <AlertBanner
+            tone="info"
+            Icon={Truck}
+            to={isGate ? '/time-office' : '/passes?movement=in'}
+          >
+            <strong>{plural(stats.incomingTransfers, 'transfer', 'transfers')} from another branch</strong>{' '}
+            {isGate
+              ? 'on the way — mark the items in when they arrive.'
+              : 'on the way to your branch.'}
+          </AlertBanner>
+        )}
+      </div>
 
       {/* Stat cards */}
       <div className="stats-grid">

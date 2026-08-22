@@ -1040,6 +1040,40 @@ a.pass-number:hover { text-decoration: underline; text-underline-offset: 3px; }
 .alert-danger  { background: rgba(220, 38, 38, 0.06);  border: 1px solid rgba(220, 38, 38, 0.22);  color: #b91c1c; }
 .alert-info    { background: rgba(37, 99, 235, 0.06);  border: 1px solid rgba(37, 99, 235, 0.2);   color: var(--accent2); }
 .alert-success { background: rgba(22, 163, 74, 0.06);  border: 1px solid rgba(22, 163, 74, 0.22);  color: #15803d; }
+.alert-warning { background: rgba(217, 119, 6, 0.07);  border: 1px solid rgba(217, 119, 6, 0.24);  color: #b45309; }
+
+/* Action link sitting at the end of an alert banner */
+.alert-action {
+  margin-left: auto;
+  white-space: nowrap;
+  font-size: var(--fs-base);
+  font-weight: 600;
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  opacity: 0.85;
+}
+.alert-action:hover { opacity: 1; }
+
+/* Compact list of specific offending passes inside an alert */
+.alert-detail {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.alert-detail-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.55);
+  border: 1px solid currentColor;
+  font-size: var(--fs-xs);
+  color: inherit;
+}
+.alert-detail-chip .mono { font-family: var(--font-mono); font-weight: 600; }
 
 /* ─── TAG ──────────────────────────────────── */
 .tag {
