@@ -21,9 +21,10 @@ function toLocalInput(iso) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-// Manager's pre-approval edit: everything on a PENDING pass can still be
-// corrected. Once approved/rejected the pass is locked and this page bounces
-// back to the detail view.
+// Pre-decision edit: everything on a PENDING or DRAFT pass can still be
+// corrected — by the creator, or (for a pending pass) its approver. Once
+// approved/rejected the pass is locked and this page bounces back to the
+// detail view.
 export default function EditPassPage() {
   const { id } = useParams();
   const { user } = useAuth();
@@ -56,21 +57,38 @@ export default function EditPassPage() {
     </div>
   );
 
-  if (pass.status !== 'pending') return (
+  if (!['pending', 'draft'].includes(pass.status)) return (
     <div>
       <Link to={`/passes/${pass.id}`} className="btn btn-ghost btn-sm" style={{ marginBottom: 24 }}>
         <ArrowLeft size={14} /> Back to {pass.passNumber}
       </Link>
       <div className="alert alert-danger">
         <AlertTriangle size={15} />
-        This pass is <strong>{STATUS_LABELS[pass.displayStatus || pass.status] || pass.status}</strong> — only pending passes can be edited.
+        This pass is <strong>{STATUS_LABELS[pass.displayStatus || pass.status] || pass.status}</strong> — only pending or draft passes can be edited.
       </div>
     </div>
   );
 
-  // A routed pass is only editable by its chosen approver (or admin) — bounce
-  // BEFORE the form so no one fills it out just to hit the server's 403
-  if (pass.approverId && pass.approverId !== user?.id && !hasRole(user, 'admin')) return (
+  const isCreator = pass.createdBy === user?.id;
+
+  // A draft is private to its creator (or admin) — bounce before the form so
+  // no one fills it out just to hit the server's 403
+  if (pass.status === 'draft' && !isCreator && !hasRole(user, 'admin')) return (
+    <div>
+      <Link to={`/passes/${pass.id}`} className="btn btn-ghost btn-sm" style={{ marginBottom: 24 }}>
+        <ArrowLeft size={14} /> Back to {pass.passNumber}
+      </Link>
+      <div className="alert alert-danger">
+        <AlertTriangle size={15} />
+        This is someone else's draft — only they (or an admin) can edit it.
+      </div>
+    </div>
+  );
+
+  // A routed pending pass is only editable by its creator, its chosen
+  // approver, or an admin — bounce BEFORE the form so no one fills it out
+  // just to hit the server's 403
+  if (pass.status === 'pending' && !isCreator && pass.approverId && pass.approverId !== user?.id && !hasRole(user, 'admin')) return (
     <div>
       <Link to={`/passes/${pass.id}`} className="btn btn-ghost btn-sm" style={{ marginBottom: 24 }}>
         <ArrowLeft size={14} /> Back to {pass.passNumber}
@@ -118,7 +136,9 @@ export default function EditPassPage() {
           <div className="page-title">Edit Gate Pass</div>
           <div className="page-subtitle">
             <span className="pass-number">{pass.passNumber}</span>
-            {' · '}Pending approval — saving updates the request without approving it. The pass number never changes.
+            {' · '}{pass.status === 'draft'
+              ? 'Draft — saving keeps it as a draft. Submit it from the pass page when ready.'
+              : 'Pending approval — saving updates the request without approving it.'}{' '}The pass number never changes.
           </div>
         </div>
       </div>

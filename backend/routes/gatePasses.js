@@ -10,6 +10,7 @@ router.use(authMiddleware);
 
 // ─── SCOPING HELPER ───────────────────────────────────────────────────────────
 // Visibility follows INVOLVEMENT, not just the branch:
+//   draft        → only its own creator (and admin) — it isn't real yet
 //   admin        → everything
 //   time_office  → every pass crossing THEIR gate (source or destination = their
 //                  branch) — the gate must log all of it
@@ -24,6 +25,12 @@ function scopePasses(passes, user) {
   if (hasRole(user, 'admin')) return passes;
   const roles = rolesOf(user);
   return passes.filter(p => {
+    // A draft isn't real yet — only its creator can see it. This must come
+    // first: it overrides every other rule below (branch gate, department
+    // traffic, approval pools), none of which should apply to something
+    // nobody has decided to submit.
+    if (p.status === 'draft') return p.createdBy === user.id;
+
     // Gate view: everything physically crossing my branch's gate
     if (roles.includes('time_office') &&
         (p.sourceBranch === user.branch || p.destinationBranch === user.branch)) return true;
@@ -109,12 +116,14 @@ router.get('/:id', asyncHandler(async (req, res) => {
 // Security (time_office) logs it directly at the gate via POST /inward below.
 // Staff must ROUTE their request to a chosen approver: their own department's
 // manager, or any supermanager of their branch. Managers, supermanagers and
-// admins self-approve on creation.
+// admins self-approve on creation — unless they pass saveAsDraft, which holds
+// it at 'draft' instead so they can keep changing it before deciding (see
+// PATCH /:id/submit-draft below to finalize one).
 router.post('/', requireRole('admin', 'supermanager', 'manager', 'staff'), asyncHandler(async (req, res) => {
   const {
     type, direction, sourceBranch, destinationBranch,
     destinationPerson, returnable, purpose, items,
-    expectedReturnDate, remarks, linkedPassId, approverId,
+    expectedReturnDate, remarks, linkedPassId, approverId, saveAsDraft,
   } = req.body;
 
   if (!type || !direction || !items?.length)
@@ -152,6 +161,9 @@ router.post('/', requireRole('admin', 'supermanager', 'manager', 'staff'), async
     return res.status(400).json({ error: 'Expected return date is not a valid date' });
 
   const selfApproving = hasRole(req.user, 'manager', 'supermanager', 'admin');
+  // A draft is only meaningful for someone who'd otherwise self-approve —
+  // staff already get a holding state (pending) with a real approver queue.
+  const asDraft = !!saveAsDraft && selfApproving;
 
   // Staff route the request to a specific approver of their choosing
   let approver = null;
@@ -175,7 +187,7 @@ router.post('/', requireRole('admin', 'supermanager', 'manager', 'staff'), async
     passNumber: await generatePassNumber({ type, direction, returnable: returnable ?? false }),
     type,
     direction,
-    status: selfApproving ? 'approved' : 'pending',
+    status: asDraft ? 'draft' : (selfApproving ? 'approved' : 'pending'),
     createdBy: req.user.id,
     departmentId: req.user.departmentId || null,
     approverId: selfApproving ? null : approver.id,   // who the staff routed it to
@@ -185,9 +197,9 @@ router.post('/', requireRole('admin', 'supermanager', 'manager', 'staff'), async
     returnable: returnable ?? false,
     purpose: purpose.trim(),
     createdAt: now,
-    approvedBy:  selfApproving ? req.user.id : null,
-    approvedAt:  selfApproving ? now : null,
-    autoApproved: selfApproving,
+    approvedBy:  (selfApproving && !asDraft) ? req.user.id : null,
+    approvedAt:  (selfApproving && !asDraft) ? now : null,
+    autoApproved: selfApproving && !asDraft,
     expectedReturnDate: (returnable && expectedReturnDate) ? expectedReturnDate : null,
     linkedPassId: linkedPassId || null,
     earlyReturn: false,
@@ -382,19 +394,30 @@ router.patch('/:id/status', requireRole('manager', 'supermanager', 'admin'), asy
   res.json(enrichPass(pass, await getRefs()));
 }));
 
-// ─── MANAGER/ADMIN: REVISE A PENDING PASS ────────────────────────────────────
-// Before approving, the branch manager can correct anything on the request —
-// items, destination, outward type, dates, purpose. Only while status is
-// 'pending'; once approved (or rejected) the pass is locked. The pass number
-// never changes on revision — it is the printed/quoted identifier.
-router.patch('/:id/revise', requireRole('manager', 'supermanager', 'admin'), asyncHandler(async (req, res) => {
+// ─── CREATOR/MANAGER/ADMIN: REVISE A PENDING OR DRAFT PASS ───────────────────
+// Before it's decided, a pass can still be corrected — items, destination,
+// outward type, dates, purpose. Only while status is 'pending' or 'draft';
+// once approved (or rejected) the pass is locked. The pass number never
+// changes on revision — it is the printed/quoted identifier.
+// A draft is private, so only its own creator (or admin) may touch it. A
+// pending pass may also be edited by: the staff member who created it (fixing
+// their own mistake before anyone acts on it), or the branch manager/approver
+// (same authority rule as approval — source branch only, and a routed pass
+// only its chosen approver, unless they're the creator).
+router.patch('/:id/revise', requireRole('manager', 'supermanager', 'admin', 'staff'), asyncHandler(async (req, res) => {
   const pass = await dbc('gatePasses').findOne({ id: req.params.id }, NO_ID);
   if (!pass) return res.status(404).json({ error: 'Gate pass not found' });
-  if (pass.status !== 'pending')
-    return res.status(400).json({ error: 'Only pending passes can be edited; this one is already ' + pass.status });
-  // Same authority rule as approval: source branch only, and a routed pass is
-  // only editable by its chosen approver (or admin)
-  if (!hasRole(req.user, 'admin')) {
+  if (!['pending', 'draft'].includes(pass.status))
+    return res.status(400).json({ error: 'Only pending or draft passes can be edited; this one is already ' + pass.status });
+  const isCreator = req.user.id === pass.createdBy;
+  if (pass.status === 'draft') {
+    if (!hasRole(req.user, 'admin') && !isCreator)
+      return res.status(403).json({ error: 'Only the person who created this draft can edit it' });
+  } else if (!hasRole(req.user, 'admin') && !isCreator) {
+    // Anyone other than the creator must be an approver of the source branch —
+    // a plain staff member has no business editing someone else's request.
+    if (!hasRole(req.user, 'manager', 'supermanager'))
+      return res.status(403).json({ error: 'Only the pass creator or a manager/supermanager can edit this pass' });
     if (pass.sourceBranch !== req.user.branch)
       return res.status(403).json({ error: 'Only the source branch can edit this pass' });
     if (pass.approverId && pass.approverId !== req.user.id && await approverStillValid(pass))
@@ -456,6 +479,29 @@ router.patch('/:id/revise', requireRole('manager', 'supermanager', 'admin'), asy
 
   await dbc('gatePasses').replaceOne({ id: pass.id }, pass);
   await logAudit('REVISE_PASS', req.user.id, pass.id, { passNumber: pass.passNumber });
+  res.json(enrichPass(pass, await getRefs()));
+}));
+
+// ─── CREATOR: SUBMIT A DRAFT ─────────────────────────────────────────────────
+// A draft only ever belongs to a self-approving role (manager/supermanager/
+// admin), so finalizing it is exactly what creating it non-draft would have
+// done: self-approve on the spot.
+router.patch('/:id/submit-draft', requireRole('manager', 'supermanager', 'admin'), asyncHandler(async (req, res) => {
+  const pass = await dbc('gatePasses').findOne({ id: req.params.id }, NO_ID);
+  if (!pass) return res.status(404).json({ error: 'Gate pass not found' });
+  if (pass.status !== 'draft')
+    return res.status(400).json({ error: 'Only a draft can be submitted; this one is already ' + pass.status });
+  if (!hasRole(req.user, 'admin') && pass.createdBy !== req.user.id)
+    return res.status(403).json({ error: 'Only the person who created this draft can submit it' });
+
+  const now = new Date().toISOString();
+  pass.status = 'approved';
+  pass.approvedBy = req.user.id;
+  pass.approvedAt = now;
+  pass.autoApproved = true;
+
+  await dbc('gatePasses').replaceOne({ id: pass.id }, pass);
+  await logAudit('SUBMIT_DRAFT', req.user.id, pass.id, { passNumber: pass.passNumber });
   res.json(enrichPass(pass, await getRefs()));
 }));
 

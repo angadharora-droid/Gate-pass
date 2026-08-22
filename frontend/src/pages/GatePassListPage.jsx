@@ -8,6 +8,7 @@ import { Plus, SearchX } from 'lucide-react';
 
 const STATUS_TABS = [
   { key: null,             label: 'All' },
+  { key: 'draft',          label: 'Drafts' },
   { key: 'pending',        label: 'Waiting Approval' },
   { key: 'approved',       label: 'Approved' },
   { key: 'in_transit',     label: 'Out / In Transit' },

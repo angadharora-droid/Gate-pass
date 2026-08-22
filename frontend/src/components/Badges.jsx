@@ -7,6 +7,7 @@ import { hasRole } from '../utils/roles';
 // return_approved / returning). This map is THE label source — import it
 // instead of redefining labels elsewhere.
 export const STATUS_LABELS = {
+  draft:           'Draft',
   pending:         'Waiting Approval',
   approved:        'Approved',
   items_out:       'Items Out',        // out with a person/vendor (external)

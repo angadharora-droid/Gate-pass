@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { api } from '../utils/api';
 import { useAuth } from '../context/AuthContext';
 import { hasRole } from '../utils/roles';
-import { AlertTriangle, FileSpreadsheet } from 'lucide-react';
+import { AlertTriangle, FileSpreadsheet, FileEdit } from 'lucide-react';
 import ItemImportModal from './ItemImportModal';
 import ItemsGridEditor, { UNITS, emptyRow, rowsToItems } from './ItemsGridEditor';
 
@@ -31,10 +31,16 @@ export default function OutwardPassForm({
   footerHint = null,
   showCreateHint = false,
   onSubmit,
+  // Optional — when provided, a secondary "Save as Draft" action appears
+  // alongside the main submit button (self-approving roles only; a draft
+  // skips instant approval so it can still be freely edited).
+  onSaveDraft,
 }) {
   const { user } = useAuth();
   const [branches, setBranches] = useState([]);
-  const [loading, setLoading] = useState(false);
+  // Which action is in flight — null, 'submit', or 'draft' — so each button
+  // shows its own spinner while the other stays put.
+  const [submitting, setSubmitting] = useState(null);
   const [error, setError] = useState('');
 
   const [form, setForm] = useState(() => ({ ...defaultOutwardForm(), ...initialForm }));
@@ -78,7 +84,7 @@ export default function OutwardPassForm({
     setShowImport(false);
   };
 
-  const handleSubmit = async () => {
+  const runSubmit = async (mode) => {
     setError('');
     if (!form.outwardType) { setError('Select the outward type — Returnable or Non-Returnable'); return; }
     if (!form.purpose.trim()) { setError('Purpose is required'); return; }
@@ -100,23 +106,25 @@ export default function OutwardPassForm({
     const items = rowsToItems(rows);
     if (!items.length) { setError('Add at least one item with a description and quantity'); return; }
 
-    setLoading(true);
+    const payload = {
+      direction: form.direction,
+      returnable: isReturnable,
+      purpose: form.purpose,
+      remarks: form.remarks,
+      items,
+      destinationBranch: form.direction === 'internal' ? form.destinationBranch : null,
+      destinationPerson: form.direction === 'external' ? form.destinationPerson : null,
+      expectedReturnDate: (isReturnable && form.expectedReturnDate) ? form.expectedReturnDate : null,
+      ...(isStaff ? { approverId } : {}),
+    };
+
+    setSubmitting(mode);
     try {
-      await onSubmit({
-        direction: form.direction,
-        returnable: isReturnable,
-        purpose: form.purpose,
-        remarks: form.remarks,
-        items,
-        destinationBranch: form.direction === 'internal' ? form.destinationBranch : null,
-        destinationPerson: form.direction === 'external' ? form.destinationPerson : null,
-        expectedReturnDate: (isReturnable && form.expectedReturnDate) ? form.expectedReturnDate : null,
-        ...(isStaff ? { approverId } : {}),
-      });
+      await (mode === 'draft' ? onSaveDraft : onSubmit)(payload);
     } catch (err) {
       setError(err.message);
     } finally {
-      setLoading(false);
+      setSubmitting(null);
     }
   };
 
@@ -309,16 +317,30 @@ export default function OutwardPassForm({
           </div>
         )}
 
-        <button
-          className="btn btn-primary"
-          style={{ width: '100%', padding: '13px', fontSize: 14, justifyContent: 'center' }}
-          onClick={handleSubmit}
-          disabled={loading}
-        >
-          {loading
-            ? <><div className="spinner" style={{ width: 16, height: 16 }} /> {submittingLabel}</>
-            : <>{SubmitIcon && <SubmitIcon size={14} />} {submitLabel}</>}
-        </button>
+        <div style={{ display: 'flex', gap: 10 }}>
+          <button
+            className="btn btn-primary"
+            style={{ flex: 1, padding: '13px', fontSize: 14, justifyContent: 'center' }}
+            onClick={() => runSubmit('submit')}
+            disabled={!!submitting}
+          >
+            {submitting === 'submit'
+              ? <><div className="spinner" style={{ width: 16, height: 16 }} /> {submittingLabel}</>
+              : <>{SubmitIcon && <SubmitIcon size={14} />} {submitLabel}</>}
+          </button>
+          {onSaveDraft && (
+            <button
+              className="btn btn-ghost"
+              style={{ padding: '13px 18px', fontSize: 14, justifyContent: 'center' }}
+              onClick={() => runSubmit('draft')}
+              disabled={!!submitting}
+            >
+              {submitting === 'draft'
+                ? <><div className="spinner" style={{ width: 16, height: 16 }} /> Saving…</>
+                : <><FileEdit size={14} /> Save as Draft</>}
+            </button>
+          )}
+        </div>
 
         {footerHint && (
           <div className="form-hint" style={{ textAlign: 'center', marginTop: 10 }}>
