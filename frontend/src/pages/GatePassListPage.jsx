@@ -149,28 +149,25 @@ export default function GatePassListPage() {
       </div>
 
       <div className="card" style={{ padding: '16px 20px', marginBottom: 20 }}>
-        <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap' }}>
-          <div style={{ flex: 1, minWidth: 260 }}>
-            <label className="form-label">Search</label>
-            <input
-              className="form-input"
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-              placeholder="Pass number, branch, vendor, purpose, or item name…"
-            />
-          </div>
-          {search && (
-            <button className="btn btn-ghost" onClick={() => setSearch('')}>
-              Clear
-            </button>
-          )}
-        </div>
-
-        <div style={{
-          display: 'flex', gap: 20, flexWrap: 'wrap', alignItems: 'flex-end',
-          marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--border)',
-        }}>
+        <div style={{ display: 'flex', gap: 20, alignItems: 'flex-end', flexWrap: 'wrap' }}>
           <div style={{ flex: 1, minWidth: 240 }}>
+            <label className="form-label">Search</label>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <input
+                className="form-input"
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                placeholder="Pass number, branch, vendor, purpose, or item name…"
+              />
+              {search && (
+                <button className="btn btn-ghost" onClick={() => setSearch('')}>
+                  Clear
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div style={{ flex: 1, minWidth: 280 }}>
             <label className="form-label">Date Range</label>
             <div className="filters-bar" style={{ margin: 0 }}>
               {datePresets.map(p => (
@@ -182,12 +179,12 @@ export default function GatePassListPage() {
               ))}
             </div>
           </div>
-          <div className="form-group" style={{ marginBottom: 0, width: 170 }}>
+          <div className="form-group" style={{ marginBottom: 0, width: 150 }}>
             <label className="form-label">From</label>
             <input className="form-input" type="date" value={fromDate} max={toDate || undefined}
               onChange={e => setFromDate(e.target.value)} />
           </div>
-          <div className="form-group" style={{ marginBottom: 0, width: 170 }}>
+          <div className="form-group" style={{ marginBottom: 0, width: 150 }}>
             <label className="form-label">To</label>
             <input className="form-input" type="date" value={toDate} min={fromDate || undefined}
               onChange={e => setToDate(e.target.value)} />
