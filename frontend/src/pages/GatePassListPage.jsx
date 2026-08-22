@@ -64,6 +64,8 @@ export default function GatePassListPage() {
     return ['in', 'out'].includes(m) ? m : null;
   });
   const [overdueOnly, setOverdueOnly] = useState(() => searchParams.get('overdue') === 'true');
+  const [search, setSearch] = useState('');
+  const [searchActive, setSearchActive] = useState(false);
 
   const load = () => {
     setLoading(true);
@@ -77,6 +79,8 @@ export default function GatePassListPage() {
   // Movement is relative to the viewer's branch, so it filters client-side
   let shown = movementFilter ? passes.filter(p => movementFor(p, user) === movementFilter) : passes;
   if (overdueOnly) shown = shown.filter(p => p.isOverdue);
+  const searchTerm = search.trim().toLowerCase();
+  if (searchActive && searchTerm) shown = shown.filter(p => String(p.passNumber).toLowerCase().includes(searchTerm));
   const pendingCount  = shown.filter(p => p.status === 'pending').length;
   const overdueCount  = passes.filter(p => p.isOverdue).length;
 
@@ -92,6 +96,29 @@ export default function GatePassListPage() {
           </div>
         </div>
         {canCreate && <Link to="/passes/new" className="btn btn-primary"><Plus size={15} /> New Pass</Link>}
+      </div>
+
+      <div className="card" style={{ padding: '16px 20px', marginBottom: 20 }}>
+        <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+          <div style={{ flex: 1, minWidth: 260 }}>
+            <label className="form-label">Search by Pass Number</label>
+            <input
+              className="form-input"
+              value={search}
+              onChange={e => { setSearch(e.target.value); setSearchActive(false); }}
+              onKeyDown={e => e.key === 'Enter' && setSearchActive(true)}
+              placeholder="e.g. GPI-OR-2026-0002"
+            />
+          </div>
+          <button className="btn btn-primary" onClick={() => setSearchActive(true)} disabled={!search.trim()}>
+            Search
+          </button>
+          {searchActive && (
+            <button className="btn btn-ghost" onClick={() => { setSearch(''); setSearchActive(false); }}>
+              Clear
+            </button>
+          )}
+        </div>
       </div>
 
       <TabBar tabs={STATUS_TABS} active={statusFilter} onChange={setStatusFilter} />
