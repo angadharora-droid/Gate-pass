@@ -31,6 +31,33 @@ function fmt(dateStr) {
   return new Date(dateStr).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
 }
 
+function pad2(n) {
+  return String(n).padStart(2, '0');
+}
+
+// LOCAL time throughout, so the range matches the dates the table displays
+// (UTC boundaries would shift a day for IST users).
+const toDateInput = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+
+function firstOfMonth() {
+  const d = new Date();
+  return toDateInput(new Date(d.getFullYear(), d.getMonth(), 1));
+}
+
+// From/To are inclusive calendar days; either side may be left empty for an
+// open-ended range.
+function rangeToBounds(fromDate, toDate) {
+  const parse = (s) => {
+    if (!s) return null;
+    const [y, m, d] = s.split('-').map(Number);
+    return new Date(y, m - 1, d);
+  };
+  const start = parse(fromDate);
+  const endDay = parse(toDate);
+  const end = endDay ? new Date(endDay.getFullYear(), endDay.getMonth(), endDay.getDate() + 1) : null;
+  return { start, end };
+}
+
 function TabBar({ tabs, active, onChange }) {
   return (
     <div className="tab-bar" role="tablist">
@@ -66,6 +93,8 @@ export default function GatePassListPage() {
   const [overdueOnly, setOverdueOnly] = useState(() => searchParams.get('overdue') === 'true');
   const [search, setSearch] = useState('');
   const [searchActive, setSearchActive] = useState(false);
+  const [fromDate, setFromDate] = useState('');
+  const [toDate, setToDate] = useState('');
 
   const load = () => {
     setLoading(true);
@@ -80,9 +109,37 @@ export default function GatePassListPage() {
   let shown = movementFilter ? passes.filter(p => movementFor(p, user) === movementFilter) : passes;
   if (overdueOnly) shown = shown.filter(p => p.isOverdue);
   const searchTerm = search.trim().toLowerCase();
-  if (searchActive && searchTerm) shown = shown.filter(p => String(p.passNumber).toLowerCase().includes(searchTerm));
+  if (searchActive && searchTerm) shown = shown.filter(p =>
+    [p.passNumber, p.sourceBranchName, p.destinationBranchName, p.destinationPerson]
+      .some(v => v && String(v).toLowerCase().includes(searchTerm))
+  );
+  const { start: rangeStart, end: rangeEnd } = rangeToBounds(fromDate, toDate);
+  if (rangeStart || rangeEnd) shown = shown.filter(p => {
+    const created = p.createdAt ? new Date(p.createdAt) : null;
+    if (!created) return false;
+    if (rangeStart && created < rangeStart) return false;
+    if (rangeEnd && created >= rangeEnd) return false;
+    return true;
+  });
   const pendingCount  = shown.filter(p => p.status === 'pending').length;
   const overdueCount  = passes.filter(p => p.isOverdue).length;
+
+  const setRange = (from, to) => { setFromDate(from); setToDate(to); };
+  const datePresets = [
+    { label: 'This Month', apply: () => setRange(firstOfMonth(), toDateInput(new Date())) },
+    { label: 'Last Month', apply: () => {
+      const d = new Date();
+      setRange(
+        toDateInput(new Date(d.getFullYear(), d.getMonth() - 1, 1)),
+        toDateInput(new Date(d.getFullYear(), d.getMonth(), 0)),
+      );
+    } },
+    { label: 'Last 30 Days', apply: () => {
+      const d = new Date();
+      setRange(toDateInput(new Date(d.getFullYear(), d.getMonth(), d.getDate() - 29)), toDateInput(d));
+    } },
+    { label: 'All Time', apply: () => setRange('', '') },
+  ];
 
   return (
     <div>
@@ -101,13 +158,13 @@ export default function GatePassListPage() {
       <div className="card" style={{ padding: '16px 20px', marginBottom: 20 }}>
         <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap' }}>
           <div style={{ flex: 1, minWidth: 260 }}>
-            <label className="form-label">Search by Pass Number</label>
+            <label className="form-label">Search by Pass Number, From or To</label>
             <input
               className="form-input"
               value={search}
               onChange={e => { setSearch(e.target.value); setSearchActive(false); }}
               onKeyDown={e => e.key === 'Enter' && setSearchActive(true)}
-              placeholder="e.g. GPI-OR-2026-0002"
+              placeholder="e.g. GPI-OR-2026-0002, or a branch/vendor name"
             />
           </div>
           <button className="btn btn-primary" onClick={() => setSearchActive(true)} disabled={!search.trim()}>
@@ -118,6 +175,24 @@ export default function GatePassListPage() {
               Clear
             </button>
           )}
+        </div>
+
+        <div className="filters-bar" style={{ margin: '14px 0 12px' }}>
+          {datePresets.map(p => (
+            <button key={p.label} className="filter-chip" onClick={p.apply}>{p.label}</button>
+          ))}
+        </div>
+        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+          <div className="form-group" style={{ marginBottom: 0, minWidth: 200 }}>
+            <label className="form-label">From <span style={{ fontWeight: 400, color: 'var(--text3)' }}>(blank = beginning)</span></label>
+            <input className="form-input" type="date" value={fromDate} max={toDate || undefined}
+              onChange={e => setFromDate(e.target.value)} />
+          </div>
+          <div className="form-group" style={{ marginBottom: 0, minWidth: 200 }}>
+            <label className="form-label">To <span style={{ fontWeight: 400, color: 'var(--text3)' }}>(blank = today)</span></label>
+            <input className="form-input" type="date" value={toDate} min={fromDate || undefined}
+              onChange={e => setToDate(e.target.value)} />
+          </div>
         </div>
       </div>
 
