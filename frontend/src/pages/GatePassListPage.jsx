@@ -168,9 +168,9 @@ export default function GatePassListPage() {
             </div>
           </div>
 
-          <div style={{ flex: 1, minWidth: 280 }}>
+          <div style={{ flex: 1, minWidth: 460 }}>
             <label className="form-label">Date Range</label>
-            <div className="filters-bar" style={{ margin: 0 }}>
+            <div className="filters-bar" style={{ margin: 0, flexWrap: 'nowrap' }}>
               {datePresets.map(p => (
                 <button
                   key={p.label}
