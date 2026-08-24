@@ -645,61 +645,81 @@ function canActForDestination(pass, user) {
   return hasRole(user, 'manager', 'supermanager') && user.branch === pass.destinationBranch;
 }
 
-// ─── RECEIVER/DEST MANAGER: ADJUST RETURNABLE QUANTITIES ────────────────────
-// What actually arrived (or what's actually going back) can differ from what
-// the source branch originally dispatched — items get consumed, damaged, or
-// miscounted while they're with the destination branch. The receiver (or a
-// manager/supermanager of the destination branch) can correct a line item's
-// quantity any time from the moment items are marked in through to the
-// moment the return physically leaves — right when they take custody, or
-// again right before approving the send-back. Once returnOutwardLog is
-// stamped the quantity is locked; it's what's physically moving by then.
-router.patch('/:id/adjust-quantity', asyncHandler(async (req, res) => {
+// ─── RECEIVER/DEST MANAGER: WRITE OFF ITEMS AT THE DESTINATION ───────────────
+// While a returnable transfer sits at the destination branch, some of it may
+// never make the trip back — items get consumed, broken, lost in transit, or
+// kept. The receiver (or a manager/supermanager of the destination branch)
+// writes those quantities off WITH A REASON, exactly like the source gate's
+// closures on the return leg. The originally dispatched quantity is never
+// rewritten — the write-off lands in closedQuantity, so every later leg
+// (send-back approval, dispatch, return log) caps itself against what is
+// genuinely outstanding, and the audit trail keeps what actually went out.
+// Status follows the gate's closure rule: everything accounted for → 'closed';
+// otherwise → 'partial_return'. Allowed from the moment items are marked in
+// until the return physically leaves (returnOutwardLog).
+router.patch('/:id/close-items', asyncHandler(async (req, res) => {
   const pass = await dbc('gatePasses').findOne({ id: req.params.id }, NO_ID);
   if (!pass) return res.status(404).json({ error: 'Gate pass not found' });
   if (!scopePasses([pass], req.user).length)
     return res.status(404).json({ error: 'Gate pass not found' });
 
   if (!(pass.type === 'outward' && pass.direction === 'internal' && pass.returnable && pass.destinationBranch))
-    return res.status(400).json({ error: 'Only returnable branch transfers have adjustable quantities' });
+    return res.status(400).json({ error: 'Only returnable branch transfers can have items written off at the destination' });
   if (!pass.receivedLog)
     return res.status(400).json({ error: 'Items have not been marked in at the destination branch yet' });
   if (pass.returnOutwardLog)
-    return res.status(400).json({ error: 'Return already marked out at the destination branch; quantity is locked' });
+    return res.status(400).json({ error: 'Return already marked out at the destination branch; quantities are locked' });
   if (!['in_transit', 'partial_return'].includes(pass.status))
-    return res.status(400).json({ error: `Cannot adjust quantity in ${pass.status} status` });
+    return res.status(400).json({ error: `Cannot write off items in ${pass.status} status` });
   if (!canActForDestination(pass, req.user))
-    return res.status(403).json({ error: 'Only the receiver (or a manager/supermanager of their branch) can adjust quantity' });
+    return res.status(403).json({ error: 'Only the receiver (or a manager/supermanager of their branch) can write off items' });
 
-  const { items } = req.body;
-  if (!Array.isArray(items) || !items.length)
-    return res.status(400).json({ error: 'Provide at least one item to adjust' });
+  const { closures } = req.body;
+  if (!Array.isArray(closures) || !closures.length)
+    return res.status(400).json({ error: 'Provide at least one item to write off' });
 
-  const changes = [];
-  for (const it of items) {
-    const li = pass.items[it.index];
-    if (!li) return res.status(400).json({ error: `No item at index ${it.index}` });
-    const qty = Number(it.quantity);
+  const outstanding = li => li.quantity - (li.returnedQuantity || 0) - (li.closedQuantity || 0);
+
+  // Validate everything first — aggregate duplicate indexes so a repeated
+  // index can never slip past the outstanding cap.
+  const planned = new Map();
+  for (const cl of closures) {
+    const li = pass.items[cl.index];
+    if (!li) return res.status(400).json({ error: `No item at index ${cl.index}` });
+    if (!cl.reason?.trim()) return res.status(400).json({ error: `A reason is required to write off ${li.itemName}` });
+    const qty = Number(cl.quantity);
     if (!Number.isFinite(qty) || qty <= 0)
-      return res.status(400).json({ error: `Quantity must be > 0 for "${li.itemName}"` });
-    const alreadyAccounted = (li.returnedQuantity || 0) + (li.closedQuantity || 0);
-    if (qty < alreadyAccounted)
-      return res.status(400).json({ error: `Cannot set ${li.itemName} below ${alreadyAccounted} — that much is already returned/closed` });
-    if (qty !== li.quantity) changes.push({ index: it.index, itemName: li.itemName, from: li.quantity, to: qty });
+      return res.status(400).json({ error: `Write-off quantity must be > 0 for "${li.itemName}"` });
+    const remain = outstanding(li) - (planned.get(cl.index) || 0);
+    if (qty > remain)
+      return res.status(400).json({ error: `Cannot write off ${qty} of ${li.itemName}; only ${remain} outstanding` });
+    planned.set(cl.index, (planned.get(cl.index) || 0) + qty);
   }
-  if (!changes.length)
-    return res.status(400).json({ error: 'No quantities actually changed' });
 
-  for (const c of changes) {
-    const li = pass.items[c.index];
-    li.quantity = c.to;
-    li.amount = li.rate != null ? Math.round(li.rate * c.to * 100) / 100 : null;
+  const closedAt = new Date().toISOString();
+  const closureRecords = [];
+  for (const cl of closures) {
+    const li = pass.items[cl.index];
+    const qty = Number(cl.quantity);
+    li.closedQuantity = (li.closedQuantity || 0) + qty;
+    closureRecords.push({ index: cl.index, itemName: li.itemName, quantity: qty, reason: cl.reason.trim() });
   }
-  pass.quantityAdjustments = pass.quantityAdjustments || [];
-  pass.quantityAdjustments.push({ adjustedAt: new Date().toISOString(), adjustedBy: req.user.id, changes });
+  // `at: 'destination'` distinguishes these from the source gate's return-leg
+  // closures when the pass history is displayed and printed.
+  pass.closures = pass.closures || [];
+  pass.closures.push({ closedAt, closedBy: req.user.id, at: 'destination', items: closureRecords });
+
+  const fullyAccounted = pass.items.every(li => ((li.returnedQuantity || 0) + (li.closedQuantity || 0)) >= li.quantity);
+  // Something was just closed, so a fully accounted pass is 'closed', never
+  // 'completed' — and a partly accounted one shows as partial_return.
+  pass.status = fullyAccounted ? 'closed' : 'partial_return';
 
   await dbc('gatePasses').replaceOne({ id: pass.id }, pass);
-  await logAudit('ADJUST_QUANTITY', req.user.id, pass.id, { passNumber: pass.passNumber, changes });
+  await logAudit('CLOSE_ITEMS_DESTINATION', req.user.id, pass.id, {
+    passNumber: pass.passNumber,
+    status: pass.status,
+    closures: closureRecords,
+  });
   res.json(enrichPass(pass, await getRefs()));
 }));
 

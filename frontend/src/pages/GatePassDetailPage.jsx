@@ -4,11 +4,11 @@ import { api } from '../utils/api';
 import { useAuth } from '../context/AuthContext';
 import { hasRole } from '../utils/roles';
 import { StatusBadge, MovementBadge, ReturnableBadge, DirectionBadge, STATUS_LABELS } from '../components/Badges';
-import { LogOutwardModal, LogInwardModal, ReceiveTransferModal, ReturnOutModal } from './TimeOfficePage';
+import { LogOutwardModal, LogInwardModal, ReceiveTransferModal, ReturnOutModal, CLOSE_REASONS } from './TimeOfficePage';
 import {
   ArrowLeft, Check, X, RotateCcw, Printer, Pencil,
   AlertTriangle, CheckCircle2, Info,
-  FileText, ArrowUpRight, Truck, ArrowDownLeft, PackageCheck,
+  FileText, ArrowUpRight, Truck, ArrowDownLeft, PackageCheck, PackageX,
   Zap, Clock,
 } from 'lucide-react';
 
@@ -43,7 +43,7 @@ export default function GatePassDetailPage() {
   const [actionLoading, setActionLoading] = useState(false);
   // Which Time Office logging modal is open: 'outward' (departure) or 'inward' (arrival/return)
   const [logModal, setLogModal] = useState(null);
-  const [adjustModalOpen, setAdjustModalOpen] = useState(false);
+  const [writeOffModalOpen, setWriteOffModalOpen] = useState(false);
 
   const load = () => {
     api.getPass(id).then(p => { setPass(p); setLoading(false); }).catch(() => setLoading(false));
@@ -142,9 +142,10 @@ export default function GatePassDetailPage() {
       user?.id === pass.receivedLog.receiverId ||
       (hasRole(user, 'manager', 'supermanager') && user?.branch === pass.destinationBranch));
   // Same authority as send-back approval, but open from the moment items are
-  // received until the return physically leaves — covers correcting quantity
+  // received until the return physically leaves — covers writing off breakage
   // right when custody is taken, and again right before approving send-back.
-  const canAdjustQty = isTransferAway && pass.returnable && pass.receivedLog && !pass.returnOutwardLog &&
+  const canWriteOff = isTransferAway && pass.returnable && pass.receivedLog && !pass.returnOutwardLog &&
+    pass.items?.some(li => li.quantity - (li.returnedQuantity || 0) - (li.closedQuantity || 0) > 0) &&
     (isAdmin ||
       user?.id === pass.receivedLog.receiverId ||
       (hasRole(user, 'manager', 'supermanager') && user?.branch === pass.destinationBranch));
@@ -153,6 +154,7 @@ export default function GatePassDetailPage() {
     pass.returnRequest && !pass.returnOutwardLog;
   const isOverdue = pass.isOverdue;
   const isDirectInward = pass.type === 'inward';
+  const totalClosed = (pass.items || []).reduce((s, li) => s + (li.closedQuantity || 0), 0);
 
   return (
     <div>
@@ -219,9 +221,9 @@ export default function GatePassDetailPage() {
               <ArrowDownLeft size={14} /> Mark Items In
             </button>
           )}
-          {canAdjustQty && (
-            <button className="btn btn-ghost" onClick={() => setAdjustModalOpen(true)}>
-              <Pencil size={14} /> Adjust Quantities
+          {canWriteOff && (
+            <button className="btn btn-ghost" onClick={() => setWriteOffModalOpen(true)}>
+              <PackageX size={14} /> Write Off Items
             </button>
           )}
           {canApproveSendBack && (
@@ -253,6 +255,17 @@ export default function GatePassDetailPage() {
           <AlertTriangle size={15} />
           <span>
             <strong>LATE</strong> — Items were due back by {fmt(pass.expectedReturnDate)}. Please follow up.
+          </span>
+        </div>
+      )}
+
+      {totalClosed > 0 && (
+        <div className="alert alert-warning" style={{ marginBottom: 20 }}>
+          <PackageX size={15} />
+          <span>
+            <strong>{totalClosed} {totalClosed === 1 ? 'item' : 'items'} written off</strong> on this
+            pass — {totalClosed === 1 ? 'it is' : 'they are'} not coming back. Details under
+            “Items Not Coming Back” below.
           </span>
         </div>
       )}
@@ -497,6 +510,10 @@ export default function GatePassDetailPage() {
                   <div key={ci} style={{ borderLeft: '2px solid var(--orange)', paddingLeft: 12 }}>
                     <div style={{ fontSize: 11, color: 'var(--text3)', fontFamily: 'var(--font-mono)', marginBottom: 6 }}>
                       {fmt(c.closedAt)}{c.closedByUser ? ` · by ${c.closedByUser.name}` : ''}
+                      {' · '}
+                      {c.at === 'destination'
+                        ? `written off at ${pass.destinationBranchName || 'the destination branch'}`
+                        : 'closed at the source gate (return log)'}
                     </div>
                     {c.items?.map((it, ii) => (
                       <div key={ii} style={{ fontSize: 13, marginBottom: 2 }}>
@@ -536,44 +553,46 @@ export default function GatePassDetailPage() {
       {logModal === 'returnOut' && (
         <ReturnOutModal pass={pass} onClose={() => setLogModal(null)} onDone={handleLogDone} />
       )}
-      {adjustModalOpen && (
-        <AdjustQuantityModal pass={pass} onClose={() => setAdjustModalOpen(false)} onDone={() => { setAdjustModalOpen(false); load(); }} />
+      {writeOffModalOpen && (
+        <WriteOffItemsModal pass={pass} onClose={() => setWriteOffModalOpen(false)} onDone={() => { setWriteOffModalOpen(false); load(); }} />
       )}
     </div>
   );
 }
 
-/* ── Adjust Quantity Modal ──────────────────────────────────────────────────── */
+/* ── Write Off Items Modal ──────────────────────────────────────────────────── */
 // Lets the receiver (or a manager/supermanager of the destination branch)
-// correct a returnable transfer's item quantities — what actually arrived, or
-// what's actually going back — any time between receiving and dispatch back.
-function AdjustQuantityModal({ pass, onClose, onDone }) {
-  const [values, setValues] = useState(() =>
-    Object.fromEntries((pass.items || []).map((li, i) => [i, li.quantity]))
-  );
+// write off quantities that will never go back to the source branch — broken,
+// consumed, lost — each with a required reason, exactly like the closures the
+// Time Office records on the return leg. The pass moves to Partly Back (or
+// Closed if nothing is left outstanding).
+function WriteOffItemsModal({ pass, onClose, onDone }) {
+  const outstandingOf = li => li.quantity - (li.returnedQuantity || 0) - (li.closedQuantity || 0);
+  const [qtys, setQtys] = useState({});
+  const [reasons, setReasons] = useState({});
+  const [notes, setNotes] = useState({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
   const handleSave = async () => {
     setError('');
-    const items = (pass.items || [])
-      .map((li, i) => ({ index: i, quantity: Number(values[i]) }))
-      .filter(it => it.quantity !== pass.items[it.index].quantity);
-    if (!items.length) { setError('Change at least one quantity'); return; }
-    for (const it of items) {
-      const li = pass.items[it.index];
-      if (!Number.isFinite(it.quantity) || it.quantity <= 0) {
-        setError(`Quantity must be > 0 for "${li.itemName}"`); return;
+    const closures = [];
+    for (let i = 0; i < (pass.items || []).length; i++) {
+      const li = pass.items[i];
+      const outstanding = outstandingOf(li);
+      const qty = Number(qtys[i] || 0);
+      if (qty <= 0) continue;
+      if (qty > outstanding) {
+        setError(`Cannot write off ${qty} of ${li.itemName}; only ${outstanding} outstanding`); return;
       }
-      const alreadyAccounted = (li.returnedQuantity || 0) + (li.closedQuantity || 0);
-      if (it.quantity < alreadyAccounted) {
-        setError(`Cannot set ${li.itemName} below ${alreadyAccounted} — that much is already returned/closed`);
-        return;
-      }
+      if (!reasons[i]) { setError(`Pick a reason to write off "${li.itemName}"`); return; }
+      const note = (notes[i] || '').trim();
+      closures.push({ index: i, quantity: qty, reason: note ? `${reasons[i]} — ${note}` : reasons[i] });
     }
+    if (!closures.length) { setError('Enter a write-off quantity for at least one item'); return; }
     setLoading(true);
     try {
-      await api.adjustQuantity(pass.id, items);
+      await api.closeItems(pass.id, closures);
       onDone();
     } catch (e) { setError(e.message); } finally { setLoading(false); }
   };
@@ -583,35 +602,68 @@ function AdjustQuantityModal({ pass, onClose, onDone }) {
       <div className="modal">
         <div className="modal-header">
           <div>
-            <div className="modal-title">Adjust Quantities</div>
+            <div className="modal-title">Write Off Items</div>
             <div style={{ fontSize: 12, color: 'var(--text3)', marginTop: 3 }}>{pass.passNumber}</div>
           </div>
           <button className="modal-close" onClick={onClose}><X size={16} /></button>
         </div>
         <div className="modal-body">
-          <div className="alert alert-info" style={{ marginBottom: 20 }}>
-            <Info size={15} />
-            Correct what actually arrived, or what's actually going back to <strong>{pass.sourceBranchName || 'the source branch'}</strong>.
+          <div className="alert alert-warning" style={{ marginBottom: 20 }}>
+            <AlertTriangle size={15} />
+            <span>
+              Items written off here will <strong>not go back to {pass.sourceBranchName || 'the source branch'}</strong>.
+              Every write-off needs a reason and is stamped on the pass permanently — the original
+              sent quantity stays on record.
+            </span>
           </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div style={{ display: 'flex', flexDirection: 'column' }}>
             {pass.items?.map((li, i) => {
-              const alreadyAccounted = (li.returnedQuantity || 0) + (li.closedQuantity || 0);
+              const outstanding = outstandingOf(li);
+              if (outstanding <= 0) return null;
+              const qty = Number(qtys[i] || 0);
               return (
-                <div key={i} className="item-row" style={{ alignItems: 'center' }}>
-                  <div>
-                    <div className="item-name">{li.itemName}</div>
-                    <div style={{ fontSize: 11, color: 'var(--text3)', fontFamily: 'var(--font-mono)' }}>
-                      {li.unit}{alreadyAccounted > 0 ? ` · ${alreadyAccounted} already accounted for` : ''}
+                <div key={i} style={{ padding: '12px 0', borderBottom: '1px solid var(--border)' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+                    <div style={{ flex: 1 }}>
+                      <div className="item-name">{li.itemName}</div>
+                      <div style={{ fontSize: 11, color: 'var(--text3)', fontFamily: 'var(--font-mono)' }}>
+                        Outstanding: {outstanding} {li.unit}
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span style={{ fontSize: 12, color: 'var(--text3)' }}>Write off:</span>
+                      <input
+                        className="return-qty-input"
+                        type="number" min="0" max={outstanding}
+                        value={qtys[i] ?? 0}
+                        onChange={e => setQtys(q => ({ ...q, [i]: Math.max(0, Math.min(Number(e.target.value), outstanding)) }))}
+                      />
+                      <span style={{ fontSize: 11, color: 'var(--text3)' }}>{li.unit}</span>
                     </div>
                   </div>
-                  <input
-                    type="number"
-                    className="form-input"
-                    style={{ width: 90, textAlign: 'right' }}
-                    min={alreadyAccounted || 1}
-                    value={values[i]}
-                    onChange={e => setValues(v => ({ ...v, [i]: e.target.value }))}
-                  />
+                  {qty > 0 && (
+                    <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                      <select
+                        className="form-input"
+                        style={{ maxWidth: 200 }}
+                        value={reasons[i] || ''}
+                        onChange={e => setReasons(r => ({ ...r, [i]: e.target.value }))}
+                      >
+                        <option value="">Select reason…</option>
+                        {CLOSE_REASONS.map(r => <option key={r} value={r}>{r}</option>)}
+                      </select>
+                      <input
+                        className="form-input"
+                        style={{ flex: 1, minWidth: 160 }}
+                        placeholder="Optional note"
+                        value={notes[i] || ''}
+                        onChange={e => setNotes(n => ({ ...n, [i]: e.target.value }))}
+                      />
+                      <span style={{ fontSize: 11, color: 'var(--orange)', fontFamily: 'var(--font-mono)', whiteSpace: 'nowrap' }}>
+                        Will return: {outstanding - qty} {li.unit}
+                      </span>
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -624,10 +676,10 @@ function AdjustQuantityModal({ pass, onClose, onDone }) {
         </div>
         <div className="modal-footer">
           <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-          <button className="btn btn-primary" onClick={handleSave} disabled={loading}>
+          <button className="btn btn-danger" onClick={handleSave} disabled={loading}>
             {loading
               ? <><div className="spinner" style={{ width: 15, height: 15 }} /> Saving…</>
-              : <><Check size={14} /> Save Changes</>}
+              : <><PackageX size={14} /> Write Off</>}
           </button>
         </div>
       </div>
@@ -769,12 +821,18 @@ function LifecycleTimeline({ pass }) {
       key: 'inward_log',
       label: pass.status === 'closed'
         ? 'Items Settled'
-        : pass.status === 'partial_return' ? 'Some Items Came Back' : 'Items Came Back',
+        : pass.status === 'partial_return'
+          // Partial accounting can come from a physical return at the source
+          // gate OR from a destination write-off before anything came back
+          ? (pass.inwardLog ? 'Some Items Came Back' : 'Some Items Written Off')
+          : 'Items Came Back',
       sub: pass.inwardLog
         ? `${pass.inwardLog.loggedByUser?.name || '—'} · Host: ${pass.inwardLog.guardName || '—'}${pass.inwardLog.remarks ? ' · ' + pass.inwardLog.remarks : ''}`
         : pass.status === 'closed'
           ? 'All remaining items were written off with a reason'
-          : (isOverdue ? 'Late — not back yet' : 'Waiting for items to come back'),
+          : pass.status === 'partial_return'
+            ? 'Some items were written off at the destination; the rest are still due back'
+            : (isOverdue ? 'Late — not back yet' : 'Waiting for items to come back'),
       time: pass.inwardLog?.loggedAt,
       done: !!pass.inwardLog || pass.status === 'closed',
       Icon: ArrowDownLeft,
@@ -839,6 +897,7 @@ function PrintGatePass({ pass }) {
   const hasCodes   = pass.items?.some(li => li.code);
   const hasSerials = pass.items?.some(li => li.serialNo);
   const hasClosed  = pass.items?.some(li => (li.closedQuantity || 0) > 0);
+  const totalClosedQty = (pass.items || []).reduce((s, li) => s + (li.closedQuantity || 0), 0);
   const isReturnableOutward = pass.returnable && pass.type === 'outward';
 
   return (
@@ -874,6 +933,18 @@ function PrintGatePass({ pass }) {
           <div className="print-info-value">{pass.isOverdue ? 'LATE' : statusLabel}</div>
         </div>
       </div>
+
+      {/* Written-off warning — must jump out even on a B/W printout */}
+      {hasClosed && (
+        <div style={{
+          border: '2px solid #000', padding: '6px 12px', margin: '10px 0',
+          fontWeight: 700, fontSize: '10pt', letterSpacing: '0.03em',
+          display: 'flex', alignItems: 'center', gap: 8,
+        }}>
+          ⚠ {totalClosedQty} ITEM{totalClosedQty === 1 ? '' : 'S'} WRITTEN OFF — WILL NOT RETURN
+          <span style={{ fontWeight: 400, fontSize: '8.5pt' }}>(see “Items Written Off” below)</span>
+        </div>
+      )}
 
       {/* Movement */}
       <div className="print-section">
@@ -937,10 +1008,12 @@ function PrintGatePass({ pass }) {
             {pass.items?.map((li, i) => {
               const closed = li.closedQuantity || 0;
               const remaining = li.quantity - (li.returnedQuantity || 0) - closed;
+              // Rows with written-off quantity are bolded so they stand out
+              // on paper, where color and background may not print.
               return (
-                <tr key={i}>
+                <tr key={i} style={closed > 0 ? { fontWeight: 700 } : undefined}>
                   <td>{i + 1}</td>
-                  <td>{li.itemName}</td>
+                  <td>{li.itemName}{closed > 0 ? ' ⚠' : ''}</td>
                   {hasCodes && <td>{li.code || '—'}</td>}
                   <td>{li.unit}</td>
                   <td>{li.quantity}</td>
@@ -976,6 +1049,29 @@ function PrintGatePass({ pass }) {
             Due back by: <strong>{fmt(pass.expectedReturnDate)}</strong>
             {pass.earlyReturn && '  ·  Came Back Early'}
           </div>
+        </div>
+      )}
+
+      {/* Items written off — reasons matter on the printed record, since this
+          is the document both branches reconcile against */}
+      {pass.closures?.length > 0 && (
+        <div className="print-section" style={{ border: '1.5px solid #000', padding: '8px 12px' }}>
+          <div className="print-section-title" style={{ fontWeight: 700 }}>⚠ Items Written Off — Not Returning</div>
+          {pass.closures.map((c, ci) => (
+            <div key={ci} style={{ marginBottom: 6 }}>
+              {c.items?.map((it, ii) => (
+                <div key={ii} style={{ fontSize: '10pt', marginBottom: 1 }}>
+                  <strong>{it.quantity} × {it.itemName}</strong> — {it.reason}
+                </div>
+              ))}
+              <div style={{ fontSize: '8.5pt', color: '#555' }}>
+                {c.at === 'destination'
+                  ? `Written off at ${pass.destinationBranchName || 'destination branch'}`
+                  : 'Closed at source gate on return log'}
+                {c.closedByUser ? ` by ${c.closedByUser.name}` : ''} · {fmt(c.closedAt)}
+              </div>
+            </div>
+          ))}
         </div>
       )}
 

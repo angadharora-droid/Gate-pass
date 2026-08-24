@@ -355,8 +355,9 @@ export function ReturnOutModal({ pass, onClose, onDone }) {
 }
 
 /* ── Log Inward Modal ───────────────────────────────────────────────────────── */
-// Reasons offered when Time Office closes an item that won't be returned.
-const CLOSE_REASONS = ['Lost', 'Damaged', 'Consumed / Used up', 'Sold', 'Not returnable', 'Other'];
+// Reasons offered when an item that won't be returned is closed — shared by
+// the Time Office return log and the destination branch's write-off modal.
+export const CLOSE_REASONS = ['Lost', 'Damaged', 'Consumed / Used up', 'Sold', 'Not returnable', 'Other'];
 
 export function LogInwardModal({ pass, onClose, onDone }) {
   const [guardName, setGuardName] = useState('');
