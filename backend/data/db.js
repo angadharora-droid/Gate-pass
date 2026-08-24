@@ -31,10 +31,14 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // approved     → manager approved; source-branch Time Office must now log departure
 // in_transit   → items are OUT: a returnable pass awaiting return, or an internal
 //                branch transfer awaiting receipt at the destination branch
-// partial_return → some items returned and logged by Time Office; rest pending
+// partial_return → part of the pass is accounted for, the rest still out:
+//                some items returned at the source gate, OR some written off
+//                with a reason at the destination branch (PATCH /close-items)
 // completed    → all movement fully confirmed by Time Office
 // closed       → fully accounted for, but some items were written off (lost/
-//                damaged/etc.) by Time Office with a reason instead of returned
+//                damaged/etc.) with a reason instead of returned — either by
+//                Time Office on the return leg or by the destination
+//                receiver/manager while the items were with them
 // rejected     → denied by manager
 //
 // Gate logs on a pass (each stamped at its own branch's gate):
