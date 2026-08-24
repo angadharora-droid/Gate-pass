@@ -21,10 +21,11 @@ function toLocalInput(iso) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-// Pre-decision edit: everything on a PENDING or DRAFT pass can still be
-// corrected — by the creator, or (for a pending pass) its approver. Once
-// approved/rejected the pass is locked and this page bounces back to the
-// detail view.
+// Pre-departure edit: everything on a PENDING or DRAFT pass can still be
+// corrected — by the creator, or (for a pending pass) its approver. An
+// APPROVED pass stays editable by its approver while it waits at the gate,
+// until Time Office locks it or the items physically leave. Everything else
+// bounces back to the detail view.
 export default function EditPassPage() {
   const { id } = useParams();
   const { user } = useAuth();
@@ -57,19 +58,46 @@ export default function EditPassPage() {
     </div>
   );
 
-  if (!['pending', 'draft'].includes(pass.status)) return (
+  // An approved outward pass is still editable while it physically waits at
+  // the gate — unless Time Office has locked it or the items already left.
+  const approvedEditable = pass.status === 'approved' && pass.type === 'outward' &&
+    !pass.outwardLog && !pass.gateLock?.locked;
+
+  if (!['pending', 'draft'].includes(pass.status) && !approvedEditable) return (
     <div>
       <Link to={`/passes/${pass.id}`} className="btn btn-ghost btn-sm" style={{ marginBottom: 24 }}>
         <ArrowLeft size={14} /> Back to {pass.passNumber}
       </Link>
       <div className="alert alert-danger">
         <AlertTriangle size={15} />
-        This pass is <strong>{STATUS_LABELS[pass.displayStatus || pass.status] || pass.status}</strong> — only pending or draft passes can be edited.
+        {pass.status === 'approved' && pass.gateLock?.locked && !pass.outwardLog ? (
+          <span>This pass is <strong>locked by Time Office</strong> — only they can unlock it and send it back for changes.</span>
+        ) : pass.status === 'approved' ? (
+          <span>The items on this pass have already <strong>left the gate</strong> — it can no longer be edited.</span>
+        ) : (
+          <span>This pass is <strong>{STATUS_LABELS[pass.displayStatus || pass.status] || pass.status}</strong> — only pending, draft, or approved (still at the gate) passes can be edited.</span>
+        )}
       </div>
     </div>
   );
 
   const isCreator = pass.createdBy === user?.id;
+
+  // Post-approval edits are the approver's call, not the requester's — mirror
+  // the server's rule so nobody fills the form just to hit a 403
+  if (pass.status === 'approved' && !hasRole(user, 'admin') &&
+      !(hasRole(user, 'manager', 'supermanager') && user?.branch === pass.sourceBranch &&
+        (!pass.approverId || pass.approverId === user?.id))) return (
+    <div>
+      <Link to={`/passes/${pass.id}`} className="btn btn-ghost btn-sm" style={{ marginBottom: 24 }}>
+        <ArrowLeft size={14} /> Back to {pass.passNumber}
+      </Link>
+      <div className="alert alert-danger">
+        <AlertTriangle size={15} />
+        This pass is already approved — only {pass.approverUser ? <strong>{pass.approverUser.name}</strong> : 'a manager/supermanager of the source branch'} (or an admin) can edit it now.
+      </div>
+    </div>
+  );
 
   // A draft is private to its creator (or admin) — bounce before the form so
   // no one fills it out just to hit the server's 403
@@ -138,10 +166,23 @@ export default function EditPassPage() {
             <span className="pass-number">{pass.passNumber}</span>
             {' · '}{pass.status === 'draft'
               ? 'Draft — saving keeps it as a draft. Submit it from the pass page when ready.'
-              : 'Pending approval — saving updates the request without approving it.'}{' '}The pass number never changes.
+              : pass.status === 'approved'
+                ? 'Approved — still waiting at the gate. Saving moves the updated pass to the top of the Time Office queue.'
+                : 'Pending approval — saving updates the request without approving it.'}{' '}The pass number never changes.
           </div>
         </div>
       </div>
+
+      {pass.sentBack && (
+        <div className="alert alert-warning" style={{ marginBottom: 20 }}>
+          <AlertTriangle size={15} />
+          <span>
+            <strong>Sent back by Time Office</strong>
+            {pass.gateLock?.unlockedByUser ? ` (${pass.gateLock.unlockedByUser.name})` : ''}
+            {pass.gateLock?.remarks ? <> — “{pass.gateLock.remarks}”</> : null}. Fix the pass and save.
+          </span>
+        </div>
+      )}
 
       <OutwardPassForm
         initialForm={initialForm}
@@ -153,7 +194,9 @@ export default function EditPassPage() {
         submitLabel="Save Changes"
         submitIcon={Save}
         submittingLabel="Saving…"
-        footerHint="Saving does not approve the pass — approve or reject it from the pass page."
+        footerHint={pass.status === 'approved'
+          ? 'The pass stays approved — Time Office will see the edited version at the top of their queue.'
+          : 'Saving does not approve the pass — approve or reject it from the pass page.'}
         onSubmit={handleSubmit}
       />
     </div>

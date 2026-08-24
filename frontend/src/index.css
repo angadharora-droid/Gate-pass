@@ -1092,6 +1092,11 @@ a.pass-number:hover { text-decoration: underline; text-underline-offset: 3px; }
 .tag-non-returnable { background: var(--bg3); color: var(--text3); }
 .tag-internal       { background: rgba(124, 58, 237, 0.08); color: var(--purple); }
 .tag-external       { background: var(--bg3); color: var(--text2); }
+/* Gate edit-window chips: locked by Time Office / re-edited by the manager /
+   unlocked and sitting with the manager for a fix */
+.tag-locked         { background: rgba(220, 38, 38, 0.08);  color: var(--red); }
+.tag-edited         { background: rgba(217, 119, 6, 0.1);   color: var(--amber); }
+.tag-sentback       { background: rgba(124, 58, 237, 0.08); color: var(--purple); }
 
 /* ─── LOADING ──────────────────────────────── */
 .spinner {

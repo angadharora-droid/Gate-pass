@@ -125,8 +125,44 @@ check('staff cannot approve', staffApprove.status === 403);
 const approved = await api('PATCH', `/gate-passes/${passId}/status`, { token: manager, body: { action: 'approve' } });
 check('manager approves', approved.status === 200 && approved.json?.status === 'approved');
 
+// ─── Gate lock: the manager can edit an approved pass until Time Office locks
+//     it; unlock sends it back to the manager for a fix ───────────────────────
+const revisePayload = {
+  direction: 'external', destinationPerson: 'Repair Shop', returnable: true,
+  purpose: 'Chair repair — rush', expectedReturnDate: '2099-01-01T00:00:00Z',
+  items: [{ itemName: 'Office Chair', quantity: 4, unit: 'pcs' }],
+};
+const editApproved = await api('PATCH', `/gate-passes/${passId}/revise`, { token: manager, body: revisePayload });
+check('manager edits approved pass before gate acts', editApproved.status === 200 &&
+  editApproved.json?.status === 'approved' && editApproved.json?.revisedAfterApproval === true,
+  JSON.stringify(editApproved.json));
+
+const staffEditApproved = await api('PATCH', `/gate-passes/${passId}/revise`, { token: staff, body: revisePayload });
+check('staff cannot edit an approved pass', staffEditApproved.status === 403);
+
+const managerLock = await api('PATCH', `/gate-passes/${passId}/gate-lock`, { token: manager, body: { action: 'lock' } });
+check('manager cannot lock/unlock', managerLock.status === 403);
+
+const lock = await api('PATCH', `/gate-passes/${passId}/gate-lock`, { token: timeOffice, body: { action: 'lock' } });
+check('time office locks approved pass', lock.status === 200 && lock.json?.gateLock?.locked === true);
+
+const editLocked = await api('PATCH', `/gate-passes/${passId}/revise`, { token: manager, body: revisePayload });
+check('locked pass cannot be edited by the manager', editLocked.status === 403);
+
+const unlock = await api('PATCH', `/gate-passes/${passId}/gate-lock`, { token: timeOffice, body: { action: 'unlock', remarks: 'Qty mismatch at gate' } });
+check('time office unlocks (send back) with note', unlock.status === 200 &&
+  unlock.json?.gateLock?.locked === false && unlock.json?.sentBack === true &&
+  unlock.json?.gateLock?.remarks === 'Qty mismatch at gate');
+
+const editAfterSendBack = await api('PATCH', `/gate-passes/${passId}/revise`, { token: manager, body: revisePayload });
+check('manager fixes sent-back pass (clears the flag)', editAfterSendBack.status === 200 &&
+  editAfterSendBack.json?.sentBack === false && editAfterSendBack.json?.revisedAfterApproval === true);
+
 const outward = await api('PATCH', `/gate-passes/${passId}/log-outward`, { token: timeOffice, body: { guardName: 'Ajay' } });
 check('time office logs outward → in_transit', outward.status === 200 && outward.json?.status === 'in_transit');
+
+const lockAfterOut = await api('PATCH', `/gate-passes/${passId}/gate-lock`, { token: timeOffice, body: { action: 'lock' } });
+check('cannot lock once items left the gate', lockAfterOut.status === 400);
 
 const partial = await api('PATCH', `/gate-passes/${passId}/log-inward`, {
   token: timeOffice,
@@ -168,6 +204,30 @@ check('security logs direct inward → completed', inward.status === 201 && inwa
 // ─── Stats & audit ────────────────────────────────────────────────────────────
 const stats = await api('GET', '/gate-passes/meta/stats', { token: admin });
 check('stats totals add up', stats.json?.total === 2 && stats.json?.closed === 1, JSON.stringify(stats.json));
+
+// ─── Late alert clears the moment the pass is completed ──────────────────────
+const latePass = await api('POST', '/gate-passes', {
+  token: manager,
+  body: {
+    type: 'outward', direction: 'external', destinationPerson: 'Repair Shop',
+    returnable: true, purpose: 'Overdue drill', expectedReturnDate: '2020-01-01T00:00:00Z',
+    items: [{ itemName: 'Drill Machine', quantity: 1, unit: 'pcs' }],
+  },
+});
+await api('PATCH', `/gate-passes/${latePass.json?.id}/log-outward`, { token: timeOffice, body: { guardName: 'Ajay' } });
+const lateOut   = await api('GET', `/gate-passes/${latePass.json?.id}`, { token: admin });
+const lateStats = await api('GET', '/gate-passes/meta/stats', { token: timeOffice });
+check('past-due pass shows as late while out', lateOut.json?.isOverdue === true && lateStats.json?.overdueReturns === 1,
+  JSON.stringify({ isOverdue: lateOut.json?.isOverdue, overdueReturns: lateStats.json?.overdueReturns }));
+
+await api('PATCH', `/gate-passes/${latePass.json?.id}/log-inward`, {
+  token: timeOffice, body: { guardName: 'Ajay', returns: [{ index: 0, quantity: 1 }] },
+});
+const lateDone   = await api('GET', `/gate-passes/${latePass.json?.id}`, { token: admin });
+const lateStats2 = await api('GET', '/gate-passes/meta/stats', { token: timeOffice });
+check('completed late pass leaves the alerts', lateDone.json?.status === 'completed' &&
+  lateDone.json?.isOverdue === false && lateStats2.json?.overdueReturns === 0,
+  JSON.stringify({ status: lateDone.json?.status, isOverdue: lateDone.json?.isOverdue, overdueReturns: lateStats2.json?.overdueReturns }));
 
 const audit = await api('GET', '/audit', { token: admin });
 check('audit log recorded with user names', audit.status === 200 && audit.json?.length >= 6 && audit.json?.every(l => l.userName));
