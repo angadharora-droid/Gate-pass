@@ -245,16 +245,37 @@ router.post('/', requireRole('admin', 'supermanager', 'manager', 'staff'), async
 router.post('/inward', requireRole('time_office', 'admin'), asyncHandler(async (req, res) => {
   const {
     branchId, departmentId, receiverId, inwardType,
-    documentType, documentNo, barcodeRef,
+    documentType, documentNo, documents, barcodeRef,
     carriedBy, carrierMobile, sourceParty, remarks, items,
   } = req.body;
 
   if (!inwardType || !INWARD_TYPES.some(t => t.id === inwardType))
     return res.status(400).json({ error: `inwardType must be one of: ${INWARD_TYPES.map(t => t.id).join(', ')}` });
-  if (documentType && !DOCUMENT_TYPES.includes(documentType))
-    return res.status(400).json({ error: `documentType must be one of: ${DOCUMENT_TYPES.join(', ')}` });
   if (!carriedBy?.trim())
     return res.status(400).json({ error: 'Carried by (person who brought the items) is required' });
+
+  // Documents: goods often arrive with several papers at once (invoice +
+  // delivery challan + courier slip…), so `documents` is an array of
+  // { type, number }. The legacy single documentType/documentNo pair is folded
+  // in for older clients. Blank rows are dropped; half-filled ones error.
+  const rawDocs = Array.isArray(documents) && documents.length
+    ? documents
+    : (documentType && documentType !== 'None' && documentNo?.trim()
+      ? [{ type: documentType, number: documentNo }]
+      : []);
+  const docs = [];
+  for (const d of rawDocs) {
+    const number = String(d?.number ?? '').trim();
+    const type = d?.type;
+    if (!number && (!type || type === 'None')) continue;
+    if (!type || type === 'None')
+      return res.status(400).json({ error: `Pick a document type for "${number}"` });
+    if (!DOCUMENT_TYPES.includes(type))
+      return res.status(400).json({ error: `Document type must be one of: ${DOCUMENT_TYPES.join(', ')}` });
+    if (!number)
+      return res.status(400).json({ error: `Enter the ${type} number (or remove that document row)` });
+    docs.push({ type, number });
+  }
 
   const branch = await dbc('branches').findOne({ id: branchId, active: { $ne: false } }, NO_ID);
   if (!branch) return res.status(400).json({ error: 'Select a valid receiving branch' });
@@ -286,6 +307,7 @@ router.post('/inward', requireRole('time_office', 'admin'), asyncHandler(async (
   const now = new Date().toISOString();
   const typeLabel = INWARD_TYPES.find(t => t.id === inwardType).label;
   const returnable = inwardType === 'returnable';
+  const docsLabel = docs.map(d => `${d.type} ${d.number}`).join(', ');
 
   const newPass = {
     id: uuidv4(),
@@ -299,18 +321,18 @@ router.post('/inward', requireRole('time_office', 'admin'), asyncHandler(async (
     destinationBranch: branch.id,
     destinationPerson: sourceParty?.trim() || null,   // vendor / party the goods came from
     returnable,
-    purpose: documentNo?.trim()
-      ? `${typeLabel} — ${documentType && documentType !== 'None' ? documentType + ' ' : ''}${documentNo.trim()}`
-      : typeLabel,
+    purpose: docsLabel ? `${typeLabel} — ${docsLabel}` : typeLabel,
     createdAt: now,
     approvedBy: null, approvedAt: null, autoApproved: false,
     expectedReturnDate: null,
     linkedPassId: null,
     earlyReturn: false,
     inwardType,
-    documentType: documentType || 'None',
-    // A document number only makes sense with an actual document type
-    documentNo:   (documentType && documentType !== 'None') ? (documentNo?.trim() || '') : '',
+    documents: docs,
+    // Legacy mirror of the FIRST document, so pre-multi-document rows and any
+    // reader still on documentType/documentNo keep working unchanged
+    documentType: docs[0]?.type || 'None',
+    documentNo:   docs[0]?.number || '',
     barcodeRef:   barcodeRef?.trim()  || '',
     carriedBy:    carriedBy.trim(),
     carrierMobile: carrierMobile?.trim() || '',

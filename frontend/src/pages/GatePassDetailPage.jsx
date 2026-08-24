@@ -31,6 +31,15 @@ const INWARD_TYPE_LABELS = {
   non_returnable: 'Non-Returnable',
 };
 
+// All documents on a direct inward entry — the multi-document array, falling
+// back to the legacy single type/number pair on rows created before it.
+function documentsOf(pass) {
+  if (pass.documents?.length) return pass.documents;
+  if (pass.documentNo) return [{ type: pass.documentType, number: pass.documentNo }];
+  return [];
+}
+const docLabel = d => `${d.type && d.type !== 'None' ? d.type + ' ' : ''}${d.number}`;
+
 const fmtMoney = (n) => n == null ? null : `₹ ${Number(n).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 export default function GatePassDetailPage() {
@@ -349,10 +358,15 @@ export default function GatePassDetailPage() {
                   <div className="dv">{INWARD_TYPE_LABELS[pass.inwardType] || '—'}</div>
                 </div>
                 <div className="detail-item">
-                  <div className="dl">Document</div>
+                  <div className="dl">{documentsOf(pass).length > 1 ? 'Documents' : 'Document'}</div>
                   <div className="dv">
-                    {pass.documentNo
-                      ? `${pass.documentType && pass.documentType !== 'None' ? pass.documentType + ' · ' : ''}${pass.documentNo}`
+                    {documentsOf(pass).length
+                      ? documentsOf(pass).map((d, i) => (
+                          <div key={i}>
+                            {d.type && d.type !== 'None' && <span style={{ color: 'var(--text3)' }}>{d.type} · </span>}
+                            {d.number}
+                          </div>
+                        ))
                       : '—'}
                   </div>
                 </div>
@@ -1036,9 +1050,8 @@ function PrintGatePass({ pass }) {
           <div className="print-section-title">Gate Entry</div>
           <div className="print-text">
             Carried by: <strong>{pass.carriedBy || '—'}</strong>{pass.carrierMobile ? ` (${pass.carrierMobile})` : ''}
-            {'  ·  '}Document: {pass.documentNo
-              ? `${pass.documentType && pass.documentType !== 'None' ? pass.documentType + ' ' : ''}${pass.documentNo}`
-              : '—'}
+            {'  ·  '}{documentsOf(pass).length > 1 ? 'Documents' : 'Document'}:{' '}
+            {documentsOf(pass).length ? documentsOf(pass).map(docLabel).join(', ') : '—'}
             {'  ·  '}Receiver: <strong>{pass.receiverUser?.name || '—'}</strong>{pass.departmentName ? ` (${pass.departmentName})` : ''}
           </div>
         </div>
