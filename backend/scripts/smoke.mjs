@@ -200,10 +200,44 @@ const inward = await api('POST', '/gate-passes/inward', {
   },
 });
 check('security logs direct inward → completed', inward.status === 201 && inward.json?.status === 'completed' && inward.json?.inwardLog?.guardName === 'Guard One');
+check('legacy single document folded into documents[]', inward.json?.documents?.length === 1 &&
+  inward.json?.documents?.[0]?.type === 'Invoice' && inward.json?.documents?.[0]?.number === 'INV-9999');
+
+// Goods can arrive with several papers at once — blank rows are dropped, the
+// legacy documentType/documentNo mirror the FIRST document
+const multiDoc = await api('POST', '/gate-passes/inward', {
+  token: timeOffice,
+  body: {
+    branchId: b1, departmentId: d1, receiverId: managerUser.json.id, inwardType: 'non_returnable',
+    documents: [
+      { type: 'Invoice', number: 'INV-1001' },
+      { type: 'Delivery Challan', number: 'DC-22' },
+      { type: 'None', number: '' },
+    ],
+    carriedBy: 'Courier Guy',
+    items: [{ itemName: 'Printer Toner', quantity: 1, unit: 'box' }],
+  },
+});
+check('inward accepts multiple documents', multiDoc.status === 201 &&
+  multiDoc.json?.documents?.length === 2 &&
+  multiDoc.json?.documentType === 'Invoice' && multiDoc.json?.documentNo === 'INV-1001' &&
+  multiDoc.json?.purpose?.includes('INV-1001') && multiDoc.json?.purpose?.includes('DC-22'),
+  JSON.stringify(multiDoc.json));
+
+const badDoc = await api('POST', '/gate-passes/inward', {
+  token: timeOffice,
+  body: {
+    branchId: b1, departmentId: d1, receiverId: managerUser.json.id, inwardType: 'non_returnable',
+    documents: [{ type: 'None', number: 'X-1' }],
+    carriedBy: 'Courier Guy',
+    items: [{ itemName: 'Widget', quantity: 1, unit: 'pcs' }],
+  },
+});
+check('document number without a type rejected', badDoc.status === 400);
 
 // ─── Stats & audit ────────────────────────────────────────────────────────────
 const stats = await api('GET', '/gate-passes/meta/stats', { token: admin });
-check('stats totals add up', stats.json?.total === 2 && stats.json?.closed === 1, JSON.stringify(stats.json));
+check('stats totals add up', stats.json?.total === 3 && stats.json?.closed === 1, JSON.stringify(stats.json));
 
 // ─── Late alert clears the moment the pass is completed ──────────────────────
 const latePass = await api('POST', '/gate-passes', {

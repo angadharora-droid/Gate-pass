@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { api } from '../utils/api';
 import { useAuth } from '../context/AuthContext';
 import { hasRole } from '../utils/roles';
-import { AlertTriangle, ArrowDownLeft, ScanLine, ShieldCheck } from 'lucide-react';
+import { AlertTriangle, ArrowDownLeft, Plus, ScanLine, ShieldCheck, X } from 'lucide-react';
 import ItemsGridEditor, { emptyRow, rowsToItems } from '../components/ItemsGridEditor';
 
 // Must match INWARD_TYPES / DOCUMENT_TYPES in backend/data/db.js
@@ -26,11 +26,13 @@ export default function NewInwardPage() {
   const [form, setForm] = useState({
     inwardType: '', branchId: user?.branch || '',
     departmentId: '', receiverId: '',
-    documentType: 'None', documentNo: '',
     barcodeRef: '', carriedBy: '', carrierMobile: '',
     sourceParty: '', remarks: '',
   });
   const [rows, setRows] = useState([emptyRow()]);
+  // Goods often arrive with several papers at once (invoice + challan +
+  // courier slip…) — each row is one { type, number } document.
+  const [documents, setDocuments] = useState([{ type: 'None', number: '' }]);
 
   // Live suggestions from the vendors master as "Received From" is typed —
   // same idea as the item suggestions in ItemsGridEditor, positioned off the
@@ -62,9 +64,11 @@ export default function NewInwardPage() {
   const setBranch = (branchId) => setForm(f => ({ ...f, branchId, departmentId: '', receiverId: '' }));
   const setDept = (departmentId) => setForm(f => ({ ...f, departmentId, receiverId: '' }));
   // 'None' means no document — clear any number typed under a previous type
-  const setDocType = (documentType) => setForm(f => ({
-    ...f, documentType, documentNo: documentType === 'None' ? '' : f.documentNo,
-  }));
+  const setDoc = (i, patch) => setDocuments(ds => ds.map((d, di) =>
+    di === i ? { ...d, ...patch, ...(patch.type === 'None' ? { number: '' } : {}) } : d));
+  const addDoc = () => setDocuments(ds => [...ds, { type: 'None', number: '' }]);
+  const removeDoc = (i) => setDocuments(ds =>
+    ds.length === 1 ? [{ type: 'None', number: '' }] : ds.filter((_, di) => di !== i));
 
   const branchDepts = departments.filter(d => d.branchId === form.branchId);
   // Receiver = someone in the receiving branch; people from the chosen
@@ -92,9 +96,19 @@ export default function NewInwardPage() {
     const items = rowsToItems(rows);
     if (!items.length) { setError('Add at least one item with a description and quantity'); return; }
 
+    // Documents: drop untouched rows, stop on half-filled ones
+    const docs = [];
+    for (const d of documents) {
+      const number = d.number.trim();
+      if (!number && d.type === 'None') continue;
+      if (d.type === 'None') { setError(`Pick a document type for "${number}"`); return; }
+      if (!number) { setError(`Enter the ${d.type} number (or set its type back to None)`); return; }
+      docs.push({ type: d.type, number });
+    }
+
     setLoading(true);
     try {
-      const created = await api.createInward({ ...form, items });
+      const created = await api.createInward({ ...form, documents: docs, items });
       navigate(`/passes/${created.id}`);
     } catch (e) {
       setError(e.message);
@@ -177,15 +191,31 @@ export default function NewInwardPage() {
 
         <div className="form-row">
           <div className="form-group">
-            <label className="form-label">Document No</label>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <select className="form-select" style={{ maxWidth: 170 }} value={form.documentType} onChange={e => setDocType(e.target.value)}>
-                {DOCUMENT_TYPES.map(t => <option key={t}>{t}</option>)}
-              </select>
-              <input className="form-input" value={form.documentNo}
-                onChange={e => set('documentNo', e.target.value)}
-                placeholder="e.g. INV-4471"
-                disabled={form.documentType === 'None'} />
+            <label className="form-label">
+              Documents <span style={{ color: 'var(--text3)', fontWeight: 400 }}>(add every paper that arrived)</span>
+            </label>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {documents.map((d, i) => (
+                <div key={i} style={{ display: 'flex', gap: 8 }}>
+                  <select className="form-select" style={{ maxWidth: 170 }} value={d.type}
+                    onChange={e => setDoc(i, { type: e.target.value })}>
+                    {DOCUMENT_TYPES.map(t => <option key={t}>{t}</option>)}
+                  </select>
+                  <input className="form-input" value={d.number}
+                    onChange={e => setDoc(i, { number: e.target.value })}
+                    placeholder="e.g. INV-4471"
+                    disabled={d.type === 'None'} />
+                  {documents.length > 1 && (
+                    <button type="button" className="btn btn-ghost btn-sm" style={{ flexShrink: 0, alignSelf: 'center' }}
+                      onClick={() => removeDoc(i)} title="Remove this document">
+                      <X size={13} />
+                    </button>
+                  )}
+                </div>
+              ))}
+              <button type="button" className="btn btn-ghost btn-sm" style={{ alignSelf: 'flex-start' }} onClick={addDoc}>
+                <Plus size={13} /> Add another document
+              </button>
             </div>
           </div>
           <div className="form-group">
