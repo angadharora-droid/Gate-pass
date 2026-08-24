@@ -1098,6 +1098,70 @@ a.pass-number:hover { text-decoration: underline; text-underline-offset: 3px; }
 .tag-edited         { background: rgba(217, 119, 6, 0.1);   color: var(--amber); }
 .tag-sentback       { background: rgba(124, 58, 237, 0.08); color: var(--purple); }
 
+/* ─── REPORTS: LIFECYCLE STRIP ─────────────────
+   Clickable stage buckets (Waiting Approval / In Progress / Done…). The
+   multi-stage buckets carry sub-chips for the exact stage. */
+.stage-strip {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: stretch;
+  margin-bottom: 20px;
+}
+.stage-tile {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  cursor: pointer;
+  min-width: 108px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  text-align: left;
+  transition: border-color 0.15s, box-shadow 0.15s;
+  user-select: none;
+}
+.stage-tile:hover { border-color: var(--border2); }
+.stage-tile.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.stage-tile-num {
+  font-size: 19px;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  line-height: 1.25;
+}
+.stage-tile-label {
+  font-size: 10.5px;
+  color: var(--text3);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.stage-tile-late .stage-tile-num,
+.stage-tile-late .stage-tile-label { color: var(--red); }
+.stage-tile-late.active { border-color: var(--red); box-shadow: 0 0 0 1px var(--red); }
+.stage-subs {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-top: 7px;
+  max-width: 340px;
+}
+.stage-sub {
+  font-size: 10.5px;
+  font-family: var(--font-mono);
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--bg3);
+  border: 1px solid transparent;
+  color: var(--text2);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.stage-sub:hover { border-color: var(--border2); }
+.stage-sub.active { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+
 /* ─── LOADING ──────────────────────────────── */
 .spinner {
   width: 22px;
