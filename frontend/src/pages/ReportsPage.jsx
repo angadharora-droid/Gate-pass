@@ -44,6 +44,31 @@ function fmtDate(dateStr) {
 
 const fmtMoney = n => `₹ ${Number(n).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
 
+// ─── Lifecycle buckets ────────────────────────────────────────────────────────
+// Every displayStatus stage rolls up into one coarse bucket, so the report can
+// answer "how much is waiting / out / done" at a glance and still drill into
+// the exact stage. `filter` is the Status-facet key selecting the whole bucket.
+const LIFECYCLE_BUCKETS = [
+  { key: 'draft',    label: 'Drafts',           filter: 'draft',    stages: ['draft'] },
+  { key: 'pending',  label: 'Waiting Approval', filter: 'pending',  stages: ['pending'] },
+  { key: 'approved', label: 'Ready to Go Out',  filter: 'approved', stages: ['approved'] },
+  { key: 'open',     label: 'In Progress',      filter: 'out_any',
+    stages: ['items_out', 'in_transit', 'at_destination', 'return_approved', 'returning', 'partial_return'] },
+  { key: 'finished', label: 'Done',             filter: 'finished', stages: ['completed', 'closed'] },
+  { key: 'rejected', label: 'Rejected',         filter: 'rejected', stages: ['rejected'] },
+];
+const bucketOf = (stage) => LIFECYCLE_BUCKETS.find(b => b.stages.includes(stage));
+
+// One status facet, three kinds of keys: umbrella buckets ('out_any',
+// 'finished'), the cross-cutting 'overdue' flag, and exact lifecycle stages.
+function matchesStatus(p, status) {
+  if (!status) return true;
+  if (status === 'overdue') return !!p.isOverdue;
+  if (status === 'out_any') return ['in_transit', 'partial_return'].includes(p.status);
+  if (status === 'finished') return ['completed', 'closed'].includes(p.status);
+  return (p.displayStatus || p.status) === status;
+}
+
 // The most recent custody leg stamped on a pass — what last physically
 // happened to the items, regardless of where in the lifecycle it sits.
 function lastMovement(p) {
@@ -105,7 +130,9 @@ export default function ReportsPage() {
     api.getDepartments(params).then(setDepartments).catch(() => setDepartments([]));
   }, [branch]);
 
-  const filtered = useMemo(() => {
+  // Everything EXCEPT the status facet — the lifecycle strip counts against
+  // this, so clicking a stage tile never zeroes out the other tiles.
+  const baseFiltered = useMemo(() => {
     const { start, end } = rangeToBounds(fromDate, toDate);
 
     return passes
@@ -129,43 +156,88 @@ export default function ReportsPage() {
         } else if (type && p.type !== type) {
           return false;
         }
-        if (status) {
-          if (status === 'overdue') {
-            if (!p.isOverdue) return false;
-          } else if (status === 'out_any') {
-            // Umbrella: anything currently outside — including partly-returned
-            // passes whose remaining items are still out (matches the pill)
-            if (!['in_transit', 'partial_return'].includes(p.status)) return false;
-          } else if ((p.displayStatus || p.status) !== status) {
-            return false;
-          }
-        }
         return true;
       })
       .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-  }, [passes, fromDate, toDate, branch, departmentId, type, status, user]);
+  }, [passes, fromDate, toDate, branch, departmentId, type, user]);
 
-  // Dynamic breakdown of whatever the filters currently select
+  const filtered = useMemo(
+    () => baseFiltered.filter(p => matchesStatus(p, status)),
+    [baseFiltered, status]
+  );
+
+  // Facet counts for the lifecycle strip — per exact stage, rolled up per
+  // bucket, plus the cross-cutting late count.
+  const stageCounts = useMemo(() => {
+    const perStage = new Map();
+    let late = 0;
+    for (const p of baseFiltered) {
+      const s = p.displayStatus || p.status;
+      perStage.set(s, (perStage.get(s) || 0) + 1);
+      if (p.isOverdue) late++;
+    }
+    const buckets = LIFECYCLE_BUCKETS.map(b => ({
+      ...b,
+      count: b.stages.reduce((n, s) => n + (perStage.get(s) || 0), 0),
+      // Sub-chips only make sense on multi-stage buckets (In Progress, Done)
+      subs: b.stages.length > 1
+        ? b.stages.map(s => ({ stage: s, count: perStage.get(s) || 0 })).filter(x => x.count > 0)
+        : [],
+    }));
+    return { buckets, late, total: baseFiltered.length };
+  }, [baseFiltered]);
+
+  // Dynamic breakdown of whatever the filters currently select. Rows are
+  // normalized to { label, g, isBucket?, isStage? } so the status breakdown
+  // can show lifecycle-ordered buckets with their exact stages indented under
+  // them, while branch/department stay flat and count-sorted.
   const [groupBy, setGroupBy] = useState('');
   const breakdown = useMemo(() => {
     if (!groupBy) return null;
-    const keyOf = (p) => {
-      if (groupBy === 'branch') return (p.type === 'inward' ? p.destinationBranchName : p.sourceBranchName) || '—';
-      if (groupBy === 'department') return p.departmentName || p.receivedLog?.departmentName || '—';
-      if (groupBy === 'status') return STATUS_LABELS[p.isOverdue ? 'overdue' : (p.displayStatus || p.status)] || p.status;
-      return '—';
-    };
-    const groups = new Map();
-    for (const p of filtered) {
-      const k = keyOf(p);
-      const g = groups.get(k) || { count: 0, outward: 0, inward: 0, late: 0, value: 0 };
+    const blank = () => ({ count: 0, outward: 0, inward: 0, late: 0, value: 0 });
+    const add = (g, p) => {
       g.count += 1;
       if (p.type === 'inward') g.inward += 1; else g.outward += 1;
       if (p.isOverdue) g.late += 1;
       g.value += (p.items || []).reduce((s, li) => s + (li.amount || 0), 0);
-      groups.set(k, g);
+    };
+
+    if (groupBy === 'status') {
+      const perStage = new Map();
+      for (const p of filtered) {
+        const s = p.displayStatus || p.status;
+        if (!perStage.has(s)) perStage.set(s, blank());
+        add(perStage.get(s), p);
+      }
+      const rows = [];
+      for (const b of LIFECYCLE_BUCKETS) {
+        const present = b.stages.filter(s => perStage.has(s));
+        if (!present.length) continue;
+        const bg = blank();
+        for (const s of present) {
+          const g = perStage.get(s);
+          bg.count += g.count; bg.outward += g.outward; bg.inward += g.inward;
+          bg.late += g.late; bg.value += g.value;
+        }
+        rows.push({ label: b.label, g: bg, isBucket: true });
+        if (b.stages.length > 1) {
+          for (const s of present) rows.push({ label: STATUS_LABELS[s] || s, g: perStage.get(s), isStage: true });
+        }
+      }
+      return rows;
     }
-    return [...groups.entries()].sort((a, b) => b[1].count - a[1].count);
+
+    const groups = new Map();
+    for (const p of filtered) {
+      const k = (groupBy === 'branch'
+        ? (p.type === 'inward' ? p.destinationBranchName : p.sourceBranchName)
+        : (p.departmentName || p.receivedLog?.departmentName)) || '—';
+      if (!groups.has(k)) groups.set(k, blank());
+      add(groups.get(k), p);
+    }
+    return [...groups.entries()]
+      .sort((a, b) => b[1].count - a[1].count)
+      .map(([label, g]) => ({ label, g }));
   }, [filtered, groupBy]);
 
   // Quick range presets
@@ -186,13 +258,12 @@ export default function ReportsPage() {
     { label: 'All Time', apply: () => setRange('', '') },
   ];
 
-  // Live aggregates over whatever the filters currently select
+  // Live aggregates over whatever the filters currently select (stage and
+  // late counts live on the lifecycle strip, which ignores the status facet)
   const summary = useMemo(() => {
-    const s = { outward: 0, inward: 0, open: 0, late: 0, value: 0 };
+    const s = { outward: 0, inward: 0, value: 0 };
     for (const p of filtered) {
       if (p.type === 'inward') s.inward++; else s.outward++;
-      if (['in_transit', 'partial_return'].includes(p.status)) s.open++;
-      if (p.isOverdue) s.late++;
       s.value += (p.items || []).reduce((sum, li) => sum + (li.amount || 0), 0);
     }
     return s;
@@ -243,6 +314,7 @@ export default function ReportsPage() {
         'Type': p.type === 'inward' ? 'Inward' : 'Outward',
         'Scope': p.direction === 'internal' ? 'Internal' : 'External',
         'Returnable': p.returnable ? 'Yes' : 'No',
+        'Lifecycle': bucketOf(p.displayStatus || p.status)?.label || '—',
         'Status': STATUS_LABELS[p.displayStatus || p.status] || p.status,
         'Late': p.isOverdue ? 'Yes' : 'No',
         'Early Return': p.earlyReturn ? 'Yes' : 'No',
@@ -268,12 +340,14 @@ export default function ReportsPage() {
       );
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, 'Report');
-      // The active breakdown exports as its own sheet
+      // The active breakdown exports as its own sheet — exact stages indent
+      // under their lifecycle bucket, mirroring the on-screen table
       if (breakdown?.length) {
-        const bs = XLSX.utils.json_to_sheet(breakdown.map(([k, g]) => ({
-          [groupBy === 'branch' ? 'Branch' : groupBy === 'department' ? 'Department' : 'Status']: k,
-          'Passes': g.count, 'Outward': g.outward, 'Inward': g.inward,
-          'Late': g.late, 'Item Value': g.value || '—',
+        const bs = XLSX.utils.json_to_sheet(breakdown.map(row => ({
+          [groupBy === 'branch' ? 'Branch' : groupBy === 'department' ? 'Department' : 'Status']:
+            row.isStage ? `    ${row.label}` : row.label,
+          'Passes': row.g.count, 'Outward': row.g.outward, 'Inward': row.g.inward,
+          'Late': row.g.late, 'Item Value': row.g.value || '—',
         })));
         bs['!cols'] = [{ wch: 26 }, { wch: 8 }, { wch: 9 }, { wch: 8 }, { wch: 6 }, { wch: 12 }];
         XLSX.utils.book_append_sheet(wb, bs, 'Breakdown');
@@ -376,18 +450,21 @@ export default function ReportsPage() {
             <select className="form-select" value={status} onChange={e => setStatus(e.target.value)}>
               <option value="">All</option>
               <option value="pending">Waiting Approval</option>
-              <option value="approved">Approved</option>
-              <option value="out_any">Out — any stage</option>
-              <optgroup label="Out — exact stage">
+              <option value="approved">Ready to Go Out (approved)</option>
+              <option value="out_any">In Progress — any stage</option>
+              <optgroup label="In Progress — exact stage">
                 <option value="items_out">Items Out (external)</option>
                 <option value="in_transit">In Transit (between branches)</option>
                 <option value="at_destination">At Destination</option>
                 <option value="return_approved">Send-Back Approved</option>
                 <option value="returning">Returning</option>
+                <option value="partial_return">Partly Back</option>
               </optgroup>
-              <option value="partial_return">Partly Back</option>
-              <option value="completed">Completed</option>
-              <option value="closed">Closed</option>
+              <option value="finished">Done — Completed + Closed</option>
+              <optgroup label="Done — exact">
+                <option value="completed">Completed</option>
+                <option value="closed">Closed</option>
+              </optgroup>
               <option value="rejected">Rejected</option>
               <option value="overdue">Late (overdue)</option>
             </select>
@@ -407,6 +484,66 @@ export default function ReportsPage() {
         </div>
       </div>
 
+      {/* Lifecycle strip — a navigator, not just numbers: counts ignore the
+          Status filter, and clicking a tile (or an exact stage chip on the
+          In Progress / Done tiles) applies that filter to the table below. */}
+      {!loading && stageCounts.total > 0 && (
+        <div className="stage-strip">
+          <div
+            className={`stage-tile${!status ? ' active' : ''}`}
+            role="button" tabIndex={0}
+            onClick={() => setStatus('')}
+            onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setStatus(''); } }}
+          >
+            <span className="stage-tile-num">{stageCounts.total}</span>
+            <span className="stage-tile-label">All Passes</span>
+          </div>
+          {stageCounts.buckets.filter(b => b.count > 0).map(b => {
+            const toggle = () => setStatus(status === b.filter ? '' : b.filter);
+            return (
+              <div
+                key={b.key}
+                className={`stage-tile${status === b.filter ? ' active' : ''}`}
+                role="button" tabIndex={0}
+                onClick={toggle}
+                onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } }}
+                title={`Show only: ${b.label}`}
+              >
+                <span className="stage-tile-num">{b.count}</span>
+                <span className="stage-tile-label">{b.label}</span>
+                {b.subs.length > 0 && (
+                  <div className="stage-subs">
+                    {b.subs.map(({ stage, count }) => (
+                      <button
+                        key={stage}
+                        type="button"
+                        className={`stage-sub${status === stage ? ' active' : ''}`}
+                        onClick={e => { e.stopPropagation(); setStatus(status === stage ? b.filter : stage); }}
+                        title={`Show only: ${STATUS_LABELS[stage] || stage}`}
+                      >
+                        {STATUS_LABELS[stage] || stage} <strong>{count}</strong>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+          {stageCounts.late > 0 && (
+            <div
+              className={`stage-tile stage-tile-late${status === 'overdue' ? ' active' : ''}`}
+              role="button" tabIndex={0}
+              onClick={() => setStatus(status === 'overdue' ? '' : 'overdue')}
+              onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setStatus(status === 'overdue' ? '' : 'overdue'); } }}
+              title="Show only late (overdue) passes"
+            >
+              <span className="stage-tile-num">{stageCounts.late}</span>
+              <span className="stage-tile-label">Late</span>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Live summary of the filtered selection */}
       {!loading && filtered.length > 0 && (
         <div className="stat-pills">
@@ -421,14 +558,6 @@ export default function ReportsPage() {
           <div className="stat-pill">
             <span className="stat-pill-num">{summary.inward}</span>
             <span className="stat-pill-label">Inward</span>
-          </div>
-          <div className="stat-pill">
-            <span className="stat-pill-num" style={{ color: summary.open ? 'var(--purple)' : undefined }}>{summary.open}</span>
-            <span className="stat-pill-label">Still Out</span>
-          </div>
-          <div className="stat-pill">
-            <span className="stat-pill-num" style={{ color: summary.late ? 'var(--red)' : undefined }}>{summary.late}</span>
-            <span className="stat-pill-label">Late</span>
           </div>
           {summary.value > 0 && (
             <div className="stat-pill">
@@ -460,14 +589,18 @@ export default function ReportsPage() {
                 </tr>
               </thead>
               <tbody>
-                {breakdown.map(([k, g]) => (
-                  <tr key={k}>
-                    <td style={{ fontWeight: 600 }}>{k}</td>
-                    <td>{g.count}</td>
-                    <td>{g.outward || '—'}</td>
-                    <td>{g.inward || '—'}</td>
-                    <td style={{ color: g.late ? 'var(--red)' : 'var(--text3)' }}>{g.late || '—'}</td>
-                    <td style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5 }}>{g.value ? fmtMoney(g.value) : '—'}</td>
+                {breakdown.map((row, i) => (
+                  <tr key={`${row.label}-${i}`} style={row.isBucket && groupBy === 'status' ? { background: 'var(--bg3)' } : undefined}>
+                    <td style={row.isStage
+                      ? { paddingLeft: 32, color: 'var(--text2)' }
+                      : { fontWeight: 600 }}>
+                      {row.label}
+                    </td>
+                    <td style={row.isBucket ? { fontWeight: 600 } : undefined}>{row.g.count}</td>
+                    <td>{row.g.outward || '—'}</td>
+                    <td>{row.g.inward || '—'}</td>
+                    <td style={{ color: row.g.late ? 'var(--red)' : 'var(--text3)' }}>{row.g.late || '—'}</td>
+                    <td style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5 }}>{row.g.value ? fmtMoney(row.g.value) : '—'}</td>
                   </tr>
                 ))}
               </tbody>
