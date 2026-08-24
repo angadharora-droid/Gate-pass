@@ -395,25 +395,43 @@ router.patch('/:id/status', requireRole('manager', 'supermanager', 'admin'), asy
   res.json(enrichPass(pass, await getRefs()));
 }));
 
-// ─── CREATOR/MANAGER/ADMIN: REVISE A PENDING OR DRAFT PASS ───────────────────
-// Before it's decided, a pass can still be corrected — items, destination,
-// outward type, dates, purpose. Only while status is 'pending' or 'draft';
-// once approved (or rejected) the pass is locked. The pass number never
+// ─── CREATOR/MANAGER/ADMIN: REVISE A PENDING, DRAFT OR APPROVED PASS ─────────
+// Before the items physically leave, a pass can still be corrected — items,
+// destination, outward type, dates, purpose. Allowed while status is
+// 'pending', 'draft', or 'approved' (as long as the gate hasn't marked the
+// items out or LOCKED the pass — see /gate-lock below). The pass number never
 // changes on revision — it is the printed/quoted identifier.
 // A draft is private, so only its own creator (or admin) may touch it. A
 // pending pass may also be edited by: the staff member who created it (fixing
 // their own mistake before anyone acts on it), or the branch manager/approver
 // (same authority rule as approval — source branch only, and a routed pass
-// only its chosen approver, unless they're the creator).
+// only its chosen approver, unless they're the creator). An APPROVED pass is
+// the approver's responsibility, so only a manager/supermanager with approval
+// authority (or admin) may edit it — not the staff creator.
 router.patch('/:id/revise', requireRole('manager', 'supermanager', 'admin', 'staff'), asyncHandler(async (req, res) => {
   const pass = await dbc('gatePasses').findOne({ id: req.params.id }, NO_ID);
   if (!pass) return res.status(404).json({ error: 'Gate pass not found' });
-  if (!['pending', 'draft'].includes(pass.status))
-    return res.status(400).json({ error: 'Only pending or draft passes can be edited; this one is already ' + pass.status });
+  if (!['pending', 'draft', 'approved'].includes(pass.status))
+    return res.status(400).json({ error: 'Only pending, draft or approved passes can be edited; this one is already ' + pass.status });
   const isCreator = req.user.id === pass.createdBy;
   if (pass.status === 'draft') {
     if (!hasRole(req.user, 'admin') && !isCreator)
       return res.status(403).json({ error: 'Only the person who created this draft can edit it' });
+  } else if (pass.status === 'approved') {
+    // The window closes the moment the items leave the gate, and Time Office
+    // can close it earlier by locking the pass.
+    if (pass.type !== 'outward' || pass.outwardLog)
+      return res.status(400).json({ error: 'The items have already left the gate — this pass can no longer be edited' });
+    if (pass.gateLock?.locked)
+      return res.status(403).json({ error: 'Time Office has locked this pass — only they can unlock it for changes' });
+    if (!hasRole(req.user, 'admin')) {
+      if (!hasRole(req.user, 'manager', 'supermanager'))
+        return res.status(403).json({ error: 'Only a manager/supermanager can edit an approved pass' });
+      if (pass.sourceBranch !== req.user.branch)
+        return res.status(403).json({ error: 'Only the source branch can edit this pass' });
+      if (pass.approverId && pass.approverId !== req.user.id && await approverStillValid(pass))
+        return res.status(403).json({ error: 'This pass is routed to a specific approver' });
+    }
   } else if (!hasRole(req.user, 'admin') && !isCreator) {
     // Anyone other than the creator must be an approver of the source branch —
     // a plain staff member has no business editing someone else's request.
@@ -480,6 +498,51 @@ router.patch('/:id/revise', requireRole('manager', 'supermanager', 'admin', 'sta
 
   await dbc('gatePasses').replaceOne({ id: pass.id }, pass);
   await logAudit('REVISE_PASS', req.user.id, pass.id, { passNumber: pass.passNumber });
+  res.json(enrichPass(pass, await getRefs()));
+}));
+
+// ─── TIME OFFICE: LOCK / UNLOCK AN APPROVED PASS ─────────────────────────────
+// While an approved pass waits at the gate, its manager can still correct it
+// (see /revise above). The gate controls that window: LOCK freezes the pass so
+// the manager can't edit; UNLOCK sends it back to the manager for changes.
+// Only Time Office of the source branch (or admin) can do either — a manager
+// can never unlock a pass the gate has locked. The whole thing is moot once
+// the items physically leave (outwardLog), which locks the pass for good.
+router.patch('/:id/gate-lock', requireRole('time_office', 'admin'), asyncHandler(async (req, res) => {
+  const pass = await dbc('gatePasses').findOne({ id: req.params.id }, NO_ID);
+  if (!pass) return res.status(404).json({ error: 'Gate pass not found' });
+
+  // Authorization first, so state details never leak to the wrong gate
+  if (!hasRole(req.user, 'admin') && pass.sourceBranch !== req.user.branch)
+    return res.status(403).json({ error: 'Only the source branch gate can lock or unlock this pass' });
+
+  const { action, remarks } = req.body;
+  if (!['lock', 'unlock'].includes(action))
+    return res.status(400).json({ error: 'action must be lock or unlock' });
+  if (pass.type !== 'outward' || pass.status !== 'approved' || pass.outwardLog)
+    return res.status(400).json({ error: 'Only approved passes still waiting at the gate can be locked or unlocked' });
+
+  const now = new Date().toISOString();
+  if (action === 'lock') {
+    if (pass.gateLock?.locked)
+      return res.status(400).json({ error: 'This pass is already locked' });
+    pass.gateLock = { locked: true, lockedBy: req.user.id, lockedAt: now, remarks: remarks?.trim() || '' };
+  } else {
+    if (!pass.gateLock?.locked)
+      return res.status(400).json({ error: 'This pass is not locked' });
+    // Keep who locked it and when — the unlock remark is the send-back note
+    // the manager reads to know what to fix.
+    pass.gateLock = {
+      ...pass.gateLock,
+      locked: false,
+      unlockedBy: req.user.id,
+      unlockedAt: now,
+      remarks: remarks?.trim() || '',
+    };
+  }
+
+  await dbc('gatePasses').replaceOne({ id: pass.id }, pass);
+  await logAudit(action === 'lock' ? 'LOCK_PASS' : 'UNLOCK_PASS', req.user.id, pass.id, { passNumber: pass.passNumber });
   res.json(enrichPass(pass, await getRefs()));
 }));
 
@@ -931,6 +994,15 @@ router.patch('/:id/log-inward', requireRole('time_office', 'admin'), asyncHandle
   return res.status(400).json({ error: 'Cannot log inward for this pass type/status' });
 }));
 
+// Total quantity not yet returned or written off across the pass. Lateness
+// keys off this as well as status: once every item is accounted for, the pass
+// is done in reality — whatever its stored status says (legacy/backfilled rows
+// can lag) — and must never keep showing in the late alerts.
+function outstandingQty(pass) {
+  return (pass.items || []).reduce((s, li) =>
+    s + Math.max(0, li.quantity - (li.returnedQuantity || 0) - (li.closedQuantity || 0)), 0);
+}
+
 // ─── STATS ────────────────────────────────────────────────────────────────────
 router.get('/meta/stats', asyncHandler(async (req, res) => {
   const now = new Date();
@@ -943,10 +1015,13 @@ router.get('/meta/stats', asyncHandler(async (req, res) => {
   const atMyDest   = p => hasRole(req.user, 'admin') || p.destinationBranch === req.user.branch;
 
   // Overdue = my branch's returnable items that should have been back by now
+  // and are GENUINELY still out — a completed/closed pass (or one with nothing
+  // outstanding) never alerts as late.
   const overdue = passes.filter(p =>
     p.returnable && p.type === 'outward' &&
     ['in_transit', 'partial_return'].includes(p.status) &&
     p.expectedReturnDate && new Date(p.expectedReturnDate) < now &&
+    outstandingQty(p) > 0 &&
     atMySource(p)
   );
 
@@ -1050,16 +1125,32 @@ function enrichPass(pass, refs) {
   const transferDept       = d(pass.receivedLog?.departmentId);
   const returnRequestUser  = u(pass.returnRequest?.requestedBy);
   const returnOutwardUser  = u(pass.returnOutwardLog?.loggedBy);
+  const gateLockedUser     = u(pass.gateLock?.lockedBy);
+  const gateUnlockedUser   = u(pass.gateLock?.unlockedBy);
   const sourceBranchObj = b(pass.sourceBranch);
   const destBranchObj   = b(pass.destinationBranch);
   const deptObj         = d(pass.departmentId || createdByUser?.departmentId);
 
   const now = new Date();
+  // Late only while something is GENUINELY still out: completed/closed passes
+  // are excluded by status, and the outstanding check covers rows whose stored
+  // status lags behind fully-accounted items (legacy/backfilled data).
   const isOverdue = pass.returnable &&
     pass.type === 'outward' &&
     ['in_transit', 'partial_return'].includes(pass.status) &&
     pass.expectedReturnDate &&
-    new Date(pass.expectedReturnDate) < now;
+    new Date(pass.expectedReturnDate) < now &&
+    outstandingQty(pass) > 0;
+
+  // Edited AFTER it was approved — such a pass bubbles to the top of the gate
+  // queue with an "Edited" chip so Time Office sees the corrected version.
+  const revisedAfterApproval = !!(pass.editedAt && pass.approvedAt &&
+    new Date(pass.editedAt) > new Date(pass.approvedAt));
+  // Unlocked (sent back) by the gate and not corrected since — the manager's
+  // to-do flag; it clears itself the moment they save an edit.
+  const sentBack = !!(pass.gateLock && !pass.gateLock.locked && pass.gateLock.unlockedAt &&
+    pass.status === 'approved' && !pass.outwardLog &&
+    (!pass.editedAt || new Date(pass.editedAt) < new Date(pass.gateLock.unlockedAt)));
 
   return {
     ...pass,
@@ -1084,6 +1175,11 @@ function enrichPass(pass, refs) {
       ...pass.returnOutwardLog,
       loggedByUser: returnOutwardUser ? { id: returnOutwardUser.id, name: returnOutwardUser.name } : null,
     } : null,
+    gateLock: pass.gateLock ? {
+      ...pass.gateLock,
+      lockedByUser:   gateLockedUser   ? { id: gateLockedUser.id,   name: gateLockedUser.name   } : null,
+      unlockedByUser: gateUnlockedUser ? { id: gateUnlockedUser.id, name: gateUnlockedUser.name } : null,
+    } : null,
     closures: Array.isArray(pass.closures)
       ? pass.closures.map(c => { const cu = u(c.closedBy); return { ...c, closedByUser: cu ? { id: cu.id, name: cu.name } : null }; })
       : [],
@@ -1095,6 +1191,8 @@ function enrichPass(pass, refs) {
     departmentName: deptObj?.name || null,
     displayStatus: displayStatusOf(pass),
     isOverdue,
+    revisedAfterApproval,
+    sentBack,
   };
 }
 

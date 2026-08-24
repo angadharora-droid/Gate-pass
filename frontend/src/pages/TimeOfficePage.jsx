@@ -7,6 +7,7 @@ import { StatusBadge, TypeBadge, ReturnableBadge } from '../components/Badges';
 import {
   X, AlertTriangle, Info, ArrowUpRight, ArrowDownLeft, RotateCcw,
   Clock, TrendingUp, Package, CheckCircle2, PackagePlus, Truck,
+  Lock, LockOpen, Pencil,
 } from 'lucide-react';
 
 function fmt(d) {
@@ -563,6 +564,64 @@ export function LogInwardModal({ pass, onClose, onDone }) {
   );
 }
 
+/* ── Gate Unlock (send back to manager) Modal ───────────────────────────────── */
+// Unlocking a locked pass hands it back to the manager for corrections. The
+// optional note travels with the pass so the manager knows WHAT to fix.
+export function GateUnlockModal({ pass, onClose, onDone }) {
+  const [remarks, setRemarks] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const handleConfirm = async () => {
+    setError(''); setLoading(true);
+    try {
+      await api.gateLock(pass.id, 'unlock', remarks);
+      onDone();
+    } catch (e) { setError(e.message); } finally { setLoading(false); }
+  };
+
+  return (
+    <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="modal">
+        <div className="modal-header">
+          <div>
+            <div className="modal-title">Unlock — Send Back to Manager</div>
+            <div style={{ fontSize: 12, color: 'var(--text3)', marginTop: 3 }}>{pass.passNumber}</div>
+          </div>
+          <button className="modal-close" onClick={onClose}><X size={16} /></button>
+        </div>
+        <div className="modal-body">
+          <div className="alert alert-info" style={{ marginBottom: 20 }}>
+            <Info size={15} />
+            Unlocking lets <strong>{pass.approvedByUser?.name || 'the manager'}</strong> edit this
+            pass again. When they save their changes, the edited pass moves to the <strong>top of
+            your queue</strong>.
+          </div>
+          <div className="form-group" style={{ marginBottom: 0 }}>
+            <label className="form-label">What needs fixing? (optional)</label>
+            <textarea className="form-textarea" rows={2} value={remarks}
+              onChange={e => setRemarks(e.target.value)}
+              placeholder="e.g. Quantity doesn’t match what’s at the gate…" autoFocus />
+          </div>
+          {error && (
+            <div className="alert alert-danger" style={{ marginTop: 12 }}>
+              <AlertTriangle size={15} /> {error}
+            </div>
+          )}
+        </div>
+        <div className="modal-footer">
+          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+          <button className="btn btn-primary" onClick={handleConfirm} disabled={loading}>
+            {loading
+              ? <><div className="spinner" style={{ width: 15, height: 15 }} /> Saving…</>
+              : <><LockOpen size={14} /> Unlock — Send Back</>}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ── Pass Card ──────────────────────────────────────────────────────────────── */
 function PassCard({ pass, actionLabel, ActionIcon, onAction, isDone, logInfo }) {
   return (
@@ -663,10 +722,14 @@ export default function TimeOfficePage() {
   // Outward register = everything that leaves (or will leave) THROUGH MY GATE:
   // dispatches from my branch + send-backs leaving my gate when my branch is a
   // transfer's destination.
+  // Newest-first, EXCEPT a pass the manager re-edited after approval: that one
+  // jumps to the top so the gate sees the corrected version before acting.
+  const editRank = p => (p.status === 'approved' && !p.outwardLog && p.revisedAfterApproval)
+    ? new Date(p.editedAt).getTime() : 0;
   const outwardRegister = passes.filter(p =>
     (p.type === 'outward' && atMySource(p)) ||
     (isTransfer(p) && atMyDest(p) && p.returnRequest)
-  );
+  ).sort((a, b) => (editRank(b) - editRank(a)) || (new Date(b.createdAt) - new Date(a.createdAt)));
   // Inward register = everything that arrives AT MY GATE: direct inward
   // entries, branch transfers coming in, and returns coming back. A returnable
   // pass shows in both registers — it leaves once and comes back once.
@@ -682,6 +745,15 @@ export default function TimeOfficePage() {
   const returnLogQueue = passes.filter(canLogReturnPass);
 
   const handleDone = () => { setModal(null); load(); };
+
+  // Lock is a one-click freeze; unlocking (send back to manager) goes through
+  // GateUnlockModal so the gate can say what needs fixing.
+  const [lockError, setLockError] = useState('');
+  const handleLock = async (p) => {
+    setLockError('');
+    try { await api.gateLock(p.id, 'lock'); load(); }
+    catch (e) { setLockError(e.message); }
+  };
 
   const searchTerm = search.trim().toLowerCase();
   const searchMatches = searchActive && searchTerm
@@ -790,6 +862,12 @@ export default function TimeOfficePage() {
         )}
       </div>
 
+      {lockError && (
+        <div className="alert alert-danger" style={{ marginBottom: 14 }}>
+          <AlertTriangle size={15} /> {lockError}
+        </div>
+      )}
+
       {/* Tabs */}
       <div className="tab-bar" role="tablist">
         {tabs.map(t => (
@@ -854,12 +932,37 @@ export default function TimeOfficePage() {
                               <ReturnableBadge returnable={p.returnable} />
                             </div>
                           </td>
-                          <td><StatusBadge pass={p} /></td>
+                          <td>
+                            <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', alignItems: 'center' }}>
+                              <StatusBadge pass={p} />
+                              {canMarkOutPass(p) && p.gateLock?.locked && (
+                                <span className="tag tag-locked"><Lock size={10} /> Locked</span>
+                              )}
+                              {p.sentBack ? (
+                                <span className="tag tag-sentback"><LockOpen size={10} /> With manager</span>
+                              ) : canMarkOutPass(p) && p.revisedAfterApproval ? (
+                                <span className="tag tag-edited"><Pencil size={10} /> Edited</span>
+                              ) : null}
+                            </div>
+                          </td>
                           <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
                             {canMarkOutPass(p) ? (
-                              <button className="btn btn-primary btn-sm" onClick={() => setModal({ type: 'outward', pass: p })}>
-                                <ArrowUpRight size={13} /> Mark Items Out
-                              </button>
+                              <div style={{ display: 'inline-flex', gap: 6 }}>
+                                {p.gateLock?.locked ? (
+                                  <button className="btn btn-ghost btn-sm" title="Unlock — send back to the manager for changes"
+                                    onClick={() => setModal({ type: 'unlock', pass: p })}>
+                                    <LockOpen size={13} /> Unlock
+                                  </button>
+                                ) : (
+                                  <button className="btn btn-ghost btn-sm" title="Lock — the manager can no longer edit this pass"
+                                    onClick={() => handleLock(p)}>
+                                    <Lock size={13} /> Lock
+                                  </button>
+                                )}
+                                <button className="btn btn-primary btn-sm" onClick={() => setModal({ type: 'outward', pass: p })}>
+                                  <ArrowUpRight size={13} /> Mark Items Out
+                                </button>
+                              </div>
                             ) : canReturnOutPass(p) ? (
                               <button className="btn btn-primary btn-sm" onClick={() => setModal({ type: 'returnOut', pass: p })}>
                                 <ArrowUpRight size={13} /> Mark Return Out
@@ -989,6 +1092,9 @@ export default function TimeOfficePage() {
       )}
       {modal?.type === 'returnOut' && (
         <ReturnOutModal pass={modal.pass} onClose={() => setModal(null)} onDone={handleDone} />
+      )}
+      {modal?.type === 'unlock' && (
+        <GateUnlockModal pass={modal.pass} onClose={() => setModal(null)} onDone={handleDone} />
       )}
     </div>
   );

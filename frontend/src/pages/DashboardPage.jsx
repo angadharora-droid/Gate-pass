@@ -17,6 +17,7 @@ import {
   Truck,
   Stamp,
   ArrowUpRight,
+  LockOpen,
 } from 'lucide-react';
 
 // "1 item is" / "3 items are" — the old copy said "item(s) are", which reads
@@ -45,6 +46,7 @@ export default function DashboardPage() {
   const [stats, setStats] = useState(null);
   const [recentPasses, setRecentPasses] = useState([]);
   const [overduePasses, setOverduePasses] = useState([]);
+  const [sentBackPasses, setSentBackPasses] = useState([]);
   const [loading, setLoading] = useState(true);
   const { user } = useAuth();
 
@@ -54,6 +56,7 @@ export default function DashboardPage() {
         setStats(s);
         setRecentPasses(passes.slice(0, 6));
         setOverduePasses(passes.filter(p => p.isOverdue));
+        setSentBackPasses(passes.filter(p => p.sentBack));
       })
       .finally(() => setLoading(false));
   }, []);
@@ -69,7 +72,14 @@ export default function DashboardPage() {
   const isApprover = hasRole(user, 'admin', 'supermanager', 'manager');
   // Lateness is the ranking that matters — surface the worst few by name
   const worstOverdue = [...overduePasses].sort((a, b) => daysLate(b) - daysLate(a)).slice(0, 4);
+  // Sent back by the gate for a fix — only the person who can actually edit it
+  // (approval authority for that pass) gets nagged
+  const mySentBack = sentBackPasses.filter(p =>
+    hasRole(user, 'admin') ||
+    (hasRole(user, 'manager', 'supermanager') && p.sourceBranch === user?.branch &&
+      (!p.approverId || p.approverId === user?.id)));
   const anyAlert =
+    mySentBack.length > 0 ||
     (isApprover && stats?.myPendingApprovals > 0) ||
     stats?.itemsWithMe > 0 ||
     (isGate && (stats?.awaitingOutward > 0 || stats?.awaitingReturnOut > 0)) ||
@@ -120,6 +130,33 @@ export default function DashboardPage() {
           >
             <strong>{plural(overduePasses.length, 'item is', 'items are')} late coming back.</strong>{' '}
             Please follow up.
+          </AlertBanner>
+        )}
+
+        {/* The gate unlocked these and is waiting on a fix — nothing leaves
+            until the manager edits and saves, so nag right below overdue. */}
+        {mySentBack.length > 0 && (
+          <AlertBanner
+            tone="warning"
+            Icon={LockOpen}
+            detail={
+              <div className="alert-detail" style={{ width: '100%' }}>
+                {mySentBack.slice(0, 4).map(p => (
+                  <Link key={p.id} to={`/passes/${p.id}/edit`} className="alert-detail-chip">
+                    <span className="mono">{p.passNumber}</span>
+                    {p.gateLock?.remarks && <span>{p.gateLock.remarks}</span>}
+                  </Link>
+                ))}
+                {mySentBack.length > 4 && (
+                  <span style={{ fontSize: 'var(--fs-xs)', alignSelf: 'center', opacity: 0.8 }}>
+                    +{mySentBack.length - 4} more
+                  </span>
+                )}
+              </div>
+            }
+          >
+            <strong>Time Office sent {mySentBack.length === 1 ? 'a pass' : `${mySentBack.length} passes`} back to you.</strong>{' '}
+            Fix and save — the corrected pass returns to the top of the gate&rsquo;s queue.
           </AlertBanner>
         )}
 

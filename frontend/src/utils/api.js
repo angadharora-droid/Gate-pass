@@ -55,8 +55,11 @@ export const api = {
   // Direct inward entry logged by Security at the gate (no approval flow)
   createInward: (data) => request('/gate-passes/inward', { method: 'POST', body: JSON.stringify(data) }),
   approvePass: (id, action) => request(`/gate-passes/${id}/status`, { method: 'PATCH', body: JSON.stringify({ action }) }),
-  // Creator/manager/admin edit of a still-pending or draft pass (before approval)
+  // Creator/manager/admin edit of a pending/draft pass, or a manager edit of an
+  // approved pass still waiting at the gate (until Time Office locks it)
   revisePass: (id, data) => request(`/gate-passes/${id}/revise`, { method: 'PATCH', body: JSON.stringify(data) }),
+  // Time Office lock (freeze manager edits) / unlock (send back to the manager)
+  gateLock: (id, action, remarks = '') => request(`/gate-passes/${id}/gate-lock`, { method: 'PATCH', body: JSON.stringify({ action, remarks }) }),
   // Finalizes a draft — self-approves it, same as a normal manager/admin submit
   submitDraft: (id) => request(`/gate-passes/${id}/submit-draft`, { method: 'PATCH' }),
   logOutward: (id, payload) => request(`/gate-passes/${id}/log-outward`, { method: 'PATCH', body: JSON.stringify(payload) }),

@@ -4,12 +4,12 @@ import { api } from '../utils/api';
 import { useAuth } from '../context/AuthContext';
 import { hasRole } from '../utils/roles';
 import { StatusBadge, MovementBadge, ReturnableBadge, DirectionBadge, STATUS_LABELS } from '../components/Badges';
-import { LogOutwardModal, LogInwardModal, ReceiveTransferModal, ReturnOutModal, CLOSE_REASONS } from './TimeOfficePage';
+import { LogOutwardModal, LogInwardModal, ReceiveTransferModal, ReturnOutModal, GateUnlockModal, CLOSE_REASONS } from './TimeOfficePage';
 import {
   ArrowLeft, Check, X, RotateCcw, Printer, Pencil,
   AlertTriangle, CheckCircle2, Info,
   FileText, ArrowUpRight, Truck, ArrowDownLeft, PackageCheck, PackageX,
-  Zap, Clock,
+  Zap, Clock, Lock, LockOpen,
 } from 'lucide-react';
 
 function fmt(dateStr) {
@@ -126,6 +126,23 @@ export default function GatePassDetailPage() {
   const isTransferAway = pass.type === 'outward' && pass.direction === 'internal' &&
     ['in_transit', 'partial_return'].includes(pass.status);
   const canLogDeparture = canLog && atSource && pass.type === 'outward' && pass.status === 'approved' && !pass.outwardLog;
+  // While an approved pass waits at the gate, the approver can still edit it —
+  // until Time Office locks it (or the items actually leave). Mirrors /revise.
+  const awaitingGate = pass.type === 'outward' && pass.status === 'approved' && !pass.outwardLog;
+  const canEditApproved = awaitingGate && !pass.gateLock?.locked && canApprove(pass);
+  // The gate's lock/unlock control over that edit window
+  const canGateLock = canLog && atSource && awaitingGate;
+  const handleLock = async () => {
+    setError('');
+    setActionLoading(true);
+    try {
+      setPass(await api.gateLock(id, 'lock'));
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setActionLoading(false);
+    }
+  };
   // Inward entries are logged directly at the gate (born completed) — the only
   // arrival left to log is the return leg of a returnable outward pass. Branch
   // transfers must complete the receive → send-back → dispatch cycle first.
@@ -201,6 +218,22 @@ export default function GatePassDetailPage() {
               <Pencil size={14} /> Edit
             </Link>
           )}
+          {canEditApproved && (
+            <Link to={`/passes/${pass.id}/edit`} className="btn btn-ghost">
+              <Pencil size={14} /> Edit
+            </Link>
+          )}
+          {canGateLock && (pass.gateLock?.locked ? (
+            <button className="btn btn-ghost" onClick={() => setLogModal('unlock')} disabled={actionLoading}
+              title="Unlock — send back to the manager for changes">
+              <LockOpen size={14} /> Unlock
+            </button>
+          ) : (
+            <button className="btn btn-ghost" onClick={handleLock} disabled={actionLoading}
+              title="Lock — the manager can no longer edit this pass">
+              <Lock size={14} /> Lock
+            </button>
+          ))}
           {pass.status === 'pending' && canApprove(pass) && (
             <>
               <button className="btn btn-success" onClick={() => handleAction('approve')} disabled={actionLoading}>
@@ -247,6 +280,29 @@ export default function GatePassDetailPage() {
       {error && (
         <div className="alert alert-danger" style={{ marginBottom: 20 }}>
           <AlertTriangle size={15} /> {error}
+        </div>
+      )}
+
+      {awaitingGate && pass.gateLock?.locked && (
+        <div className="alert alert-info" style={{ marginBottom: 20 }}>
+          <Lock size={15} />
+          <span>
+            <strong>Locked by Time Office</strong>
+            {pass.gateLock.lockedByUser ? ` (${pass.gateLock.lockedByUser.name}, ${fmt(pass.gateLock.lockedAt)})` : ''} —
+            the pass can no longer be edited. Only Time Office can unlock it and send it back for changes.
+          </span>
+        </div>
+      )}
+
+      {pass.sentBack && (
+        <div className="alert alert-warning" style={{ marginBottom: 20 }}>
+          <LockOpen size={15} />
+          <span>
+            <strong>Sent back by Time Office</strong>
+            {pass.gateLock?.unlockedByUser ? ` (${pass.gateLock.unlockedByUser.name}, ${fmt(pass.gateLock.unlockedAt)})` : ''}
+            {pass.gateLock?.remarks ? <> — “{pass.gateLock.remarks}”</> : null}. Edit the pass and save —
+            the corrected version moves to the top of the gate&rsquo;s queue.
+          </span>
         </div>
       )}
 
@@ -378,7 +434,7 @@ export default function GatePassDetailPage() {
                 </div>
                 {pass.editedByUser && (
                   <div className="detail-item">
-                    <div className="dl">Changed Before Approval</div>
+                    <div className="dl">{pass.revisedAfterApproval ? 'Changed After Approval' : 'Changed Before Approval'}</div>
                     <div className="dv">
                       {pass.editedByUser.name}
                       <span style={{ color: 'var(--text3)', fontFamily: 'var(--font-mono)', fontSize: 12 }}> · {fmt(pass.editedAt)}</span>
@@ -552,6 +608,9 @@ export default function GatePassDetailPage() {
       )}
       {logModal === 'returnOut' && (
         <ReturnOutModal pass={pass} onClose={() => setLogModal(null)} onDone={handleLogDone} />
+      )}
+      {logModal === 'unlock' && (
+        <GateUnlockModal pass={pass} onClose={() => setLogModal(null)} onDone={handleLogDone} />
       )}
       {writeOffModalOpen && (
         <WriteOffItemsModal pass={pass} onClose={() => setWriteOffModalOpen(false)} onDone={() => { setWriteOffModalOpen(false); load(); }} />
