@@ -180,12 +180,14 @@ const closed = await api('PATCH', `/gate-passes/${passId}/log-inward`, {
   token: timeOffice,
   body: { guardName: 'Ajay', returns: [], closures: [{ index: 0, quantity: 1, reason: 'Broken beyond repair' }] },
 });
-check('closure of last item → closed', closed.status === 200 && closed.json?.status === 'closed', closed.json?.status);
+check('closure of last item → completed (closed merged into completed)',
+  closed.status === 200 && closed.json?.status === 'completed' && closed.json?.closures?.length === 1,
+  closed.json?.status);
 check('earlyReturn flagged (before 2099)', closed.json?.earlyReturn === true);
 
 // Re-read from DB to confirm the mutation was persisted, not just echoed
 const reread = await api('GET', `/gate-passes/${passId}`, { token: admin });
-check('mutations persisted to MongoDB', reread.json?.status === 'closed' && reread.json?.items?.[0]?.returnedQuantity === 3 && reread.json?.items?.[0]?.closedQuantity === 1);
+check('mutations persisted to MongoDB', reread.json?.status === 'completed' && reread.json?.items?.[0]?.returnedQuantity === 3 && reread.json?.items?.[0]?.closedQuantity === 1);
 
 // ─── Direct inward by Security ───────────────────────────────────────────────
 const inwardDenied = await api('POST', '/gate-passes/inward', { token: staff, body: {} });
@@ -224,6 +226,14 @@ check('inward accepts multiple documents', multiDoc.status === 201 &&
   multiDoc.json?.purpose?.includes('INV-1001') && multiDoc.json?.purpose?.includes('DC-22'),
   JSON.stringify(multiDoc.json));
 
+// Numbering is ONE shared sequence across every pass type: the outward pass
+// above took 0001, so these two inward entries take 0002 and 0003 — a series
+// never restarts its own count.
+const yr = new Date().getFullYear();
+check('pass numbering shares one global sequence across types',
+  inward.json?.passNumber === `GPE-INR-${yr}-0002` && multiDoc.json?.passNumber === `GPE-INR-${yr}-0003`,
+  `${inward.json?.passNumber} / ${multiDoc.json?.passNumber}`);
+
 const badDoc = await api('POST', '/gate-passes/inward', {
   token: timeOffice,
   body: {
@@ -237,7 +247,7 @@ check('document number without a type rejected', badDoc.status === 400);
 
 // ─── Stats & audit ────────────────────────────────────────────────────────────
 const stats = await api('GET', '/gate-passes/meta/stats', { token: admin });
-check('stats totals add up', stats.json?.total === 3 && stats.json?.closed === 1, JSON.stringify(stats.json));
+check('stats totals add up', stats.json?.total === 3 && stats.json?.completed === 3, JSON.stringify(stats.json));
 
 // ─── Late alert clears the moment the pass is completed ──────────────────────
 const latePass = await api('POST', '/gate-passes', {

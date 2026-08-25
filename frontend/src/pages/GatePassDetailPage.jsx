@@ -763,6 +763,11 @@ function WriteOffItemsModal({ pass, onClose, onDone }) {
 /* ── Lifecycle Timeline ─────────────────────────────── */
 function LifecycleTimeline({ pass }) {
   const isOverdue = pass.isOverdue;
+  // 'closed' was merged into 'completed' ('closed' still covers legacy rows).
+  // A finished pass with write-offs tells that story here via the write-off
+  // quantities, not via a separate status.
+  const isDone = ['completed', 'closed'].includes(pass.status);
+  const anyWrittenOff = (pass.items || []).some(li => (li.closedQuantity || 0) > 0);
 
   // Direct inward: Security logged it at the gate, done. No request/approval trail.
   if (pass.type === 'inward') {
@@ -892,7 +897,7 @@ function LifecycleTimeline({ pass }) {
     }] : []),
     ...(pass.type === 'outward' && pass.returnable ? [{
       key: 'inward_log',
-      label: pass.status === 'closed'
+      label: isDone && anyWrittenOff
         ? 'Items Settled'
         : pass.status === 'partial_return'
           // Partial accounting can come from a physical return at the source
@@ -901,26 +906,26 @@ function LifecycleTimeline({ pass }) {
           : 'Items Came Back',
       sub: pass.inwardLog
         ? `${pass.inwardLog.loggedByUser?.name || '—'} · Host: ${pass.inwardLog.guardName || '—'}${pass.inwardLog.remarks ? ' · ' + pass.inwardLog.remarks : ''}`
-        : pass.status === 'closed'
+        : isDone
           ? 'All remaining items were written off with a reason'
           : pass.status === 'partial_return'
             ? 'Some items were written off at the destination; the rest are still due back'
             : (isOverdue ? 'Late — not back yet' : 'Waiting for items to come back'),
       time: pass.inwardLog?.loggedAt,
-      done: !!pass.inwardLog || pass.status === 'closed',
+      done: !!pass.inwardLog || isDone,
       Icon: ArrowDownLeft,
       color: isOverdue ? 'var(--red)' : 'var(--green)',
     }] : []),
     {
       key: 'completed',
-      label: pass.status === 'closed'
-        ? 'Closed — Some Items Written Off'
+      label: isDone && anyWrittenOff
+        ? 'Completed — Some Items Written Off'
         : pass.status === 'partial_return' ? 'Waiting for Remaining Items' : 'Completed',
       sub: '',
       time: null,
-      done: ['completed', 'closed'].includes(pass.status),
+      done: isDone,
       Icon: PackageCheck,
-      color: pass.status === 'closed' ? 'var(--orange)' : 'var(--green)',
+      color: isDone && anyWrittenOff ? 'var(--orange)' : 'var(--green)',
     },
   ].filter(Boolean);
 

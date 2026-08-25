@@ -54,18 +54,20 @@ const LIFECYCLE_BUCKETS = [
   { key: 'approved', label: 'Ready to Go Out',  filter: 'approved', stages: ['approved'] },
   { key: 'open',     label: 'In Progress',      filter: 'out_any',
     stages: ['items_out', 'in_transit', 'at_destination', 'return_approved', 'returning', 'partial_return'] },
-  { key: 'finished', label: 'Done',             filter: 'finished', stages: ['completed', 'closed'] },
+  // 'closed' was merged into 'completed' — legacy rows arrive normalized as
+  // displayStatus 'completed', so one stage covers both
+  { key: 'finished', label: 'Completed',        filter: 'completed', stages: ['completed'] },
   { key: 'rejected', label: 'Rejected',         filter: 'rejected', stages: ['rejected'] },
 ];
 const bucketOf = (stage) => LIFECYCLE_BUCKETS.find(b => b.stages.includes(stage));
 
-// One status facet, three kinds of keys: umbrella buckets ('out_any',
-// 'finished'), the cross-cutting 'overdue' flag, and exact lifecycle stages.
+// One status facet, three kinds of keys: the 'out_any' umbrella bucket, the
+// cross-cutting 'overdue' flag, and exact lifecycle stages (displayStatus
+// already folds legacy 'closed' rows into 'completed').
 function matchesStatus(p, status) {
   if (!status) return true;
   if (status === 'overdue') return !!p.isOverdue;
   if (status === 'out_any') return ['in_transit', 'partial_return'].includes(p.status);
-  if (status === 'finished') return ['completed', 'closed'].includes(p.status);
   return (p.displayStatus || p.status) === status;
 }
 
@@ -460,11 +462,7 @@ export default function ReportsPage() {
                 <option value="returning">Returning</option>
                 <option value="partial_return">Partly Back</option>
               </optgroup>
-              <option value="finished">Done — Completed + Closed</option>
-              <optgroup label="Done — exact">
-                <option value="completed">Completed</option>
-                <option value="closed">Closed</option>
-              </optgroup>
+              <option value="completed">Completed</option>
               <option value="rejected">Rejected</option>
               <option value="overdue">Late (overdue)</option>
             </select>

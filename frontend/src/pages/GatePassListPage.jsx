@@ -13,8 +13,7 @@ const STATUS_TABS = [
   { key: 'approved',       label: 'Approved' },
   { key: 'in_transit',     label: 'Out / In Transit' },
   { key: 'partial_return', label: 'Partly Back' },
-  { key: 'completed',      label: 'Completed' },
-  { key: 'closed',         label: 'Closed' },
+  { key: 'completed',      label: 'Completed' },   // server matches legacy 'closed' rows too
   { key: 'rejected',       label: 'Rejected' },
 ];
 
