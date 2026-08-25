@@ -4,6 +4,8 @@ import { api } from '../utils/api';
 
 // ERP-style material items grid shared by New Inward and New Gate Pass (outward).
 // Columns: Seq · Description · Code · Qty · Unit · Rate · Amount (auto) · Serial/Batch · Remarks
+// Inward additionally passes gst/onGstChange: one GST % (off the arrival
+// document) applied to the WHOLE total in the footer, not per item.
 // The Description cell live-searches the shared items master (seeded from the
 // IDS item list); picking a suggestion fills name + code + unit. Free-typed
 // names still work — the server adds them to the master automatically.
@@ -30,7 +32,7 @@ export const rowsToItems = (rows) =>
       serialNo: r.serialNo, remarks: r.remarks,
     }));
 
-export default function ItemsGridEditor({ rows, onChange, title = 'Items', headerExtra = null }) {
+export default function ItemsGridEditor({ rows, onChange, title = 'Items', headerExtra = null, gst = '', onGstChange = null }) {
   const updateRow = (idx, patch) => onChange(rows.map((r, i) => i === idx ? { ...r, ...patch } : r));
   const addRow    = () => onChange([...rows, emptyRow()]);
   const removeRow = (idx) => onChange(rows.filter((_, i) => i !== idx));
@@ -67,6 +69,12 @@ export default function ItemsGridEditor({ rows, onChange, title = 'Items', heade
 
   const total = rows.reduce((sum, r) => sum + (rowAmount(r) ?? 0), 0);
   const hasAnyRate = rows.some(r => rowAmount(r) != null);
+  // One GST % on the whole total (inward only — onGstChange is the switch)
+  const withGst = onGstChange != null;
+  const gstPct = (gst === '' || gst == null) ? null : Number(gst);
+  const gstAmount = (withGst && hasAnyRate && gstPct != null && !Number.isNaN(gstPct))
+    ? Math.round(total * gstPct) / 100
+    : null;
 
   return (
     <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
@@ -172,12 +180,36 @@ export default function ItemsGridEditor({ rows, onChange, title = 'Items', heade
           </tbody>
           <tfoot>
             <tr>
-              <td colSpan={6} style={{ textAlign: 'right', color: 'var(--text2)' }}>Total</td>
-              <td className="cell-amount" style={{ fontWeight: 700, color: 'var(--text)' }}>
+              <td colSpan={6} style={{ textAlign: 'right', color: 'var(--text2)' }}>{withGst ? 'Subtotal' : 'Total'}</td>
+              <td className="cell-amount" style={{ fontWeight: withGst ? 500 : 700, color: 'var(--text)' }}>
                 {hasAnyRate ? fmtMoney(total) : '—'}
               </td>
               <td colSpan={3} />
             </tr>
+            {withGst && (
+              <>
+                <tr>
+                  <td colSpan={6} style={{ textAlign: 'right', color: 'var(--text2)' }}>
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                      GST
+                      <input className="form-input cell-input" type="number" min="0" max="100" value={gst}
+                        onChange={e => onGstChange(e.target.value)} placeholder="0"
+                        style={{ width: 64, textAlign: 'right' }} />
+                      %
+                    </span>
+                  </td>
+                  <td className="cell-amount">{gstAmount != null ? fmtMoney(gstAmount) : '—'}</td>
+                  <td colSpan={3} />
+                </tr>
+                <tr>
+                  <td colSpan={6} style={{ textAlign: 'right', color: 'var(--text2)', fontWeight: 600 }}>Total incl. GST</td>
+                  <td className="cell-amount" style={{ fontWeight: 700, color: 'var(--text)' }}>
+                    {gstAmount != null ? fmtMoney(Math.round((total + gstAmount) * 100) / 100) : (hasAnyRate ? fmtMoney(total) : '—')}
+                  </td>
+                  <td colSpan={3} />
+                </tr>
+              </>
+            )}
           </tfoot>
         </table>
       </div>

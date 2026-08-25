@@ -251,7 +251,7 @@ router.post('/inward', requireRole('time_office', 'admin'), asyncHandler(async (
   const {
     branchId, departmentId, receiverId, inwardType,
     documentType, documentNo, documents, barcodeRef,
-    carriedBy, carrierMobile, sourceParty, remarks, items,
+    carriedBy, carrierMobile, sourceParty, remarks, items, gst,
   } = req.body;
 
   if (!inwardType || !INWARD_TYPES.some(t => t.id === inwardType))
@@ -308,6 +308,8 @@ router.post('/inward', requireRole('time_office', 'admin'), asyncHandler(async (
     if (li.rate != null && li.rate !== '' && Number(li.rate) < 0)
       return res.status(400).json({ error: `Rate cannot be negative for "${li.itemName}"` });
   }
+  if (gst != null && gst !== '' && !(Number(gst) >= 0 && Number(gst) <= 100))
+    return res.status(400).json({ error: 'GST % must be between 0 and 100' });
 
   const now = new Date().toISOString();
   const typeLabel = INWARD_TYPES.find(t => t.id === inwardType).label;
@@ -333,6 +335,9 @@ router.post('/inward', requireRole('time_office', 'admin'), asyncHandler(async (
     linkedPassId: null,
     earlyReturn: false,
     inwardType,
+    // One GST % (off the arrival document) applied to the whole items total —
+    // inward entries only; readers derive the GST amount from the items' sum
+    gst: (gst != null && gst !== '') ? Number(gst) : null,
     documents: docs,
     // Legacy mirror of the FIRST document, so pre-multi-document rows and any
     // reader still on documentType/documentNo keep working unchanged
