@@ -532,17 +532,36 @@ export default function GatePassDetailPage() {
                 );
               })}
             </div>
-            {pass.items?.some(li => li.amount != null) && (
-              <div style={{
-                display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--border)',
-              }}>
-                <span style={{ fontSize: 12, color: 'var(--text3)', fontWeight: 600 }}>Total Value</span>
-                <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: 14 }}>
-                  {fmtMoney(pass.items.reduce((s, li) => s + (li.amount || 0), 0))}
-                </span>
-              </div>
-            )}
+            {pass.items?.some(li => li.amount != null) && (() => {
+              const subtotal = pass.items.reduce((s, li) => s + (li.amount || 0), 0);
+              // GST is one % on the whole total, recorded on inward entries only
+              const gstAmt = pass.gst != null ? Math.round(subtotal * pass.gst) / 100 : null;
+              const rowStyle = { display: 'flex', justifyContent: 'space-between', alignItems: 'center' };
+              return (
+                <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--border)', display: 'grid', gap: 6 }}>
+                  <div style={rowStyle}>
+                    <span style={{ fontSize: 12, color: 'var(--text3)', fontWeight: 600 }}>{gstAmt != null ? 'Subtotal' : 'Total Value'}</span>
+                    <span style={{ fontFamily: 'var(--font-mono)', fontWeight: gstAmt != null ? 500 : 700, fontSize: gstAmt != null ? 12.5 : 14 }}>
+                      {fmtMoney(subtotal)}
+                    </span>
+                  </div>
+                  {gstAmt != null && (
+                    <>
+                      <div style={rowStyle}>
+                        <span style={{ fontSize: 12, color: 'var(--text3)', fontWeight: 600 }}>GST ({pass.gst}%)</span>
+                        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5 }}>{fmtMoney(gstAmt)}</span>
+                      </div>
+                      <div style={rowStyle}>
+                        <span style={{ fontSize: 12, color: 'var(--text3)', fontWeight: 600 }}>Total incl. GST</span>
+                        <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: 14 }}>
+                          {fmtMoney(Math.round((subtotal + gstAmt) * 100) / 100)}
+                        </span>
+                      </div>
+                    </>
+                  )}
+                </div>
+              );
+            })()}
           </div>
 
           {/* Quantity corrections made by the destination branch, for observability */}
@@ -1103,17 +1122,23 @@ function PrintGatePass({ pass }) {
                 </tr>
               );
             })}
-            {hasAmounts && (
-              <tr>
-                {/* Label spans through the Rate column so the value sits under Amount */}
-                <td colSpan={hasCodes ? 6 : 5} style={{ textAlign: 'right', fontWeight: 600 }}>Total</td>
-                <td style={{ fontWeight: 700 }}>
-                  {pass.items.reduce((s, li) => s + (li.amount || 0), 0).toLocaleString('en-IN')}
-                </td>
-                {hasSerials && <td />}
-                {isReturnableOutward && <td colSpan={hasClosed ? 3 : 2} />}
-              </tr>
-            )}
+            {hasAmounts && (() => {
+              const subtotal = pass.items.reduce((s, li) => s + (li.amount || 0), 0);
+              // GST is one % on the whole total, recorded on inward entries only
+              const gstAmt = pass.gst != null ? Math.round(subtotal * pass.gst) / 100 : null;
+              const totalRows = gstAmt != null
+                ? [['Subtotal', subtotal, false], [`GST (${pass.gst}%)`, gstAmt, false], ['Total incl. GST', Math.round((subtotal + gstAmt) * 100) / 100, true]]
+                : [['Total', subtotal, true]];
+              return totalRows.map(([label, value, bold], i) => (
+                <tr key={`total-${i}`}>
+                  {/* Label spans through the Rate column so the value sits under Amount */}
+                  <td colSpan={hasCodes ? 6 : 5} style={{ textAlign: 'right', fontWeight: 600 }}>{label}</td>
+                  <td style={{ fontWeight: bold ? 700 : 400 }}>{value.toLocaleString('en-IN')}</td>
+                  {hasSerials && <td />}
+                  {isReturnableOutward && <td colSpan={hasClosed ? 3 : 2} />}
+                </tr>
+              ));
+            })()}
           </tbody>
         </table>
       </div>

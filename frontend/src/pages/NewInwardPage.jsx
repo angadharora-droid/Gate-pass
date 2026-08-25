@@ -30,6 +30,8 @@ export default function NewInwardPage() {
     sourceParty: '', remarks: '',
   });
   const [rows, setRows] = useState([emptyRow()]);
+  // One GST % applied to the whole items total, off the arrival document
+  const [gst, setGst] = useState('');
   // Goods often arrive with several papers at once (invoice + challan +
   // courier slip…) — each row is one { type, number } document.
   const [documents, setDocuments] = useState([{ type: 'None', number: '' }]);
@@ -108,7 +110,7 @@ export default function NewInwardPage() {
 
     setLoading(true);
     try {
-      const created = await api.createInward({ ...form, documents: docs, items });
+      const created = await api.createInward({ ...form, documents: docs, items, gst: gst === '' ? null : Number(gst) });
       navigate(`/passes/${created.id}`);
     } catch (e) {
       setError(e.message);
@@ -285,7 +287,7 @@ export default function NewInwardPage() {
 
       {/* Items table — ERP-style register grid */}
       <div style={{ marginBottom: 20 }}>
-        <ItemsGridEditor rows={rows} onChange={setRows} />
+        <ItemsGridEditor rows={rows} onChange={setRows} gst={gst} onGstChange={setGst} />
       </div>
 
       {/* Gate remarks + submit */}

@@ -198,10 +198,22 @@ const inward = await api('POST', '/gate-passes/inward', {
   body: {
     branchId: b1, departmentId: d1, receiverId: managerUser.json.id, inwardType: 'non_returnable',
     documentType: 'Invoice', documentNo: 'INV-9999', carriedBy: 'Courier Guy',
+    gst: 18,
     items: [{ itemName: 'Spare Parts', quantity: 2, unit: 'box' }],
   },
 });
 check('security logs direct inward → completed', inward.status === 201 && inward.json?.status === 'completed' && inward.json?.inwardLog?.guardName === 'Guard One');
+check('inward stores GST % on the pass', inward.json?.gst === 18, JSON.stringify(inward.json?.gst));
+
+const badGst = await api('POST', '/gate-passes/inward', {
+  token: timeOffice,
+  body: {
+    branchId: b1, departmentId: d1, receiverId: managerUser.json.id, inwardType: 'non_returnable',
+    carriedBy: 'Courier Guy', gst: 150,
+    items: [{ itemName: 'Widget', quantity: 1, unit: 'pcs' }],
+  },
+});
+check('GST % out of range rejected', badGst.status === 400, JSON.stringify(badGst.json));
 check('legacy single document folded into documents[]', inward.json?.documents?.length === 1 &&
   inward.json?.documents?.[0]?.type === 'Invoice' && inward.json?.documents?.[0]?.number === 'INV-9999');
 
