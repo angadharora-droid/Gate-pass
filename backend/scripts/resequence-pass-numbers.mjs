@@ -1,14 +1,17 @@
-// One-off migration: re-sequence EVERY pass number into ONE chronological
-// global sequence starting at 0001. The sequence is shared across all types
-// and prefixes — e.g. GPE-ONR-2026-0001 is followed by GPI-INR-2026-0002 —
-// instead of each prefix series counting its own 0001, 0002…
+// One-off migration: re-sequence every pass number so each series (IR / INR /
+// OR / ONR) counts its OWN chronological sequence starting at 01 — e.g. the
+// first returnable outward pass is GPE-OR-2026-01, and the first inward
+// non-returnable is GPE-INR-2026-01, regardless of which came first overall.
+// This replaces the earlier scheme where one global sequence was shared across
+// all types.
 //
-// New passes already draw from one shared atomic counter (generatePassNumber
+// New passes already draw from per-series atomic counters (generatePassNumber
 // in data/db.js); this brings the EXISTING rows in line: passes are ordered by
-// createdAt, numbered 1..N, the letters are recomputed from each pass's stored
-// type/direction/returnable (ground truth), and the year segment comes from
-// the pass's own createdAt. Afterwards the counter is synced to N so the next
-// pass continues the sequence.
+// createdAt, numbered 1..N within their own series, the letters are recomputed
+// from each pass's stored type/direction/returnable (ground truth), and the
+// year segment comes from the pass's own createdAt. Afterwards each series
+// counter is synced so the next pass continues its own sequence, and the old
+// shared counter is removed.
 //
 // NOTE: pass numbers are printed/quoted identifiers — documents printed before
 // this run keep showing the old numbers, and audit-log entries keep the number
@@ -16,7 +19,7 @@
 // that trade-off is fine.
 //
 // Safe to re-run: a second run finds every number already correct and only
-// re-syncs the counter.
+// re-syncs the counters.
 //
 // Usage:
 //   node scripts/resequence-pass-numbers.mjs           # dry run — prints the plan only
@@ -26,7 +29,7 @@
 // — put them in backend/.env, or export them in the shell, before running.
 import 'dotenv/config';
 import { MongoClient } from 'mongodb';
-import { passNumberPrefix, passNumberCode } from '../data/db.js';
+import { passNumberPrefix, passNumberCode, PASS_NUMBER_CODES } from '../data/db.js';
 
 if (!process.env.MONGODB_URI) {
   console.error('MONGODB_URI is not set — point it at the production Atlas cluster before running this.');
@@ -55,13 +58,15 @@ passes.sort((a, b) =>
   (oldSeq(a) - oldSeq(b)) ||
   String(a.id).localeCompare(String(b.id)));
 
+const seriesSeq = Object.fromEntries(PASS_NUMBER_CODES.map(c => [c, 0]));
 let changed = 0, skipped = 0;
 
-for (let i = 0; i < passes.length; i++) {
-  const p = passes[i];
+for (const p of passes) {
+  const code = passNumberCode(p.type, !!p.returnable);
+  const seq = ++seriesSeq[code];
   const year = p.createdAt ? new Date(p.createdAt).getFullYear() : new Date().getFullYear();
   const newPassNumber =
-    `${passNumberPrefix(p.direction)}-${passNumberCode(p.type, !!p.returnable)}-${year}-${String(i + 1).padStart(4, '0')}`;
+    `${passNumberPrefix(p.direction)}-${code}-${year}-${String(seq).padStart(2, '0')}`;
 
   if (newPassNumber === p.passNumber) { skipped++; continue; }
 
@@ -73,17 +78,22 @@ for (let i = 0; i < passes.length; i++) {
 }
 
 if (APPLY) {
-  // The next pass must continue after the renumbered tail
-  await db.collection('counters').updateOne(
-    { _id: 'passNumber' },
-    { $set: { seq: passes.length } },
-    { upsert: true },
-  );
+  // Each series' next pass must continue after its renumbered tail
+  for (const code of PASS_NUMBER_CODES) {
+    await db.collection('counters').updateOne(
+      { _id: `passNumber:${code}` },
+      { $set: { seq: seriesSeq[code] } },
+      { upsert: true },
+    );
+  }
+  // The old shared counter is obsolete under the per-series scheme
+  await db.collection('counters').deleteOne({ _id: 'passNumber' });
 }
 
 console.log(`\n${changed} to change, ${skipped} already correct, ${passes.length} passes total.`);
+console.log('Series totals: ' + PASS_NUMBER_CODES.map(c => `${c}=${seriesSeq[c]}`).join('  '));
 console.log(APPLY
-  ? `Applied — counter set to ${passes.length}, so the next pass is number ${String(passes.length + 1).padStart(4, '0')}.`
+  ? 'Applied — per-series counters synced, so each series continues its own numbering.'
   : 'Dry run only — re-run with --apply to write these changes.');
 
 await client.close();

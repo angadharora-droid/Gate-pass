@@ -116,7 +116,7 @@ const created = await api('POST', '/gate-passes', {
   },
 });
 check('staff creates pending pass', created.status === 201 && created.json?.status === 'pending', JSON.stringify(created.json));
-check('numbering starts at 0001 on fresh db', created.json?.passNumber === 'GPE-OR-' + new Date().getFullYear() + '-0001', created.json?.passNumber);
+check('numbering starts at 01 on fresh db', created.json?.passNumber === 'GPE-OR-' + new Date().getFullYear() + '-01', created.json?.passNumber);
 const passId = created.json?.id;
 
 const staffApprove = await api('PATCH', `/gate-passes/${passId}/status`, { token: staff, body: { action: 'approve' } });
@@ -226,12 +226,12 @@ check('inward accepts multiple documents', multiDoc.status === 201 &&
   multiDoc.json?.purpose?.includes('INV-1001') && multiDoc.json?.purpose?.includes('DC-22'),
   JSON.stringify(multiDoc.json));
 
-// Numbering is ONE shared sequence across every pass type: the outward pass
-// above took 0001, so these two inward entries take 0002 and 0003 — a series
-// never restarts its own count.
+// Each series (IR / INR / OR / ONR) keeps its OWN sequence starting at 01:
+// the outward pass above took OR-…-01, and these two inward entries start the
+// INR series at 01 and 02 rather than continuing a shared count.
 const yr = new Date().getFullYear();
-check('pass numbering shares one global sequence across types',
-  inward.json?.passNumber === `GPE-INR-${yr}-0002` && multiDoc.json?.passNumber === `GPE-INR-${yr}-0003`,
+check('each pass series numbers independently from 01',
+  inward.json?.passNumber === `GPE-INR-${yr}-01` && multiDoc.json?.passNumber === `GPE-INR-${yr}-02`,
   `${inward.json?.passNumber} / ${multiDoc.json?.passNumber}`);
 
 const badDoc = await api('POST', '/gate-passes/inward', {
