@@ -233,8 +233,8 @@ export default function DashboardPage() {
         </div>
         <div className="stat-card green">
           <div className="stat-icon"><PackageCheck size={16} /></div>
-          <div className="stat-num">{(stats?.completed ?? 0) + (stats?.closed ?? 0)}</div>
-          <div className="stat-label">Settled</div>
+          <div className="stat-num">{stats?.completed ?? 0}</div>
+          <div className="stat-label">Completed</div>
         </div>
         <div className="stat-card red">
           <div className="stat-icon"><AlertTriangle size={16} /></div>

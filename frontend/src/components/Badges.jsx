@@ -16,7 +16,7 @@ export const STATUS_LABELS = {
   return_approved: 'Send-Back Approved',
   returning:       'Returning',        // dispatched back to the source branch
   completed:       'Completed',
-  closed:          'Closed',
+  closed:          'Completed',   // legacy alias — 'closed' was merged into 'completed'
   rejected:        'Rejected',
   partial_return:  'Partly Back',
   overdue:         'Late',

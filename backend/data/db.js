@@ -34,11 +34,13 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // partial_return → part of the pass is accounted for, the rest still out:
 //                some items returned at the source gate, OR some written off
 //                with a reason at the destination branch (PATCH /close-items)
-// completed    → all movement fully confirmed by Time Office
-// closed       → fully accounted for, but some items were written off (lost/
-//                damaged/etc.) with a reason instead of returned — either by
-//                Time Office on the return leg or by the destination
-//                receiver/manager while the items were with them
+// completed    → all movement fully accounted for by Time Office — items came
+//                back and/or were written off with a reason (the closure
+//                records carry the write-off story)
+// closed       → LEGACY: old rows where the accounting included write-offs;
+//                merged into 'completed' — displayStatusOf and all filters
+//                treat it as completed (scripts/merge-closed-into-completed.mjs
+//                rewrites stored rows)
 // rejected     → denied by manager
 //
 // Gate logs on a pass (each stamped at its own branch's gate):

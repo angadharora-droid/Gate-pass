@@ -83,7 +83,12 @@ router.get('/', asyncHandler(async (req, res) => {
   let passes = allPasses.map(p => enrichPass(p, refs));
 
   if (type)      passes = passes.filter(p => p.type === type);
-  if (status)    passes = passes.filter(p => p.status === status);
+  // 'closed' was merged into 'completed' — filtering by either matches both,
+  // so legacy rows stored as 'closed' keep appearing under Completed.
+  if (status) {
+    const wanted = ['completed', 'closed'].includes(status) ? ['completed', 'closed'] : [status];
+    passes = passes.filter(p => wanted.includes(p.status));
+  }
   if (direction) passes = passes.filter(p => p.direction === direction);
   if (departmentId) passes = passes.filter(p => p.departmentId === departmentId);
   if (branch)    passes = passes.filter(p =>
@@ -739,9 +744,11 @@ function canActForDestination(pass, user) {
 // rewritten — the write-off lands in closedQuantity, so every later leg
 // (send-back approval, dispatch, return log) caps itself against what is
 // genuinely outstanding, and the audit trail keeps what actually went out.
-// Status follows the gate's closure rule: everything accounted for → 'closed';
-// otherwise → 'partial_return'. Allowed from the moment items are marked in
-// until the return physically leaves (returnOutwardLog).
+// Status follows the gate's closure rule: everything accounted for →
+// 'completed'; otherwise → 'partial_return'. (Write-offs used to end in a
+// separate 'closed' status; the closure records keep that story now.)
+// Allowed from the moment items are marked in until the return physically
+// leaves (returnOutwardLog).
 router.patch('/:id/close-items', asyncHandler(async (req, res) => {
   const pass = await dbc('gatePasses').findOne({ id: req.params.id }, NO_ID);
   if (!pass) return res.status(404).json({ error: 'Gate pass not found' });
@@ -795,9 +802,9 @@ router.patch('/:id/close-items', asyncHandler(async (req, res) => {
   pass.closures.push({ closedAt, closedBy: req.user.id, at: 'destination', items: closureRecords });
 
   const fullyAccounted = pass.items.every(li => ((li.returnedQuantity || 0) + (li.closedQuantity || 0)) >= li.quantity);
-  // Something was just closed, so a fully accounted pass is 'closed', never
-  // 'completed' — and a partly accounted one shows as partial_return.
-  pass.status = fullyAccounted ? 'closed' : 'partial_return';
+  // Fully accounted = completed, write-offs included — the closure records
+  // (and the "Items Not Coming Back" card) carry the write-off story.
+  pass.status = fullyAccounted ? 'completed' : 'partial_return';
 
   await dbc('gatePasses').replaceOne({ id: pass.id }, pass);
   await logAudit('CLOSE_ITEMS_DESTINATION', req.user.id, pass.id, {
@@ -974,9 +981,9 @@ router.patch('/:id/log-inward', requireRole('time_office', 'admin'), asyncHandle
     }
 
     const fullyAccounted = pass.items.every(li => ((li.returnedQuantity || 0) + (li.closedQuantity || 0)) >= li.quantity);
-    const anyClosed = pass.items.some(li => (li.closedQuantity || 0) > 0);
-    // 'closed' = finished but some items were written off rather than returned
-    pass.status = fullyAccounted ? (anyClosed ? 'closed' : 'completed') : 'partial_return';
+    // Fully accounted = completed, whether items came back or were written
+    // off — the closure records carry the write-off story.
+    pass.status = fullyAccounted ? 'completed' : 'partial_return';
 
     // Only stamp the inward log when something physically returned
     if (returnTotals.size) {
@@ -1091,8 +1098,8 @@ router.get('/meta/stats', asyncHandler(async (req, res) => {
     approved:        passes.filter(p => p.status === 'approved').length,
     inTransit:       passes.filter(p => p.status === 'in_transit').length,
     partialReturn:   passes.filter(p => p.status === 'partial_return').length,
-    completed:       passes.filter(p => p.status === 'completed').length,
-    closed:          passes.filter(p => p.status === 'closed').length,
+    // 'closed' merged into 'completed' — legacy rows still count here
+    completed:       passes.filter(p => ['completed', 'closed'].includes(p.status)).length,
     rejected:        passes.filter(p => p.status === 'rejected').length,
     overdueReturns:  overdue.length,
     awaitingOutward: awaitingOutward.length,
@@ -1111,7 +1118,7 @@ router.get('/meta/stats', asyncHandler(async (req, res) => {
 // derives the precise lifecycle STAGE every screen shows, so a pass sitting
 // with a receiver at the destination branch never reads as just "in transit".
 // Decision table (outward passes; inward passes are born completed):
-//   pending/approved/rejected/completed/closed → as stored
+//   pending/approved/rejected/completed → as stored ('closed' → completed)
 //   in_transit, external                       → items_out        (out with a person/vendor)
 //   in_transit, transfer, not received         → in_transit       (between branches)
 //   in_transit, transfer, received, no approval→ at_destination   (with the receiver)
@@ -1119,6 +1126,9 @@ router.get('/meta/stats', asyncHandler(async (req, res) => {
 //   in_transit, transfer, return dispatched    → returning        (heading back to source)
 //   partial_return                             → partial_return   (some items back at source)
 export function displayStatusOf(pass) {
+  // 'closed' was merged into 'completed'; rows stored before the merge
+  // normalize here so every screen and filter treats them identically.
+  if (pass.status === 'closed') return 'completed';
   if (pass.type !== 'outward' || pass.status !== 'in_transit') return pass.status;
   const isTransfer = pass.direction === 'internal' && pass.destinationBranch;
   if (!isTransfer) return 'items_out';
