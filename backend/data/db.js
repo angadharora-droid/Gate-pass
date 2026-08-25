@@ -201,16 +201,26 @@ async function seedIfEmpty() {
     }
   }
 
-  // Initialise the pass-number counter from whatever passes exist (none on a
-  // fresh database → numbering starts at GP-…-0001).
-  if (!await handle.collection('counters').findOne({ _id: 'passNumber' })) {
-    const passes = await handle.collection('gatePasses').find({}, { projection: { passNumber: 1 } }).toArray();
-    const seq = Math.max(0, ...passes.map(p => extractSequence(p.passNumber)));
-    await handle.collection('counters').updateOne(
-      { _id: 'passNumber' },
-      { $setOnInsert: { seq } },
-      { upsert: true },
-    );
+  // Initialise the per-series pass-number counters — one for each of IR / INR /
+  // OR / ONR — from whatever passes exist (none on a fresh database → every
+  // series starts at …-01).
+  const missingCodes = [];
+  for (const code of PASS_NUMBER_CODES) {
+    if (!await handle.collection('counters').findOne({ _id: `passNumber:${code}` })) missingCodes.push(code);
+  }
+  if (missingCodes.length) {
+    const passes = await handle.collection('gatePasses')
+      .find({}, { projection: { passNumber: 1, type: 1, returnable: 1 } }).toArray();
+    for (const code of missingCodes) {
+      const seq = Math.max(0, ...passes
+        .filter(p => passNumberCode(p.type, !!p.returnable) === code)
+        .map(p => extractSequence(p.passNumber)));
+      await handle.collection('counters').updateOne(
+        { _id: `passNumber:${code}` },
+        { $setOnInsert: { seq } },
+        { upsert: true },
+      );
+    }
   }
 }
 
@@ -224,21 +234,24 @@ export function passNumberPrefix(direction) {
 // Code segment of a pass number — type crossed with returnable:
 //   IR  = inward,  returnable      INR = inward,  non-returnable
 //   OR  = outward, returnable      ONR = outward, non-returnable
+export const PASS_NUMBER_CODES = ['IR', 'INR', 'OR', 'ONR'];
 export function passNumberCode(type, returnable) {
   return type === 'inward'
     ? (returnable ? 'IR' : 'INR')
     : (returnable ? 'OR' : 'ONR');
 }
 
-// Atomic counter — safe even with concurrent pass creation.
+// Atomic per-series counter — each code (IR / INR / OR / ONR) keeps its own
+// sequence starting at 01. Safe even with concurrent pass creation.
 export async function generatePassNumber({ type, direction, returnable } = {}) {
+  const code = passNumberCode(type, returnable);
   const doc = await dbc('counters').findOneAndUpdate(
-    { _id: 'passNumber' },
+    { _id: `passNumber:${code}` },
     { $inc: { seq: 1 } },
     { upsert: true, returnDocument: 'after' },
   );
   const year = new Date().getFullYear();
-  return `${passNumberPrefix(direction)}-${passNumberCode(type, returnable)}-${year}-${String(doc.seq).padStart(4, '0')}`;
+  return `${passNumberPrefix(direction)}-${code}-${year}-${String(doc.seq).padStart(2, '0')}`;
 }
 
 // Case/space-insensitive identity for item names, so "Dinner Plate" typed on a
