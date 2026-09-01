@@ -38,7 +38,9 @@ export default function NewInwardPage() {
 
   // Live suggestions from the vendors master as "Received From" is typed —
   // same idea as the item suggestions in ItemsGridEditor, positioned off the
-  // input's own rect since the menu is position:fixed.
+  // input's own rect since the menu is position:fixed. The list is small (it
+  // only holds names captured from earlier inwards), so focusing the empty
+  // field lists known vendors right away instead of waiting for typing.
   const [vendorSuggest, setVendorSuggest] = useState({ list: [], rect: null });
   const closeVendorSuggest = () => setVendorSuggest({ list: [], rect: null });
   const vendorTimer = useRef(null);
@@ -46,14 +48,13 @@ export default function NewInwardPage() {
 
   const searchVendors = (q, rect) => {
     clearTimeout(vendorTimer.current);
-    if (!q || q.trim().length < 2) { closeVendorSuggest(); return; }
     vendorTimer.current = setTimeout(async () => {
       const seq = ++vendorSeq.current;
       try {
         const list = await api.searchVendors(q.trim());
         if (seq === vendorSeq.current) setVendorSuggest({ list, rect });
       } catch { /* vendor search is best-effort; typing still works */ }
-    }, 250);
+    }, q.trim() ? 250 : 0);
   };
 
   useEffect(() => {
@@ -168,6 +169,7 @@ export default function NewInwardPage() {
                 set('sourceParty', e.target.value);
                 searchVendors(e.target.value, e.target.getBoundingClientRect());
               }}
+              onFocus={e => searchVendors(e.target.value, e.target.getBoundingClientRect())}
               onBlur={() => setTimeout(closeVendorSuggest, 150)}
               onKeyDown={e => e.key === 'Escape' && closeVendorSuggest()}
               placeholder="e.g. ABC Suppliers, Blue Dart…" />
