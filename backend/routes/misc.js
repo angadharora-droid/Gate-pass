@@ -278,19 +278,36 @@ itemsRouter.use(authMiddleware);
 itemsRouter.get('/', asyncHandler(async (req, res) => {
   const q = String(req.query.q || '').trim();
   const limit = Math.min(Number(req.query.limit) || 20, 50);
-  const filter = { active: { $ne: false } };
-  if (q) {
-    const esc = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    filter.$or = [
-      { name: { $regex: esc, $options: 'i' } },
-      { code: { $regex: '^' + esc, $options: 'i' } },
-    ];
+  const base = { active: { $ne: false } };
+  const projection = { projection: { _id: 0, id: 1, code: 1, name: 1, category: 1, unit: 1 } };
+  if (!q) {
+    return res.json(await dbc('items').find(base, projection).sort({ name: 1 }).limit(limit).toArray());
   }
-  const items = await dbc('items')
-    .find(filter, { projection: { _id: 0, id: 1, code: 1, name: 1, category: 1, unit: 1 } })
+  // Rank prefix matches above substring matches. With ~17k seeded items, a
+  // plain substring search sorted alphabetically buries the item the user is
+  // actually typing (e.g. items merely CONTAINING "sam" alphabetically beat
+  // "SAMSUNG…") — so names/codes STARTING with the query fill the list first,
+  // and substring matches only top up the remaining slots.
+  const esc = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const keyEsc = normalizeItemName(q).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const starts = await dbc('items')
+    .find({ ...base, $or: [
+      { nameKey: { $regex: '^' + keyEsc } },          // normalized prefix, uses the nameKey index
+      { code: { $regex: '^' + esc, $options: 'i' } },
+    ] }, projection)
     .sort({ name: 1 })
     .limit(limit)
     .toArray();
+  let items = starts;
+  if (starts.length < limit) {
+    const seen = new Set(starts.map(i => i.id));
+    const contains = await dbc('items')
+      .find({ ...base, name: { $regex: esc, $options: 'i' } }, projection)
+      .sort({ name: 1 })
+      .limit(limit + seen.size)
+      .toArray();
+    items = [...starts, ...contains.filter(i => !seen.has(i.id))].slice(0, limit);
+  }
   res.json(items);
 }));
 
