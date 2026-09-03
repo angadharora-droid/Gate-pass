@@ -8,7 +8,8 @@
     "test:smoke": "node scripts/smoke.mjs",
     "migrate:pass-numbers": "node scripts/renumber-pass-numbers.mjs",
     "migrate:resequence-pass-numbers": "node scripts/resequence-pass-numbers.mjs",
-    "migrate:closed-to-completed": "node scripts/merge-closed-into-completed.mjs"
+    "migrate:closed-to-completed": "node scripts/merge-closed-into-completed.mjs",
+    "migrate:drop-catalogue-items": "node scripts/drop-catalogue-items.mjs"
   },
   "dependencies": {
     "cors": "^2.8.5",

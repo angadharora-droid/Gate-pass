@@ -56,7 +56,7 @@ export default function NewInwardPage() {
     vendorTimer.current = setTimeout(async () => {
       const seq = ++vendorSeq.current;
       try {
-        const list = await api.searchVendors(q.trim(), 50);
+        const list = await api.searchVendors(q.trim());
         if (seq !== vendorSeq.current) return;
         setVendorSuggest({ list, rect, q: q.trim() });
         // Typed the full name of a known vendor → treat it as picked
@@ -208,11 +208,20 @@ export default function NewInwardPage() {
               <div
                 className="suggest-menu"
                 style={{
-                  top: Math.min(vendorSuggest.rect.bottom + 2, window.innerHeight - 250),
+                  top: Math.min(vendorSuggest.rect.bottom + 2, window.innerHeight - 370),
                   left: Math.min(vendorSuggest.rect.left, window.innerWidth - 340),
                   width: Math.max(vendorSuggest.rect.width, 300),
+                  // The whole vendor list is shown (scrollable), not a page of it
+                  maxHeight: 360,
                 }}
               >
+                {vendorSuggest.list.length > 0 && (
+                  <div className="suggest-item" style={{ cursor: 'default', padding: '6px 12px', background: 'var(--bg3)' }}>
+                    <span className="suggest-meta">
+                      {vendorSuggest.list.length} vendor{vendorSuggest.list.length !== 1 ? 's' : ''}{vendorSuggest.q ? ` matching “${vendorSuggest.q}”` : ' on the list'} — scroll or keep typing
+                    </span>
+                  </div>
+                )}
                 {vendorSuggest.list.length === 0 ? (
                   <div className="suggest-item" style={{ cursor: 'default' }}>
                     <span className="suggest-name" style={{ color: 'var(--text3)' }}>No vendor matches “{vendorSuggest.q}”</span>

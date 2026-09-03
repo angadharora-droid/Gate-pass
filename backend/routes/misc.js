@@ -349,10 +349,12 @@ const vendorPublic = (v) => ({ id: v.id, name: v.name, active: v.active !== fals
 
 vendorsRouter.get('/', asyncHandler(async (req, res) => {
   const q = String(req.query.q || '').trim();
-  // Admins managing the list may see removed vendors too (?all=true) and pull
-  // the whole list; everyone else only ever gets active names for picking.
+  // Admins managing the list may see removed vendors too (?all=true); everyone
+  // else only ever gets active names for picking. The list is short (a few
+  // hundred names at most), so callers may pull ALL of it — Security should
+  // see every vendor when the "Received From" box is focused, not a page.
   const withInactive = req.query.all === 'true' && hasRole(req.user, 'admin');
-  const limit = Math.min(Number(req.query.limit) || 10, withInactive ? 500 : 50);
+  const limit = Math.min(Number(req.query.limit) || 10, 1000);
   const filter = withInactive ? {} : { active: { $ne: false } };
   if (q) {
     const esc = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
