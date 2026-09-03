@@ -1,11 +1,6 @@
 import { MongoClient } from 'mongodb';
 import { v4 as uuidv4 } from 'uuid';
-import { readFileSync } from 'fs';
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
 import { hashPassword } from '../lib/security.js';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // ─── ROLES ────────────────────────────────────────────────────────────────────
 // admin       → full access: manage users, items, branches, sees every pass
@@ -93,6 +88,7 @@ export async function connectDb() {
   handle = client.db(process.env.MONGODB_DB || 'gatepass');
   await ensureIndexes();
   await seedIfEmpty();
+  await dropSeededItems();
   return handle;
 }
 
@@ -175,31 +171,10 @@ async function seedIfEmpty() {
   if (await handle.collection('departments').countDocuments() === 0) {
     await handle.collection('departments').insertMany(SEED_DEPARTMENTS.map(d => ({ ...d })));
   }
-  // Items master: seeded once from the IDS item list export (data/itemsSeed.json,
-  // ~17k items). After that it grows organically — new item names typed on any
-  // pass are added automatically, so everyone searches one shared list.
-  if (await handle.collection('items').countDocuments() === 0) {
-    try {
-      const seed = JSON.parse(readFileSync(join(__dirname, 'itemsSeed.json'), 'utf8'));
-      const docs = seed.map(it => ({
-        id: uuidv4(),
-        code: it.code || '',
-        name: it.name,
-        nameKey: normalizeItemName(it.name),
-        category: it.category || '',
-        unit: it.unit || 'pcs',
-        uom: it.uom || '',
-        active: true,
-        source: 'ids',
-      }));
-      for (let i = 0; i < docs.length; i += 1000) {
-        await handle.collection('items').insertMany(docs.slice(i, i + 1000));
-      }
-      console.log(`✓ Items master seeded: ${docs.length} items`);
-    } catch (err) {
-      console.warn('⚠  Items master not seeded (data/itemsSeed.json missing or invalid):', err.message);
-    }
-  }
+  // Items master: NOT seeded. It holds only item names that were actually
+  // entered on a gate pass or inward entry in this app (see upsertMasterItems),
+  // so the suggestions people see are the things that really move through
+  // the gate — not a bulk catalogue.
 
   // Initialise the per-series pass-number counters — one for each of IR / INR /
   // OR / ONR — from whatever passes exist (none on a fresh database → every
@@ -222,6 +197,39 @@ async function seedIfEmpty() {
       );
     }
   }
+}
+
+// ─── ONE-TIME CLEANUP: DROP THE BULK-IMPORTED ITEM CATALOGUE ─────────────────
+// Earlier builds seeded the items master from an Excel export (~17k rows,
+// stored with source: 'ids'). The master is now meant to hold ONLY items that
+// were entered on a gate pass / inward entry in this app, so on boot any
+// leftover catalogue rows are removed. Rows from the catalogue that WERE used
+// on a pass are kept (re-tagged as 'user') so nothing people actually logged
+// disappears from the list. Idempotent — a no-op once no 'ids' rows remain.
+async function dropSeededItems() {
+  const items = handle.collection('items');
+  const leftover = await items.countDocuments({ source: 'ids' });
+  if (!leftover) return;
+
+  const used = new Set();
+  const cursor = handle.collection('gatePasses').find({}, { projection: { 'items.itemName': 1 } });
+  for await (const p of cursor) {
+    for (const li of p.items || []) {
+      const key = normalizeItemName(li.itemName);
+      if (key) used.add(key);
+    }
+  }
+  const usedKeys = [...used];
+  let kept = 0;
+  for (let i = 0; i < usedKeys.length; i += 1000) {
+    const { modifiedCount } = await items.updateMany(
+      { source: 'ids', nameKey: { $in: usedKeys.slice(i, i + 1000) } },
+      { $set: { source: 'user' } },
+    );
+    kept += modifiedCount;
+  }
+  const { deletedCount } = await items.deleteMany({ source: 'ids' });
+  console.log(`✓ Items master cleanup: removed ${deletedCount} catalogue item(s), kept ${kept} that were used on passes`);
 }
 
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
@@ -283,24 +291,19 @@ export async function upsertMasterItems(items, userId) {
   }
 }
 
-// Add the source party to the vendors master if it's a name we don't already
-// know — called whenever a direct inward entry is logged, so the shared list
-// (used for autocomplete on later entries) grows organically.
-export async function upsertVendor(name, userId) {
-  const trimmed = String(name || '').trim();
-  if (!trimmed) return;
-  const nameKey = normalizeItemName(trimmed);
-  const exists = await dbc('vendors').findOne({ nameKey }, NO_ID);
-  if (exists) return;
-  await dbc('vendors').insertOne({
-    id: uuidv4(),
-    name: trimmed,
-    nameKey,
-    active: true,
-    source: 'user',
-    addedBy: userId || null,
-    createdAt: new Date().toISOString(),
-  });
+// The vendors master is a FIXED list maintained by admins (routes/misc.js).
+// Security picks "Received From" from it on inward entries — nothing is added
+// automatically. Looks a vendor up by id first, then by normalized name, so
+// both a picked suggestion and an exactly-typed known name resolve.
+export async function findActiveVendor({ id, name } = {}) {
+  const active = { active: { $ne: false } };
+  if (id) {
+    const byId = await dbc('vendors').findOne({ id, ...active }, NO_ID);
+    if (byId) return byId;
+  }
+  const nameKey = normalizeItemName(name);
+  if (!nameKey) return null;
+  return dbc('vendors').findOne({ nameKey, ...active }, NO_ID);
 }
 
 export async function logAudit(action, userId, targetId, details) {

@@ -101,12 +101,18 @@ export const api = {
   updateUser: (id, data) => request(`/users/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   deleteUser: (id) => request(`/users/${id}`, { method: 'DELETE' }),
 
-  // Items master (shared searchable list, seeded from the IDS export)
+  // Items master (shared searchable list — only items entered on passes in this app)
   searchItems: (q, limit = 20) => request(`/items?q=${encodeURIComponent(q)}&limit=${limit}`),
   addItem: (data) => request('/items', { method: 'POST', body: JSON.stringify(data) }),
 
-  // Vendors master (grows automatically from inward "Received From" entries)
+  // Vendors master — a fixed list maintained by admins; inward "Received From"
+  // must be picked from it
   searchVendors: (q, limit = 10) => request(`/vendors?q=${encodeURIComponent(q)}&limit=${limit}`),
+  // Admin: full list including removed vendors
+  getVendors: (q = '', limit = 500) => request(`/vendors?all=true&q=${encodeURIComponent(q)}&limit=${limit}`),
+  createVendor: (data) => request('/vendors', { method: 'POST', body: JSON.stringify(data) }),
+  updateVendor: (id, data) => request(`/vendors/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  deleteVendor: (id) => request(`/vendors/${id}`, { method: 'DELETE' }),
 
   // Meta
   getMeta: () => Promise.all([

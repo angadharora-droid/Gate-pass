@@ -257,9 +257,47 @@ const badDoc = await api('POST', '/gate-passes/inward', {
 });
 check('document number without a type rejected', badDoc.status === 400);
 
+// ─── Vendors: a fixed list admins maintain; inward must pick from it ─────────
+const inwardBase = {
+  branchId: b1, departmentId: d1, receiverId: managerUser.json.id, inwardType: 'non_returnable',
+  carriedBy: 'Courier Guy', items: [{ itemName: 'Envelopes', quantity: 1, unit: 'box' }],
+};
+const vendorByGuard = await api('POST', '/vendors', { token: timeOffice, body: { name: 'Blue Dart' } });
+check('only admins can add vendors', vendorByGuard.status === 403);
+const vendorAdd = await api('POST', '/vendors', { token: admin, body: { name: 'Blue Dart' } });
+check('admin adds a vendor', vendorAdd.status === 201 && vendorAdd.json?.name === 'Blue Dart', JSON.stringify(vendorAdd.json));
+const vendorDup = await api('POST', '/vendors', { token: admin, body: { name: 'blue  DART' } });
+check('duplicate vendor spelling rejected', vendorDup.status === 400);
+
+const unknownVendor = await api('POST', '/gate-passes/inward', { token: timeOffice, body: { ...inwardBase, sourceParty: 'Random Courier' } });
+check('inward from a vendor not on the list rejected', unknownVendor.status === 400, JSON.stringify(unknownVendor.json));
+const knownVendor = await api('POST', '/gate-passes/inward', { token: timeOffice, body: { ...inwardBase, sourceParty: 'blue dart' } });
+check('inward from a listed vendor stored under the list spelling',
+  knownVendor.status === 201 && knownVendor.json?.destinationPerson === 'Blue Dart' && knownVendor.json?.vendorId === vendorAdd.json?.id,
+  JSON.stringify(knownVendor.json));
+const vendorSearch = await api('GET', '/vendors?q=blue', { token: timeOffice });
+check('security can search the vendor list', vendorSearch.status === 200 && vendorSearch.json?.length === 1);
+const stillOne = await api('GET', '/vendors?all=true&limit=500', { token: admin });
+check('logging an inward never adds a vendor', stillOne.json?.length === 1, `got ${stillOne.json?.length}`);
+
+const vendorRename = await api('PATCH', `/vendors/${vendorAdd.json?.id}`, { token: admin, body: { name: 'Blue Dart Express' } });
+const renamedPass = await api('GET', `/gate-passes/${knownVendor.json?.id}`, { token: admin });
+check('renaming a vendor updates past inward entries',
+  vendorRename.status === 200 && renamedPass.json?.destinationPerson === 'Blue Dart Express', JSON.stringify(renamedPass.json?.destinationPerson));
+
+const vendorDel = await api('DELETE', `/vendors/${vendorAdd.json?.id}`, { token: admin });
+const afterDel = await api('GET', '/vendors?q=blue', { token: timeOffice });
+const inwardAfterDel = await api('POST', '/gate-passes/inward', { token: timeOffice, body: { ...inwardBase, sourceParty: 'Blue Dart Express', vendorId: vendorAdd.json?.id } });
+check('removed vendor leaves the pick list and is rejected on inward',
+  vendorDel.status === 200 && afterDel.json?.length === 0 && inwardAfterDel.status === 400);
+const adminAll = await api('GET', '/vendors?all=true', { token: admin });
+check('admin still sees the removed vendor', adminAll.json?.some(v => v.id === vendorAdd.json?.id && v.active === false));
+const readd = await api('POST', '/vendors', { token: admin, body: { name: 'Blue Dart Express' } });
+check('re-adding a removed vendor restores it', readd.status === 200 && readd.json?.id === vendorAdd.json?.id && readd.json?.active === true);
+
 // ─── Stats & audit ────────────────────────────────────────────────────────────
 const stats = await api('GET', '/gate-passes/meta/stats', { token: admin });
-check('stats totals add up', stats.json?.total === 3 && stats.json?.completed === 3, JSON.stringify(stats.json));
+check('stats totals add up', stats.json?.total === 4 && stats.json?.completed === 4, JSON.stringify(stats.json));
 
 // ─── Late alert clears the moment the pass is completed ──────────────────────
 const latePass = await api('POST', '/gate-passes', {
@@ -532,8 +570,12 @@ check('dual-role account listed as approver in the supermanager group',
   approverList2.json?.some(a => a.id === dualUser.json.id && a.role === 'supermanager'));
 
 // ─── Items master ────────────────────────────────────────────────────────────
+// No bulk catalogue: the master holds only what was entered on passes here
 const itemSearch = await api('GET', '/items?q=charcoal', { token: porterToken });
-check('items master seeded from IDS list and searchable', itemSearch.status === 200 && itemSearch.json?.length > 0);
+check('items master is not pre-seeded from a catalogue', itemSearch.status === 200 && itemSearch.json?.length === 0);
+const allItems = await api('GET', '/items?limit=50', { token: porterToken });
+check('items master holds only the handful of names used on passes',
+  allItems.json?.length > 0 && allItems.json.length < 50, `got ${allItems.json?.length}`);
 
 // The 'Bulbs' item free-typed on the routed pass above must have been auto-added
 const autoAdded = await api('GET', '/items?q=bulbs', { token: porterToken });
