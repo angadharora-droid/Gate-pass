@@ -586,6 +586,26 @@ const addItem2 = await api('POST', '/items', { token: porterToken, body: { name:
 check('adding an item is idempotent by normalized name',
   addItem1.status === 201 && addItem2.status === 200 && addItem2.json?.id === addItem1.json?.id);
 
+// Admins edit / remove items; a rename also fixes the name on past pass lines
+const itemEditByStaff = await api('PATCH', `/items/${addItem1.json?.id}`, { token: porterToken, body: { name: 'Nope' } });
+check('only admins can edit items', itemEditByStaff.status === 403);
+const bulbsItem = autoAdded.json?.find(i => i.name?.toUpperCase() === 'BULBS');
+const itemRename = await api('PATCH', `/items/${bulbsItem?.id}`, { token: admin, body: { name: 'LED Bulbs', code: 'EL-01', unit: 'box' } });
+const bulbsPass = await api('GET', `/gate-passes/${routedToDual.json?.id}`, { token: admin });
+check('admin renames an item and past passes follow',
+  itemRename.status === 200 && itemRename.json?.name === 'LED Bulbs' && itemRename.json?.code === 'EL-01' && itemRename.json?.unit === 'box' &&
+  bulbsPass.json?.items?.[0]?.itemName === 'LED Bulbs', JSON.stringify(bulbsPass.json?.items?.[0]));
+const itemClash = await api('PATCH', `/items/${addItem1.json?.id}`, { token: admin, body: { name: 'led  bulbs' } });
+check('renaming onto an existing item rejected', itemClash.status === 400);
+const itemDel = await api('DELETE', `/items/${addItem1.json?.id}`, { token: admin });
+const goneSearch = await api('GET', '/items?q=custom%20widget', { token: porterToken });
+const adminItems = await api('GET', '/items?all=true&limit=5000', { token: admin });
+check('removed item leaves suggestions but admin still sees it',
+  itemDel.status === 200 && !goneSearch.json?.some(i => i.id === addItem1.json?.id) &&
+  adminItems.json?.some(i => i.id === addItem1.json?.id && i.active === false));
+const itemRestore = await api('PATCH', `/items/${addItem1.json?.id}`, { token: admin, body: { active: true } });
+check('removed item can be restored', itemRestore.status === 200 && itemRestore.json?.active === true);
+
 // ─── Involvement-based visibility ────────────────────────────────────────────
 // Staff see only their own passes; approvers see only what involves them.
 const porterList = await api('GET', '/gate-passes', { token: porterToken });

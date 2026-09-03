@@ -282,10 +282,14 @@ itemsRouter.get('/', asyncHandler(async (req, res) => {
   // Pass forms ask for a short suggestion list; the Admin → Items tab pulls
   // the whole master (it only holds items entered on passes, so it stays small)
   const limit = Math.min(Number(req.query.limit) || 20, 5000);
-  const base = { active: { $ne: false } };
-  const projection = { projection: { _id: 0, id: 1, code: 1, name: 1, category: 1, unit: 1 } };
+  // Admins managing the list may see removed items too (?all=true); pass
+  // forms only ever get active ones for suggestions.
+  const withInactive = req.query.all === 'true' && hasRole(req.user, 'admin');
+  const base = withInactive ? {} : { active: { $ne: false } };
+  const projection = { projection: { _id: 0, id: 1, code: 1, name: 1, category: 1, unit: 1, active: 1 } };
+  const publish = (list) => res.json(list.map(i => ({ ...i, active: i.active !== false })));
   if (!q) {
-    return res.json(await dbc('items').find(base, projection).sort({ name: 1 }).limit(limit).toArray());
+    return publish(await dbc('items').find(base, projection).sort({ name: 1 }).limit(limit).toArray());
   }
   // Rank prefix matches above substring matches: a plain substring search
   // sorted alphabetically buries the item the user is actually typing (items
@@ -312,7 +316,7 @@ itemsRouter.get('/', asyncHandler(async (req, res) => {
       .toArray();
     items = [...starts, ...contains.filter(i => !seen.has(i.id))].slice(0, limit);
   }
-  res.json(items);
+  publish(items);
 }));
 
 // Idempotent by normalized name: adding an existing item returns it unchanged
@@ -336,6 +340,53 @@ itemsRouter.post('/', asyncHandler(async (req, res) => {
   };
   await dbc('items').insertOne({ ...item });
   res.status(201).json(item);
+}));
+
+// Admin edit: name / code / unit / category, plus restore (active: true).
+// A rename also rewrites the item's name on every pass line that used the old
+// spelling (case/space-insensitive), so reports and the register stay
+// consistent with the list — same rule as renaming a vendor.
+itemsRouter.patch('/:id', requireRole('admin'), asyncHandler(async (req, res) => {
+  const item = await dbc('items').findOne({ id: req.params.id }, NO_ID);
+  if (!item) return res.status(404).json({ error: 'Item not found' });
+  const { name, code, unit, category, active } = req.body || {};
+  const oldName = item.name;
+  if (name !== undefined) {
+    const trimmed = String(name || '').trim();
+    if (!trimmed) return res.status(400).json({ error: 'Item name is required' });
+    const nameKey = normalizeItemName(trimmed);
+    const clash = await dbc('items').findOne({ nameKey, id: { $ne: item.id } }, NO_ID);
+    if (clash) return res.status(400).json({ error: `Item "${clash.name}" already exists` });
+    item.name = trimmed;
+    item.nameKey = nameKey;
+  }
+  if (code !== undefined) item.code = String(code || '').trim();
+  if (category !== undefined) item.category = String(category || '').trim();
+  if (unit !== undefined) {
+    if (!UNITS.includes(unit)) return res.status(400).json({ error: `Unit must be one of: ${UNITS.join(', ')}` });
+    item.unit = unit;
+  }
+  if (active !== undefined) item.active = !!active;
+  await dbc('items').replaceOne({ id: item.id }, item);
+  if (item.name !== oldName) {
+    // "dinner  plate" / "Dinner Plate" / "DINNER PLATE" all mean the old item
+    const pattern = '^\\s*' + oldName.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+') + '\\s*$';
+    const match = { $regex: pattern, $options: 'i' };
+    await dbc('gatePasses').updateMany(
+      { 'items.itemName': match },
+      { $set: { 'items.$[el].itemName': item.name } },
+      { arrayFilters: [{ 'el.itemName': match }] },
+    );
+  }
+  res.json({ ...item, active: item.active !== false });
+}));
+
+// Remove from the suggestion list (deactivate — restorable via PATCH).
+// Pass lines keep the item's name as plain text, so history is untouched.
+itemsRouter.delete('/:id', requireRole('admin'), asyncHandler(async (req, res) => {
+  const { matchedCount } = await dbc('items').updateOne({ id: req.params.id }, { $set: { active: false } });
+  if (!matchedCount) return res.status(404).json({ error: 'Item not found' });
+  res.json({ success: true });
 }));
 
 // ─── VENDORS MASTER ───────────────────────────────────────────────────────────
