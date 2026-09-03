@@ -279,7 +279,9 @@ itemsRouter.use(authMiddleware);
 
 itemsRouter.get('/', asyncHandler(async (req, res) => {
   const q = String(req.query.q || '').trim();
-  const limit = Math.min(Number(req.query.limit) || 20, 50);
+  // Pass forms ask for a short suggestion list; the Admin → Items tab pulls
+  // the whole master (it only holds items entered on passes, so it stays small)
+  const limit = Math.min(Number(req.query.limit) || 20, 5000);
   const base = { active: { $ne: false } };
   const projection = { projection: { _id: 0, id: 1, code: 1, name: 1, category: 1, unit: 1 } };
   if (!q) {

@@ -608,7 +608,8 @@ function ItemsTab() {
   useEffect(() => {
     setLoading(true);
     const t = setTimeout(() => {
-      api.searchItems(q, 50).then(setItems).finally(() => setLoading(false));
+      // The whole master — it only holds items entered on passes, so show it all
+      api.searchItems(q, 5000).then(setItems).finally(() => setLoading(false));
     }, 250);
     return () => clearTimeout(t);
   }, [q]);
@@ -617,7 +618,7 @@ function ItemsTab() {
     <div>
       <SectionHeader
         title="Items Master"
-        sub="Every item that has been entered on a gate pass or inward entry in this app — the list grows automatically whenever someone types a new item name."
+        sub={`${loading ? '' : `${items.length} item${items.length !== 1 ? 's' : ''}${q ? ` matching “${q}”` : ''} · `}Every item that has been entered on a gate pass or inward entry in this app — the list grows automatically whenever someone types a new item name.`}
       />
       <div className="form-group" style={{ maxWidth: 360 }}>
         <input className="form-input" value={q} onChange={e => setQ(e.target.value)} placeholder="Search items…" />
@@ -645,7 +646,7 @@ function ItemsTab() {
             </tbody>
           </table>
           <div style={{ fontSize: 12, color: 'var(--text3)', marginTop: 10 }}>
-            {q ? `Showing up to 50 matches for "${q}"` : 'Showing the first 50 items alphabetically — search to find a specific one'}
+            {q ? `${items.length} match${items.length !== 1 ? 'es' : ''} for “${q}”` : `All ${items.length} items, A–Z`}
           </div>
         </div>
       )}
