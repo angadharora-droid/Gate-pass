@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '../utils/api';
 import { X, AlertTriangle, Building2, ScrollText, Package, Truck } from 'lucide-react';
+import { UNITS } from '../components/ItemsGridEditor';
 
 const ROLES = ['admin', 'supermanager', 'manager', 'staff', 'time_office'];
 // Roles that are branch-bound with no department (mirrors backend NO_DEPT_ROLES)
@@ -600,55 +601,159 @@ function fmtAuditDetails(details) {
 }
 
 /* ── Items Tab ──────────────────────────────────────────────────────────────── */
+// Holds only items entered on passes in this app (no catalogue). Admins can
+// fix a name / code / unit / category, remove an item from the suggestions
+// (restorable), or add one up front. Renaming also fixes past pass lines.
+const EMPTY_ITEM = { name: '', code: '', unit: 'pcs', category: '' };
 function ItemsTab() {
   const [q, setQ] = useState('');
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [showRemoved, setShowRemoved] = useState(false);
+  const [modal, setModal] = useState(null);   // 'create' | item being edited
+  const [form, setForm] = useState(EMPTY_ITEM);
+  const [error, setError] = useState('');
+  const [saving, setSaving] = useState(false);
 
+  // The whole master — it only holds items entered on passes, so show it all
+  const load = () => api.getItems(q).then(setItems);
   useEffect(() => {
     setLoading(true);
-    const t = setTimeout(() => {
-      // The whole master — it only holds items entered on passes, so show it all
-      api.searchItems(q, 5000).then(setItems).finally(() => setLoading(false));
-    }, 250);
+    const t = setTimeout(() => { load().finally(() => setLoading(false)); }, 250);
     return () => clearTimeout(t);
-  }, [q]);
+  }, [q]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+  const openCreate = () => { setForm(EMPTY_ITEM); setError(''); setModal('create'); };
+  const openEdit   = (it) => { setForm({ name: it.name, code: it.code || '', unit: it.unit || 'pcs', category: it.category || '' }); setError(''); setModal(it); };
+
+  const handleSave = async () => {
+    setError(''); setSaving(true);
+    try {
+      if (modal === 'create') await api.addItem(form);
+      else await api.updateItem(modal.id, form);
+      await load(); setModal(null);
+    } catch (e) { setError(e.message); } finally { setSaving(false); }
+  };
+
+  const handleDelete = async (it) => {
+    if (!confirm(`Remove "${it.name}" from the items list?\n\nIt will no longer be suggested on pass forms. Past passes are not affected, and you can restore it later.`)) return;
+    try { await api.deleteItem(it.id); await load(); }
+    catch (e) { alert(e.message); }
+  };
+
+  const handleRestore = async (it) => {
+    try { await api.updateItem(it.id, { active: true }); await load(); }
+    catch (e) { alert(e.message); }
+  };
+
+  const active  = items.filter(i => i.active);
+  const removed = items.filter(i => !i.active);
+  const shown   = showRemoved ? items : active;
 
   return (
     <div>
       <SectionHeader
         title="Items Master"
-        sub={`${loading ? '' : `${items.length} item${items.length !== 1 ? 's' : ''}${q ? ` matching “${q}”` : ''} · `}Every item that has been entered on a gate pass or inward entry in this app — the list grows automatically whenever someone types a new item name.`}
+        sub={`${loading ? '' : `${active.length} item${active.length !== 1 ? 's' : ''}${q ? ` matching “${q}”` : ''} · `}Every item that has been entered on a gate pass or inward entry in this app — the list grows automatically whenever someone types a new item name.`}
+        onAdd={openCreate}
+        addLabel="Add Item"
       />
-      <div className="form-group" style={{ maxWidth: 360 }}>
-        <input className="form-input" value={q} onChange={e => setQ(e.target.value)} placeholder="Search items…" />
+      <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', marginBottom: 16 }}>
+        <div className="form-group" style={{ maxWidth: 360, flex: 1, marginBottom: 0 }}>
+          <input className="form-input" value={q} onChange={e => setQ(e.target.value)} placeholder="Search items…" />
+        </div>
+        {removed.length > 0 && (
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12.5, color: 'var(--text2)', cursor: 'pointer' }}>
+            <input type="checkbox" checked={showRemoved} onChange={e => setShowRemoved(e.target.checked)} />
+            Show removed ({removed.length})
+          </label>
+        )}
       </div>
       {loading ? (
         <div className="loading-page"><div className="spinner" /></div>
-      ) : items.length === 0 ? (
+      ) : shown.length === 0 ? (
         <div className="empty-state">
           <div className="empty-icon"><Package size={24} strokeWidth={1.75} /></div>
-          <div className="empty-title">No items found</div>
+          <div className="empty-title">No items {q ? 'found' : 'yet'}</div>
+          {!q && <div className="empty-sub">Items appear here as soon as someone enters them on a gate pass or inward entry.</div>}
         </div>
       ) : (
         <div className="table-wrapper">
           <table>
-            <thead><tr><th>Name</th><th>Code</th><th>Category</th><th>Unit</th></tr></thead>
+            <thead>
+              <tr>
+                <th>Name</th><th>Code</th><th>Category</th><th>Unit</th>
+                <th style={{ width: 110 }}>Status</th><th style={{ width: 170 }} />
+              </tr>
+            </thead>
             <tbody>
-              {items.map(it => (
-                <tr key={it.id}>
+              {shown.map(it => (
+                <tr key={it.id} style={{ opacity: it.active ? 1 : 0.6 }}>
                   <td style={{ fontWeight: 500 }}>{it.name}</td>
                   <td style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>{it.code || '—'}</td>
                   <td>{it.category || '—'}</td>
                   <td>{it.unit}</td>
+                  <td><StatusDot active={it.active} /></td>
+                  <td>
+                    <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+                      {it.active ? (
+                        <>
+                          <button className="btn btn-ghost btn-sm" onClick={() => openEdit(it)}>Edit</button>
+                          <button className="btn btn-danger btn-sm" onClick={() => handleDelete(it)}>Delete</button>
+                        </>
+                      ) : (
+                        <button className="btn btn-success btn-sm" onClick={() => handleRestore(it)}>Restore</button>
+                      )}
+                    </div>
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
           <div style={{ fontSize: 12, color: 'var(--text3)', marginTop: 10 }}>
-            {q ? `${items.length} match${items.length !== 1 ? 'es' : ''} for “${q}”` : `All ${items.length} items, A–Z`}
+            {q ? `${shown.length} match${shown.length !== 1 ? 'es' : ''} for “${q}”` : `All ${shown.length} items, A–Z`}
           </div>
         </div>
+      )}
+
+      {modal && (
+        <Modal title={modal === 'create' ? 'Add Item' : `Edit — ${modal.name}`} onClose={() => setModal(null)}>
+          <div className="modal-body">
+            <div className="form-group">
+              <label className="form-label">Item Name *</label>
+              <input className="form-input" value={form.name} onChange={e => set('name', e.target.value)}
+                placeholder="e.g. Dinner Plate" autoFocus
+                onKeyDown={e => e.key === 'Enter' && !saving && handleSave()} />
+              {modal !== 'create' && (
+                <div className="form-hint">Renaming also updates the name on past passes that used this item.</div>
+              )}
+            </div>
+            <div className="form-row">
+              <div className="form-group">
+                <label className="form-label">Code</label>
+                <input className="form-input" value={form.code} onChange={e => set('code', e.target.value)} placeholder="e.g. HW-1042" />
+              </div>
+              <div className="form-group">
+                <label className="form-label">Unit</label>
+                <select className="form-select" value={form.unit} onChange={e => set('unit', e.target.value)}>
+                  {UNITS.map(u => <option key={u}>{u}</option>)}
+                </select>
+              </div>
+            </div>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label className="form-label">Category</label>
+              <input className="form-input" value={form.category} onChange={e => set('category', e.target.value)} placeholder="e.g. Kitchen Tools" />
+            </div>
+            {error && <div className="alert alert-danger" style={{ marginTop: 12 }}><AlertTriangle size={15} /> {error}</div>}
+          </div>
+          <div className="modal-footer">
+            <button className="btn btn-ghost" onClick={() => setModal(null)}>Cancel</button>
+            <button className="btn btn-primary" onClick={handleSave} disabled={saving || !form.name.trim()}>
+              {saving ? <><div className="spinner" style={{ width: 15, height: 15 }} /> Saving…</> : modal === 'create' ? 'Add Item' : 'Save'}
+            </button>
+          </div>
+        </Modal>
       )}
     </div>
   );

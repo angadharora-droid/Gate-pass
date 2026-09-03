@@ -104,6 +104,10 @@ export const api = {
   // Items master (shared searchable list — only items entered on passes in this app)
   searchItems: (q, limit = 20) => request(`/items?q=${encodeURIComponent(q)}&limit=${limit}`),
   addItem: (data) => request('/items', { method: 'POST', body: JSON.stringify(data) }),
+  // Admin: the whole master including removed items, plus edit / remove
+  getItems: (q = '', limit = 5000) => request(`/items?all=true&q=${encodeURIComponent(q)}&limit=${limit}`),
+  updateItem: (id, data) => request(`/items/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  deleteItem: (id) => request(`/items/${id}`, { method: 'DELETE' }),
 
   // Vendors master — a fixed list maintained by admins; inward "Received From"
   // must be picked from it
