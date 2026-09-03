@@ -617,7 +617,7 @@ function ItemsTab() {
     <div>
       <SectionHeader
         title="Items Master"
-        sub="Shared item list used across every pass form — seeded from the IDS export, and grows automatically whenever someone types a new item name."
+        sub="Every item that has been entered on a gate pass or inward entry in this app — the list grows automatically whenever someone types a new item name."
       />
       <div className="form-group" style={{ maxWidth: 360 }}>
         <input className="form-input" value={q} onChange={e => setQ(e.target.value)} placeholder="Search items…" />
@@ -654,50 +654,129 @@ function ItemsTab() {
 }
 
 /* ── Vendors Tab ────────────────────────────────────────────────────────────── */
+// The vendor list is FIXED: Security must pick "Received From" on inward
+// entries from it, so admins add / rename / remove vendors here. Removal
+// deactivates (the name can be restored); past entries keep their vendor.
 function VendorsTab() {
   const [q, setQ] = useState('');
   const [vendors, setVendors] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [showRemoved, setShowRemoved] = useState(false);
+  const [modal, setModal] = useState(null);   // 'create' | vendor being edited
+  const [name, setName] = useState('');
+  const [error, setError] = useState('');
+  const [saving, setSaving] = useState(false);
 
+  const load = () => api.getVendors(q).then(setVendors);
   useEffect(() => {
     setLoading(true);
-    const t = setTimeout(() => {
-      api.searchVendors(q, 50).then(setVendors).finally(() => setLoading(false));
-    }, 250);
+    const t = setTimeout(() => { load().finally(() => setLoading(false)); }, 250);
     return () => clearTimeout(t);
-  }, [q]);
+  }, [q]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const openCreate = () => { setName(''); setError(''); setModal('create'); };
+  const openEdit   = (v) => { setName(v.name); setError(''); setModal(v); };
+
+  const handleSave = async () => {
+    setError(''); setSaving(true);
+    try {
+      if (modal === 'create') await api.createVendor({ name });
+      else await api.updateVendor(modal.id, { name });
+      await load(); setModal(null);
+    } catch (e) { setError(e.message); } finally { setSaving(false); }
+  };
+
+  const handleDelete = async (v) => {
+    if (!confirm(`Remove vendor "${v.name}" from the list?\n\nSecurity will no longer be able to pick it on new inward entries. Past entries are not affected, and you can restore it later.`)) return;
+    try { await api.deleteVendor(v.id); await load(); }
+    catch (e) { alert(e.message); }
+  };
+
+  const handleRestore = async (v) => {
+    try { await api.updateVendor(v.id, { active: true }); await load(); }
+    catch (e) { alert(e.message); }
+  };
+
+  const active  = vendors.filter(v => v.active);
+  const removed = vendors.filter(v => !v.active);
+  const shown   = showRemoved ? vendors : active;
 
   return (
     <div>
       <SectionHeader
         title="Vendors"
-        sub="Source parties logged on inward gate entries — grows automatically as Security types a new 'Received From' name."
+        sub={`${active.length} on the list · Security can only pick “Received From” from these names on inward entries`}
+        onAdd={openCreate}
+        addLabel="Add Vendor"
       />
-      <div className="form-group" style={{ maxWidth: 360 }}>
-        <input className="form-input" value={q} onChange={e => setQ(e.target.value)} placeholder="Search vendors…" />
+      <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', marginBottom: 16 }}>
+        <div className="form-group" style={{ maxWidth: 360, flex: 1, marginBottom: 0 }}>
+          <input className="form-input" value={q} onChange={e => setQ(e.target.value)} placeholder="Search vendors…" />
+        </div>
+        {removed.length > 0 && (
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12.5, color: 'var(--text2)', cursor: 'pointer' }}>
+            <input type="checkbox" checked={showRemoved} onChange={e => setShowRemoved(e.target.checked)} />
+            Show removed ({removed.length})
+          </label>
+        )}
       </div>
       {loading ? (
         <div className="loading-page"><div className="spinner" /></div>
-      ) : vendors.length === 0 ? (
+      ) : shown.length === 0 ? (
         <div className="empty-state">
           <div className="empty-icon"><Truck size={24} strokeWidth={1.75} /></div>
           <div className="empty-title">No vendors {q ? 'found' : 'yet'}</div>
-          {!q && <div className="empty-sub">They're added automatically the first time Security logs an inward entry from them.</div>}
+          {!q && <div className="empty-sub">Add the vendors and parties goods arrive from — Security picks from this list when logging an inward entry.</div>}
         </div>
       ) : (
         <div className="table-wrapper">
           <table>
-            <thead><tr><th>Name</th></tr></thead>
+            <thead><tr><th>Name</th><th style={{ width: 110 }}>Status</th><th style={{ width: 170 }} /></tr></thead>
             <tbody>
-              {vendors.map(v => (
-                <tr key={v.id}><td style={{ fontWeight: 500 }}>{v.name}</td></tr>
+              {shown.map(v => (
+                <tr key={v.id} style={{ opacity: v.active ? 1 : 0.6 }}>
+                  <td style={{ fontWeight: 500 }}>{v.name}</td>
+                  <td><StatusDot active={v.active} /></td>
+                  <td>
+                    <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+                      {v.active ? (
+                        <>
+                          <button className="btn btn-ghost btn-sm" onClick={() => openEdit(v)}>Edit</button>
+                          <button className="btn btn-danger btn-sm" onClick={() => handleDelete(v)}>Delete</button>
+                        </>
+                      ) : (
+                        <button className="btn btn-success btn-sm" onClick={() => handleRestore(v)}>Restore</button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
               ))}
             </tbody>
           </table>
-          <div style={{ fontSize: 12, color: 'var(--text3)', marginTop: 10 }}>
-            {q ? `Showing up to 50 matches for "${q}"` : 'Showing the first 50 alphabetically — search to find a specific one'}
-          </div>
         </div>
+      )}
+
+      {modal && (
+        <Modal title={modal === 'create' ? 'Add Vendor' : `Edit — ${modal.name}`} onClose={() => setModal(null)}>
+          <div className="modal-body">
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label className="form-label">Vendor / Party Name *</label>
+              <input className="form-input" value={name} onChange={e => setName(e.target.value)}
+                placeholder="e.g. ABC Suppliers, Blue Dart" autoFocus
+                onKeyDown={e => e.key === 'Enter' && !saving && handleSave()} />
+              {modal !== 'create' && (
+                <div className="form-hint">Renaming also updates the name on past inward entries from this vendor.</div>
+              )}
+            </div>
+            {error && <div className="alert alert-danger" style={{ marginTop: 12 }}><AlertTriangle size={15} /> {error}</div>}
+          </div>
+          <div className="modal-footer">
+            <button className="btn btn-ghost" onClick={() => setModal(null)}>Cancel</button>
+            <button className="btn btn-primary" onClick={handleSave} disabled={saving || !name.trim()}>
+              {saving ? <><div className="spinner" style={{ width: 15, height: 15 }} /> Saving…</> : modal === 'create' ? 'Add Vendor' : 'Save'}
+            </button>
+          </div>
+        </Modal>
       )}
     </div>
   );

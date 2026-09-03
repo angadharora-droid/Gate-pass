@@ -1,7 +1,8 @@
-// One-off backfill: seed the vendors master from vendor names already sitting
-// on existing inward gate passes (destinationPerson) — the vendors collection
-// only started growing automatically once upsertVendor was wired into
-// POST /gate-passes/inward, so anything logged before that never made it in.
+// One-off backfill: fill the admin-maintained vendors master from vendor names
+// already sitting on existing inward gate passes (destinationPerson). Useful
+// when starting the fixed list on a database that has history — every party
+// that was ever logged becomes a pickable vendor; admins then tidy the list
+// from the Admin → Vendors tab.
 //
 // Safe to re-run: skips any name already known (by normalized nameKey).
 //

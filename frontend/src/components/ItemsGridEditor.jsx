@@ -6,9 +6,10 @@ import { api } from '../utils/api';
 // Columns: Seq · Description · Code · Qty · Unit · Rate · Amount (auto) · Serial/Batch · Remarks
 // Inward additionally passes gst/onGstChange: one GST % (off the arrival
 // document) applied to the WHOLE total in the footer, not per item.
-// The Description cell live-searches the shared items master (seeded from the
-// IDS item list); picking a suggestion fills name + code + unit. Free-typed
-// names still work — the server adds them to the master automatically.
+// The Description cell live-searches the shared items master — which holds
+// only items entered on earlier passes in this app; picking a suggestion fills
+// name + code + unit. Free-typed names still work — the server adds them to
+// the master automatically, so the list grows from real gate movements.
 
 export const UNITS = ['pcs', 'set', 'kg', 'litre', 'box', 'bag', 'roll', 'pair', 'dozen'];
 
@@ -82,8 +83,8 @@ export default function ItemsGridEditor({ rows, onChange, title = 'Items', heade
         <div>
           <h3 style={{ fontWeight: 700, fontSize: 15 }}>{title}</h3>
           <div style={{ fontSize: 11.5, color: 'var(--text3)', marginTop: 3 }}>
-            Type in <strong>Description</strong> to search the items master — or enter a brand-new
-            item (it joins the master automatically). Only Description and Qty are required.
+            Type in <strong>Description</strong> to search items used on earlier passes — or enter a
+            brand-new item (it joins the list automatically). Only Description and Qty are required.
           </div>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>

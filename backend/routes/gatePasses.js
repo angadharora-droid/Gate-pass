@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { v4 as uuidv4 } from 'uuid';
-import { dbc, NO_ID, generatePassNumber, logAudit, upsertMasterItems, upsertVendor, INWARD_TYPES, DOCUMENT_TYPES, UNITS } from '../data/db.js';
+import { dbc, NO_ID, generatePassNumber, logAudit, upsertMasterItems, findActiveVendor, INWARD_TYPES, DOCUMENT_TYPES, UNITS } from '../data/db.js';
 import { authMiddleware, requireRole } from '../middleware/auth.js';
 import { hasRole, rolesOf } from '../lib/roles.js';
 import { asyncHandler } from '../lib/asyncHandler.js';
@@ -251,7 +251,7 @@ router.post('/inward', requireRole('time_office', 'admin'), asyncHandler(async (
   const {
     branchId, departmentId, receiverId, inwardType,
     documentType, documentNo, documents, barcodeRef,
-    carriedBy, carrierMobile, sourceParty, remarks, items, gst,
+    carriedBy, carrierMobile, sourceParty, vendorId, remarks, items, gst,
   } = req.body;
 
   if (!inwardType || !INWARD_TYPES.some(t => t.id === inwardType))
@@ -300,6 +300,18 @@ router.post('/inward', requireRole('time_office', 'admin'), asyncHandler(async (
   if (receiver.role === 'time_office')
     return res.status(400).json({ error: 'The receiver must be a staff member taking custody, not gate security' });
 
+  // "Received From" must come from the admin-maintained vendor list — free
+  // text is rejected so the register only ever carries one spelling per party.
+  // The client sends the picked vendor's id plus its name; an exactly-typed
+  // known name (no id) resolves too.
+  let vendor = null;
+  const typedParty = String(sourceParty || '').trim();
+  if (vendorId || typedParty) {
+    vendor = await findActiveVendor({ id: vendorId, name: typedParty });
+    if (!vendor)
+      return res.status(400).json({ error: `"${typedParty || vendorId}" is not in the vendor list — pick a vendor from the list, or ask an admin to add it` });
+  }
+
   if (!Array.isArray(items) || !items.length)
     return res.status(400).json({ error: 'Add at least one item' });
   for (const li of items) {
@@ -326,7 +338,8 @@ router.post('/inward', requireRole('time_office', 'admin'), asyncHandler(async (
     departmentId: dept.id,
     sourceBranch: null,
     destinationBranch: branch.id,
-    destinationPerson: sourceParty?.trim() || null,   // vendor / party the goods came from
+    destinationPerson: vendor?.name || null,   // vendor / party the goods came from (list spelling)
+    vendorId: vendor?.id || null,
     returnable,
     purpose: docsLabel ? `${typeLabel} — ${docsLabel}` : typeLabel,
     createdAt: now,
@@ -375,9 +388,9 @@ router.post('/inward', requireRole('time_office', 'admin'), asyncHandler(async (
   };
 
   await dbc('gatePasses').insertOne({ ...newPass });
-  // Grow the shared items and vendors masters with anything they don't know yet
+  // Grow the shared items master with any names it doesn't know yet (the
+  // vendor list is fixed — admins maintain it, so nothing is added here)
   try { await upsertMasterItems(newPass.items, req.user.id); } catch { /* non-fatal */ }
-  try { await upsertVendor(sourceParty, req.user.id); } catch { /* non-fatal */ }
   await logAudit('LOG_INWARD_DIRECT', req.user.id, newPass.id, {
     passNumber: newPass.passNumber,
     inwardType,

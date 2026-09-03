@@ -269,9 +269,11 @@ usersRouter.delete('/:id', requireRole('admin'), asyncHandler(async (req, res) =
 }));
 
 // ─── ITEMS MASTER ─────────────────────────────────────────────────────────────
-// One shared, searchable item list (seeded from the IDS export, ~17k items).
-// Every pass form searches it; any authenticated user can add a missing item,
-// and items typed free-hand on passes are added automatically server-side.
+// One shared, searchable item list holding ONLY items that were entered on a
+// gate pass / inward entry in this app (no bulk catalogue — see
+// dropSeededItems in data/db.js). Every pass form searches it; any
+// authenticated user can add a missing item, and items typed free-hand on
+// passes are added automatically server-side.
 export const itemsRouter = Router();
 itemsRouter.use(authMiddleware);
 
@@ -283,11 +285,11 @@ itemsRouter.get('/', asyncHandler(async (req, res) => {
   if (!q) {
     return res.json(await dbc('items').find(base, projection).sort({ name: 1 }).limit(limit).toArray());
   }
-  // Rank prefix matches above substring matches. With ~17k seeded items, a
-  // plain substring search sorted alphabetically buries the item the user is
-  // actually typing (e.g. items merely CONTAINING "sam" alphabetically beat
-  // "SAMSUNG…") — so names/codes STARTING with the query fill the list first,
-  // and substring matches only top up the remaining slots.
+  // Rank prefix matches above substring matches: a plain substring search
+  // sorted alphabetically buries the item the user is actually typing (items
+  // merely CONTAINING "sam" alphabetically beat "SAMSUNG…") — so names/codes
+  // STARTING with the query fill the list first, and substring matches only
+  // top up the remaining slots.
   const esc = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const keyEsc = normalizeItemName(q).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const starts = await dbc('items')
@@ -335,27 +337,88 @@ itemsRouter.post('/', asyncHandler(async (req, res) => {
 }));
 
 // ─── VENDORS MASTER ───────────────────────────────────────────────────────────
-// Shared, searchable list of inward source parties (vendors/couriers/etc.).
-// Grows automatically — Security never adds one directly, it's captured from
-// the "Received From" field whenever a direct inward entry is logged (see
-// upsertVendor in data/db.js, called from POST /gate-passes/inward).
+// FIXED list of inward source parties (vendors/couriers/etc.) maintained by
+// admins only. Security must pick "Received From" from this list on inward
+// entries — POST /gate-passes/inward rejects any name that isn't on it.
+// Removal deactivates (like branches/departments) so the name can be restored;
+// passes keep the vendor's name as plain text, so history is never affected.
 export const vendorsRouter = Router();
 vendorsRouter.use(authMiddleware);
 
+const vendorPublic = (v) => ({ id: v.id, name: v.name, active: v.active !== false });
+
 vendorsRouter.get('/', asyncHandler(async (req, res) => {
   const q = String(req.query.q || '').trim();
-  const limit = Math.min(Number(req.query.limit) || 10, 50);
-  const filter = { active: { $ne: false } };
+  // Admins managing the list may see removed vendors too (?all=true) and pull
+  // the whole list; everyone else only ever gets active names for picking.
+  const withInactive = req.query.all === 'true' && hasRole(req.user, 'admin');
+  const limit = Math.min(Number(req.query.limit) || 10, withInactive ? 500 : 50);
+  const filter = withInactive ? {} : { active: { $ne: false } };
   if (q) {
     const esc = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     filter.name = { $regex: esc, $options: 'i' };
   }
   const vendors = await dbc('vendors')
-    .find(filter, { projection: { _id: 0, id: 1, name: 1 } })
+    .find(filter, { projection: { _id: 0, id: 1, name: 1, active: 1 } })
     .sort({ name: 1 })
     .limit(limit)
     .toArray();
-  res.json(vendors);
+  res.json(vendors.map(vendorPublic));
+}));
+
+// Add a vendor. Names are unique case/space-insensitively; adding a name that
+// was removed earlier restores that record instead of creating a duplicate.
+vendorsRouter.post('/', requireRole('admin'), asyncHandler(async (req, res) => {
+  const name = String(req.body?.name || '').trim();
+  if (!name) return res.status(400).json({ error: 'Vendor name is required' });
+  const nameKey = normalizeItemName(name);
+  const existing = await dbc('vendors').findOne({ nameKey }, NO_ID);
+  if (existing) {
+    if (existing.active !== false)
+      return res.status(400).json({ error: `Vendor "${existing.name}" already exists` });
+    await dbc('vendors').updateOne({ id: existing.id }, { $set: { name, active: true } });
+    return res.json(vendorPublic({ ...existing, name, active: true }));
+  }
+  const vendor = {
+    id: uuidv4(), name, nameKey, active: true,
+    source: 'admin', addedBy: req.user.id, createdAt: new Date().toISOString(),
+  };
+  await dbc('vendors').insertOne({ ...vendor });
+  res.status(201).json(vendorPublic(vendor));
+}));
+
+// Rename / restore / remove. A rename also rewrites the name on every inward
+// entry that used the old spelling, so reports and the register stay
+// consistent with the list (same idea as scripts/merge-vendors.mjs).
+vendorsRouter.patch('/:id', requireRole('admin'), asyncHandler(async (req, res) => {
+  const vendor = await dbc('vendors').findOne({ id: req.params.id }, NO_ID);
+  if (!vendor) return res.status(404).json({ error: 'Vendor not found' });
+  const { name, active } = req.body || {};
+  const oldName = vendor.name;
+  if (name !== undefined) {
+    const trimmed = String(name || '').trim();
+    if (!trimmed) return res.status(400).json({ error: 'Vendor name is required' });
+    const nameKey = normalizeItemName(trimmed);
+    const clash = await dbc('vendors').findOne({ nameKey, id: { $ne: vendor.id } }, NO_ID);
+    if (clash) return res.status(400).json({ error: `Vendor "${clash.name}" already exists` });
+    vendor.name = trimmed;
+    vendor.nameKey = nameKey;
+  }
+  if (active !== undefined) vendor.active = !!active;
+  await dbc('vendors').replaceOne({ id: vendor.id }, vendor);
+  if (vendor.name !== oldName) {
+    await dbc('gatePasses').updateMany(
+      { type: 'inward', $or: [{ vendorId: vendor.id }, { destinationPerson: oldName }] },
+      { $set: { destinationPerson: vendor.name } },
+    );
+  }
+  res.json(vendorPublic(vendor));
+}));
+
+vendorsRouter.delete('/:id', requireRole('admin'), asyncHandler(async (req, res) => {
+  const { matchedCount } = await dbc('vendors').updateOne({ id: req.params.id }, { $set: { active: false } });
+  if (!matchedCount) return res.status(404).json({ error: 'Vendor not found' });
+  res.json({ success: true });
 }));
 
 // ─── META (reference lists) ────────────────────────────────────────────────────

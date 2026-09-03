@@ -3,8 +3,11 @@ import { useNavigate } from 'react-router-dom';
 import { api } from '../utils/api';
 import { useAuth } from '../context/AuthContext';
 import { hasRole } from '../utils/roles';
-import { AlertTriangle, ArrowDownLeft, Plus, ScanLine, ShieldCheck, X } from 'lucide-react';
+import { AlertTriangle, ArrowDownLeft, Check, Plus, ScanLine, ShieldCheck, X } from 'lucide-react';
 import ItemsGridEditor, { emptyRow, rowsToItems } from '../components/ItemsGridEditor';
+
+// Same identity rule as the server's normalizeItemName: case/space-insensitive
+const nameKey = (s) => String(s || '').trim().toUpperCase().replace(/\s+/g, ' ');
 
 // Must match INWARD_TYPES / DOCUMENT_TYPES in backend/data/db.js
 const INWARD_TYPES = [
@@ -27,7 +30,9 @@ export default function NewInwardPage() {
     inwardType: '', branchId: user?.branch || '',
     departmentId: '', receiverId: '',
     barcodeRef: '', carriedBy: '', carrierMobile: '',
-    sourceParty: '', remarks: '',
+    // sourceParty is the text in the box; vendorId is set only once that text
+    // is a vendor from the admin-maintained list (picked, or typed exactly)
+    sourceParty: '', vendorId: '', remarks: '',
   });
   const [rows, setRows] = useState([emptyRow()]);
   // One GST % applied to the whole items total, off the arrival document
@@ -36,13 +41,13 @@ export default function NewInwardPage() {
   // courier slip…) — each row is one { type, number } document.
   const [documents, setDocuments] = useState([{ type: 'None', number: '' }]);
 
-  // Live suggestions from the vendors master as "Received From" is typed —
-  // same idea as the item suggestions in ItemsGridEditor, positioned off the
-  // input's own rect since the menu is position:fixed. The list is small (it
-  // only holds names captured from earlier inwards), so focusing the empty
-  // field lists known vendors right away instead of waiting for typing.
-  const [vendorSuggest, setVendorSuggest] = useState({ list: [], rect: null });
-  const closeVendorSuggest = () => setVendorSuggest({ list: [], rect: null });
+  // "Received From" is a pick-from-list field: the vendor list is fixed and
+  // maintained by admins, so the box only filters that list — it never
+  // creates a vendor. Suggestions are positioned off the input's own rect
+  // since the menu is position:fixed. Focusing the empty field lists known
+  // vendors right away instead of waiting for typing.
+  const [vendorSuggest, setVendorSuggest] = useState({ list: [], rect: null, q: null });
+  const closeVendorSuggest = () => setVendorSuggest({ list: [], rect: null, q: null });
   const vendorTimer = useRef(null);
   const vendorSeq = useRef(0);
 
@@ -51,10 +56,19 @@ export default function NewInwardPage() {
     vendorTimer.current = setTimeout(async () => {
       const seq = ++vendorSeq.current;
       try {
-        const list = await api.searchVendors(q.trim());
-        if (seq === vendorSeq.current) setVendorSuggest({ list, rect });
+        const list = await api.searchVendors(q.trim(), 50);
+        if (seq !== vendorSeq.current) return;
+        setVendorSuggest({ list, rect, q: q.trim() });
+        // Typed the full name of a known vendor → treat it as picked
+        const exact = list.find(v => nameKey(v.name) === nameKey(q));
+        if (exact) setForm(f => (nameKey(f.sourceParty) === nameKey(exact.name) ? { ...f, vendorId: exact.id } : f));
       } catch { /* vendor search is best-effort; typing still works */ }
-    }, q.trim() ? 250 : 0);
+    }, q.trim() ? 200 : 0);
+  };
+
+  const pickVendor = (v) => {
+    setForm(f => ({ ...f, sourceParty: v.name, vendorId: v.id }));
+    closeVendorSuggest();
   };
 
   useEffect(() => {
@@ -90,6 +104,10 @@ export default function NewInwardPage() {
     if (!form.departmentId) { setError('Select the receiving department'); return; }
     if (!form.receiverId)   { setError('Select who is receiving the items'); return; }
     if (!form.carriedBy.trim()) { setError('Enter who carried the items in'); return; }
+    if (form.sourceParty.trim() && !form.vendorId) {
+      setError(`"${form.sourceParty.trim()}" is not in the vendor list — pick a vendor from the suggestions, or ask an admin to add it under Admin → Vendors`);
+      return;
+    }
     // Catch half-filled rows the grid would otherwise drop silently
     const badRow = rows.findIndex(r => {
       const hasContent = [r.itemName, r.code, r.rate, r.serialNo, r.remarks].some(v => String(v ?? '').trim());
@@ -163,17 +181,30 @@ export default function NewInwardPage() {
             </select>
           </div>
           <div className="form-group">
-            <label className="form-label">Received From <span style={{ color: 'var(--text3)', fontWeight: 400 }}>(vendor / party)</span></label>
-            <input className="form-input" value={form.sourceParty}
-              onChange={e => {
-                set('sourceParty', e.target.value);
-                searchVendors(e.target.value, e.target.getBoundingClientRect());
-              }}
-              onFocus={e => searchVendors(e.target.value, e.target.getBoundingClientRect())}
-              onBlur={() => setTimeout(closeVendorSuggest, 150)}
-              onKeyDown={e => e.key === 'Escape' && closeVendorSuggest()}
-              placeholder="e.g. ABC Suppliers, Blue Dart…" />
-            {vendorSuggest.list.length > 0 && vendorSuggest.rect && (
+            <label className="form-label">Received From <span style={{ color: 'var(--text3)', fontWeight: 400 }}>(pick a vendor from the list)</span></label>
+            <div className="input-wrap">
+              <input className="form-input" value={form.sourceParty}
+                onChange={e => {
+                  // Any edit un-picks the vendor until the text matches one again
+                  setForm(f => ({ ...f, sourceParty: e.target.value, vendorId: '' }));
+                  searchVendors(e.target.value, e.target.getBoundingClientRect());
+                }}
+                onFocus={e => searchVendors(e.target.value, e.target.getBoundingClientRect())}
+                onBlur={() => setTimeout(closeVendorSuggest, 150)}
+                onKeyDown={e => e.key === 'Escape' && closeVendorSuggest()}
+                placeholder="Start typing to search the vendor list…" />
+              {form.vendorId ? (
+                <span className="input-affix" style={{ pointerEvents: 'none', color: 'var(--green)' }} title="From the vendor list"><Check size={15} /></span>
+              ) : form.sourceParty.trim() ? (
+                <span className="input-affix" style={{ pointerEvents: 'none', color: 'var(--orange)' }} title="Not in the vendor list"><AlertTriangle size={15} /></span>
+              ) : null}
+            </div>
+            {form.sourceParty.trim() && !form.vendorId && (
+              <div className="form-hint" style={{ color: 'var(--orange)' }}>
+                Not in the vendor list — pick one of the suggestions, or ask an admin to add it under Admin → Vendors.
+              </div>
+            )}
+            {vendorSuggest.rect && (vendorSuggest.list.length > 0 || vendorSuggest.q) && (
               <div
                 className="suggest-menu"
                 style={{
@@ -182,9 +213,14 @@ export default function NewInwardPage() {
                   width: Math.max(vendorSuggest.rect.width, 300),
                 }}
               >
-                {vendorSuggest.list.map(v => (
+                {vendorSuggest.list.length === 0 ? (
+                  <div className="suggest-item" style={{ cursor: 'default' }}>
+                    <span className="suggest-name" style={{ color: 'var(--text3)' }}>No vendor matches “{vendorSuggest.q}”</span>
+                    <span className="suggest-meta">Only vendors on the admin list can be used</span>
+                  </div>
+                ) : vendorSuggest.list.map(v => (
                   <button type="button" key={v.id} className="suggest-item"
-                    onMouseDown={e => { e.preventDefault(); set('sourceParty', v.name); closeVendorSuggest(); }}>
+                    onMouseDown={e => { e.preventDefault(); pickVendor(v); }}>
                     <span className="suggest-name">{v.name}</span>
                   </button>
                 ))}
