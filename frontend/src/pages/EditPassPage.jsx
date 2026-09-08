@@ -135,6 +135,7 @@ export default function EditPassPage() {
     purpose: pass.purpose || '',
     destinationBranch: pass.destinationBranch || '',
     destinationPerson: pass.destinationPerson || '',
+    vendorId: pass.vendorId || '',
     expectedReturnDate: toLocalInput(pass.expectedReturnDate),
     remarks: pass.remarks || '',
   };

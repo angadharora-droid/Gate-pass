@@ -109,8 +109,8 @@ export const api = {
   updateItem: (id, data) => request(`/items/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   deleteItem: (id) => request(`/items/${id}`, { method: 'DELETE' }),
 
-  // Vendors master — a fixed list maintained by admins; inward "Received From"
-  // must be picked from it
+  // Vendors master — a fixed list maintained by admins; the inward "Received
+  // From" and the outward "To" party must both be picked from it
   // Every vendor that matches — the list is short, so the pick list shows it whole
   searchVendors: (q, limit = 1000) => request(`/vendors?q=${encodeURIComponent(q)}&limit=${limit}`),
   // Admin: full list including removed vendors

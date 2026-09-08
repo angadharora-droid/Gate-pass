@@ -760,9 +760,10 @@ function ItemsTab() {
 }
 
 /* ── Vendors Tab ────────────────────────────────────────────────────────────── */
-// The vendor list is FIXED: Security must pick "Received From" on inward
-// entries from it, so admins add / rename / remove vendors here. Removal
-// deactivates (the name can be restored); past entries keep their vendor.
+// The vendor list is FIXED: Security picks "Received From" on inward entries
+// from it and requesters pick "To" on external outward passes from it, so
+// admins add / rename / remove vendors here. Removal deactivates (the name
+// can be restored); past passes keep their vendor.
 function VendorsTab() {
   const [q, setQ] = useState('');
   const [vendors, setVendors] = useState([]);
@@ -793,7 +794,7 @@ function VendorsTab() {
   };
 
   const handleDelete = async (v) => {
-    if (!confirm(`Remove vendor "${v.name}" from the list?\n\nSecurity will no longer be able to pick it on new inward entries. Past entries are not affected, and you can restore it later.`)) return;
+    if (!confirm(`Remove vendor "${v.name}" from the list?\n\nIt can no longer be picked on new inward entries or as the "To" party on new gate passes. Past passes are not affected, and you can restore it later.`)) return;
     try { await api.deleteVendor(v.id); await load(); }
     catch (e) { alert(e.message); }
   };
@@ -811,7 +812,7 @@ function VendorsTab() {
     <div>
       <SectionHeader
         title="Vendors"
-        sub={`${active.length} on the list · Security can only pick “Received From” from these names on inward entries`}
+        sub={`${active.length} on the list · “Received From” on inward entries and “To” on external gate passes can only be picked from these names`}
         onAdd={openCreate}
         addLabel="Add Vendor"
       />
@@ -832,7 +833,7 @@ function VendorsTab() {
         <div className="empty-state">
           <div className="empty-icon"><Truck size={24} strokeWidth={1.75} /></div>
           <div className="empty-title">No vendors {q ? 'found' : 'yet'}</div>
-          {!q && <div className="empty-sub">Add the vendors and parties goods arrive from — Security picks from this list when logging an inward entry.</div>}
+          {!q && <div className="empty-sub">Add the vendors and parties goods arrive from or go out to — Security picks from this list on inward entries, and requesters pick the “To” party from it on gate passes.</div>}
         </div>
       ) : (
         <div className="table-wrapper">
@@ -871,7 +872,7 @@ function VendorsTab() {
                 placeholder="e.g. ABC Suppliers, Blue Dart" autoFocus
                 onKeyDown={e => e.key === 'Enter' && !saving && handleSave()} />
               {modal !== 'create' && (
-                <div className="form-hint">Renaming also updates the name on past inward entries from this vendor.</div>
+                <div className="form-hint">Renaming also updates the name on past passes that used this vendor.</div>
               )}
             </div>
             {error && <div className="alert alert-danger" style={{ marginTop: 12 }}><AlertTriangle size={15} /> {error}</div>}

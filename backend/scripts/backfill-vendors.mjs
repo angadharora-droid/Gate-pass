@@ -9,6 +9,8 @@
 // Usage:
 //   node scripts/backfill-vendors.mjs           # dry run — prints the plan only
 //   node scripts/backfill-vendors.mjs --apply   # actually writes the changes
+//   add --include-outward to also harvest the "To" parties named on past
+//   external outward passes (the outward "To" must come from the list too)
 //
 // Needs MONGODB_URI (and optionally MONGODB_DB) pointing at the REAL database
 // — put them in backend/.env, or export them in the shell, before running.
@@ -23,6 +25,9 @@ if (!process.env.MONGODB_URI) {
 }
 
 const APPLY = process.argv.includes('--apply');
+// Inward entries always carry direction 'external', so matching on direction
+// alone picks up inward "Received From" AND outward "To" parties.
+const INCLUDE_OUTWARD = process.argv.includes('--include-outward');
 
 const client = new MongoClient(process.env.MONGODB_URI, { serverSelectionTimeoutMS: 15000 });
 await client.connect();
@@ -30,7 +35,10 @@ const db = client.db(process.env.MONGODB_DB || 'gatepass');
 
 const passes = await db.collection('gatePasses')
   .find(
-    { type: 'inward', destinationPerson: { $exists: true, $ne: null, $nin: [''] } },
+    {
+      ...(INCLUDE_OUTWARD ? { direction: 'external' } : { type: 'inward' }),
+      destinationPerson: { $exists: true, $ne: null, $nin: [''] },
+    },
     { projection: { destinationPerson: 1 } },
   )
   .toArray();
@@ -47,7 +55,7 @@ for (const p of passes) {
   toAdd.set(nameKey, name);
 }
 
-console.log(`${passes.length} inward passes scanned, ${known.size} vendor(s) already known, ${toAdd.size} new vendor name(s) found:`);
+console.log(`${passes.length} ${INCLUDE_OUTWARD ? 'inward + external outward' : 'inward'} passes scanned, ${known.size} vendor(s) already known, ${toAdd.size} new vendor name(s) found:`);
 for (const [, name] of toAdd) console.log(`  + ${name}`);
 
 if (APPLY && toAdd.size) {

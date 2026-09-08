@@ -390,9 +390,11 @@ itemsRouter.delete('/:id', requireRole('admin'), asyncHandler(async (req, res) =
 }));
 
 // ─── VENDORS MASTER ───────────────────────────────────────────────────────────
-// FIXED list of inward source parties (vendors/couriers/etc.) maintained by
-// admins only. Security must pick "Received From" from this list on inward
-// entries — POST /gate-passes/inward rejects any name that isn't on it.
+// FIXED list of outside parties (vendors/couriers/customers/etc.) maintained
+// by admins only. Security must pick "Received From" from this list on inward
+// entries, and requesters must pick "To" from it on external outward passes —
+// POST /gate-passes/inward, POST /gate-passes and PATCH /gate-passes/:id/revise
+// all reject any name that isn't on it.
 // Removal deactivates (like branches/departments) so the name can be restored;
 // passes keep the vendor's name as plain text, so history is never affected.
 export const vendorsRouter = Router();
@@ -442,9 +444,10 @@ vendorsRouter.post('/', requireRole('admin'), asyncHandler(async (req, res) => {
   res.status(201).json(vendorPublic(vendor));
 }));
 
-// Rename / restore / remove. A rename also rewrites the name on every inward
-// entry that used the old spelling, so reports and the register stay
-// consistent with the list (same idea as scripts/merge-vendors.mjs).
+// Rename / restore / remove. A rename also rewrites the name on every pass
+// that used the vendor — inward "Received From" and outward "To" alike — so
+// reports and the register stay consistent with the list (same idea as
+// scripts/merge-vendors.mjs).
 vendorsRouter.patch('/:id', requireRole('admin'), asyncHandler(async (req, res) => {
   const vendor = await dbc('vendors').findOne({ id: req.params.id }, NO_ID);
   if (!vendor) return res.status(404).json({ error: 'Vendor not found' });
@@ -463,7 +466,7 @@ vendorsRouter.patch('/:id', requireRole('admin'), asyncHandler(async (req, res) 
   await dbc('vendors').replaceOne({ id: vendor.id }, vendor);
   if (vendor.name !== oldName) {
     await dbc('gatePasses').updateMany(
-      { type: 'inward', $or: [{ vendorId: vendor.id }, { destinationPerson: oldName }] },
+      { $or: [{ vendorId: vendor.id }, { destinationPerson: oldName }] },
       { $set: { destinationPerson: vendor.name } },
     );
   }

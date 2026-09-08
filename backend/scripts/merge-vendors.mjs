@@ -44,8 +44,14 @@ const db = client.db(process.env.MONGODB_DB || 'gatepass');
 
 const oldVendor = await db.collection('vendors').findOne({ nameKey: oldKey });
 const canonicalVendor = await db.collection('vendors').findOne({ nameKey: canonicalKey });
+// Every pass that named the old vendor — inward "Received From" and outward
+// "To" alike — whether it points at the record by id or only carries the
+// old spelling as text.
 const affectedPasses = await db.collection('gatePasses')
-  .find({ type: 'inward', destinationPerson: oldVendor?.name || oldName }, { projection: { id: 1, passNumber: 1 } })
+  .find(
+    { $or: [...(oldVendor ? [{ vendorId: oldVendor.id }] : []), { destinationPerson: oldVendor?.name || oldName }] },
+    { projection: { id: 1, passNumber: 1 } },
+  )
   .toArray();
 
 console.log(`Old vendor:       ${oldVendor ? `"${oldVendor.name}" (active: ${oldVendor.active !== false})` : 'not found'}`);
@@ -54,9 +60,11 @@ console.log(`Passes to repoint: ${affectedPasses.length}`);
 for (const p of affectedPasses) console.log(`  - ${p.passNumber}`);
 
 if (APPLY) {
+  let canonicalId = canonicalVendor?.id;
   if (!canonicalVendor) {
+    canonicalId = uuidv4();
     await db.collection('vendors').insertOne({
-      id: uuidv4(), name: canonicalName.trim(), nameKey: canonicalKey,
+      id: canonicalId, name: canonicalName.trim(), nameKey: canonicalKey,
       active: true, source: 'merge', addedBy: null, createdAt: new Date().toISOString(),
     });
   }
@@ -66,7 +74,8 @@ if (APPLY) {
   if (affectedPasses.length) {
     await db.collection('gatePasses').updateMany(
       { id: { $in: affectedPasses.map(p => p.id) } },
-      { $set: { destinationPerson: canonicalName.trim() } },
+      // Repoint by id too, so future renames of the canonical vendor cascade
+      { $set: { destinationPerson: canonicalVendor?.name || canonicalName.trim(), vendorId: canonicalId } },
     );
   }
 }

@@ -117,6 +117,22 @@ router.get('/:id', asyncHandler(async (req, res) => {
 }));
 
 // ─── CREATE (OUTWARD ONLY) ────────────────────────────────────────────────────
+// The outside party on an external pass — the outward "To" — must come from
+// the admin-maintained vendor list (same rule as the inward "Received From"):
+// free text is rejected so every pass names the party under its one list
+// spelling. The client sends the picked vendor's id plus its name; an
+// exactly-typed known name (no id) resolves too. Returns { vendor } or
+// { error } for the caller to turn into a 400.
+async function requireListedVendor({ vendorId, name }) {
+  const typed = String(name || '').trim();
+  if (!vendorId && !typed)
+    return { error: 'Select who the items are going to — pick a vendor from the list' };
+  const vendor = await findActiveVendor({ id: vendorId, name: typed });
+  if (!vendor)
+    return { error: `"${typed || vendorId}" is not in the vendor list — pick a vendor from the list, or ask an admin to add it` };
+  return { vendor };
+}
+
 // Staff/managers create OUTWARD passes only. Inward is not a request flow:
 // Security (time_office) logs it directly at the gate via POST /inward below.
 // Staff must ROUTE their request to a chosen approver: their own department's
@@ -127,7 +143,7 @@ router.get('/:id', asyncHandler(async (req, res) => {
 router.post('/', requireRole('admin', 'supermanager', 'manager', 'staff'), asyncHandler(async (req, res) => {
   const {
     type, direction, sourceBranch, destinationBranch,
-    destinationPerson, returnable, purpose, items,
+    destinationPerson, vendorId, returnable, purpose, items,
     expectedReturnDate, remarks, linkedPassId, approverId, saveAsDraft,
   } = req.body;
 
@@ -161,6 +177,12 @@ router.post('/', requireRole('admin', 'supermanager', 'manager', 'staff'), async
     if (!destBranch) return res.status(400).json({ error: 'Select a valid destination branch' });
     if (destBranch.id === srcBranchId)
       return res.status(400).json({ error: 'Destination branch must differ from the source branch' });
+  }
+  let vendor = null;
+  if (direction === 'external') {
+    const picked = await requireListedVendor({ vendorId, name: destinationPerson });
+    if (picked.error) return res.status(400).json({ error: picked.error });
+    vendor = picked.vendor;
   }
   if (returnable && expectedReturnDate && isNaN(new Date(expectedReturnDate).getTime()))
     return res.status(400).json({ error: 'Expected return date is not a valid date' });
@@ -198,7 +220,8 @@ router.post('/', requireRole('admin', 'supermanager', 'manager', 'staff'), async
     approverId: selfApproving ? null : approver.id,   // who the staff routed it to
     sourceBranch:      srcBranchId,
     destinationBranch: direction === 'internal' ? destBranch.id : null,
-    destinationPerson: direction === 'external' ? (destinationPerson?.trim() || null) : null,
+    destinationPerson: vendor?.name || null,   // outside party, under its vendor-list spelling
+    vendorId: vendor?.id || null,
     returnable: returnable ?? false,
     purpose: purpose.trim(),
     createdAt: now,
@@ -489,7 +512,7 @@ router.patch('/:id/revise', requireRole('manager', 'supermanager', 'admin', 'sta
   }
 
   const {
-    direction, destinationBranch, destinationPerson,
+    direction, destinationBranch, destinationPerson, vendorId,
     returnable, purpose, items, expectedReturnDate, remarks,
   } = req.body;
 
@@ -502,6 +525,12 @@ router.patch('/:id/revise', requireRole('manager', 'supermanager', 'admin', 'sta
     if (!destBranch) return res.status(400).json({ error: 'Select a valid destination branch' });
     if (destBranch.id === pass.sourceBranch)
       return res.status(400).json({ error: 'Destination branch must differ from the source branch' });
+  }
+  let vendor = null;
+  if (direction === 'external') {
+    const picked = await requireListedVendor({ vendorId, name: destinationPerson });
+    if (picked.error) return res.status(400).json({ error: picked.error });
+    vendor = picked.vendor;
   }
   if (returnable && expectedReturnDate && isNaN(new Date(expectedReturnDate).getTime()))
     return res.status(400).json({ error: 'Expected return date is not a valid date' });
@@ -516,7 +545,8 @@ router.patch('/:id/revise', requireRole('manager', 'supermanager', 'admin', 'sta
 
   pass.direction         = direction;
   pass.destinationBranch = direction === 'internal' ? destinationBranch : null;
-  pass.destinationPerson = direction === 'external' ? (destinationPerson?.trim() || null) : null;
+  pass.destinationPerson = vendor?.name || null;   // outside party, under its vendor-list spelling
+  pass.vendorId          = vendor?.id || null;
   pass.returnable        = !!returnable;
   pass.expectedReturnDate = (pass.returnable && expectedReturnDate) ? expectedReturnDate : null;
   pass.purpose = purpose.trim();
