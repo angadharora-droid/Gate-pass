@@ -78,6 +78,11 @@ PENDING → APPROVED → (if returnable) PARTIAL_RETURN → COMPLETED
        REJECTED
 ```
 
+A manager rejects a pass while it is pending. Time Office can also reject an
+**approved** pass at the gate (a reason is required) when what turns up should
+not go out — the pass ends as REJECTED either way, with the manager's approval
+kept on record.
+
 ### Role-Based Access
 - **Staff**: Create passes, view own branch
 - **Manager**: Approve/Reject, record returns

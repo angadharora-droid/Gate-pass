@@ -7,7 +7,7 @@ import { StatusBadge, TypeBadge, ReturnableBadge } from '../components/Badges';
 import {
   X, AlertTriangle, Info, ArrowUpRight, ArrowDownLeft, RotateCcw,
   Clock, TrendingUp, Package, CheckCircle2, PackagePlus, Truck,
-  Lock, LockOpen, Pencil,
+  Lock, LockOpen, Pencil, Ban,
 } from 'lucide-react';
 
 function fmt(d) {
@@ -622,6 +622,72 @@ export function GateUnlockModal({ pass, onClose, onDone }) {
   );
 }
 
+/* ── Gate Reject Modal ──────────────────────────────────────────────────────── */
+// The gate's last say: when what turns up doesn't match the pass, or shouldn't
+// leave at all, Security refuses it outright. Unlike Unlock (send back for a
+// fix) this is final — the pass is rejected and nothing goes out on it. The
+// reason is mandatory because the refusal overrides a manager's approval.
+export function GateRejectModal({ pass, onClose, onDone }) {
+  const [remarks, setRemarks] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const handleConfirm = async () => {
+    const reason = remarks.trim();
+    if (!reason) { setError('Please give a reason for rejecting this pass.'); return; }
+    setError(''); setLoading(true);
+    try {
+      await api.gateReject(pass.id, reason);
+      onDone();
+    } catch (e) { setError(e.message); } finally { setLoading(false); }
+  };
+
+  return (
+    <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="modal">
+        <div className="modal-header">
+          <div>
+            <div className="modal-title">Reject Pass at Gate</div>
+            <div style={{ fontSize: 12, color: 'var(--text3)', marginTop: 3 }}>{pass.passNumber}</div>
+          </div>
+          <button className="modal-close" onClick={onClose}><X size={16} /></button>
+        </div>
+        <div className="modal-body">
+          <div className="alert alert-danger" style={{ marginBottom: 20 }}>
+            <AlertTriangle size={15} />
+            <span>
+              This is <strong>final</strong> — the pass is marked Rejected and the items do not go
+              out on it. {pass.approvedByUser?.name
+                ? <>{pass.approvedByUser.name}&rsquo;s approval stays on record. </>
+                : null}
+              If the pass only needs a fix, send it back to the manager instead.
+            </span>
+          </div>
+          <div className="form-group" style={{ marginBottom: 0 }}>
+            <label className="form-label">Reason <span style={{ color: 'var(--red)' }}>*</span></label>
+            <textarea className="form-textarea" rows={3} value={remarks}
+              onChange={e => setRemarks(e.target.value)}
+              placeholder="e.g. Items at the gate don’t match the pass…" autoFocus />
+          </div>
+          {error && (
+            <div className="alert alert-danger" style={{ marginTop: 12 }}>
+              <AlertTriangle size={15} /> {error}
+            </div>
+          )}
+        </div>
+        <div className="modal-footer">
+          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+          <button className="btn btn-danger" onClick={handleConfirm} disabled={loading || !remarks.trim()}>
+            {loading
+              ? <><div className="spinner" style={{ width: 15, height: 15 }} /> Saving…</>
+              : <><Ban size={14} /> Reject Pass</>}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ── Pass Card ──────────────────────────────────────────────────────────────── */
 function PassCard({ pass, actionLabel, ActionIcon, onAction, isDone, logInfo }) {
   return (
@@ -747,7 +813,8 @@ export default function TimeOfficePage() {
   const handleDone = () => { setModal(null); load(); };
 
   // Lock is a one-click freeze; unlocking (send back to manager) goes through
-  // GateUnlockModal so the gate can say what needs fixing.
+  // GateUnlockModal so the gate can say what needs fixing, and rejecting goes
+  // through GateRejectModal so the refusal always carries a reason.
   const [lockError, setLockError] = useState('');
   const handleLock = async (p) => {
     setLockError('');
@@ -938,6 +1005,11 @@ export default function TimeOfficePage() {
                               {canMarkOutPass(p) && p.gateLock?.locked && (
                                 <span className="tag tag-locked"><Lock size={10} /> Locked</span>
                               )}
+                              {p.gateRejection && (
+                                <span className="tag tag-locked" title={p.gateRejection.remarks}>
+                                  <Ban size={10} /> Refused at gate
+                                </span>
+                              )}
                               {p.sentBack ? (
                                 <span className="tag tag-sentback"><LockOpen size={10} /> With manager</span>
                               ) : canMarkOutPass(p) && p.revisedAfterApproval ? (
@@ -948,6 +1020,10 @@ export default function TimeOfficePage() {
                           <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
                             {canMarkOutPass(p) ? (
                               <div style={{ display: 'inline-flex', gap: 6 }}>
+                                <button className="btn btn-danger btn-sm" title="Reject — the items do not go out on this pass"
+                                  onClick={() => setModal({ type: 'reject', pass: p })}>
+                                  <Ban size={13} /> Reject
+                                </button>
                                 {p.gateLock?.locked ? (
                                   <button className="btn btn-ghost btn-sm" title="Unlock — send back to the manager for changes"
                                     onClick={() => setModal({ type: 'unlock', pass: p })}>
@@ -1095,6 +1171,9 @@ export default function TimeOfficePage() {
       )}
       {modal?.type === 'unlock' && (
         <GateUnlockModal pass={modal.pass} onClose={() => setModal(null)} onDone={handleDone} />
+      )}
+      {modal?.type === 'reject' && (
+        <GateRejectModal pass={modal.pass} onClose={() => setModal(null)} onDone={handleDone} />
       )}
     </div>
   );
