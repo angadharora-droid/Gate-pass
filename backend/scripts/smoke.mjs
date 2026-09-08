@@ -105,17 +105,49 @@ const staff = await login('staff@test.com', 'secret1');
 const timeOffice = await login('guard@test.com', 'secret1');
 check('created users can log in', true);
 
+// Every outside party on a pass — inward "Received From" AND the outward "To"
+// — must come from the admin-maintained vendor list, so seed the parties the
+// flows below send things to.
+const seededVendors = {};
+for (const name of ['Repair Shop', 'Vendor']) {
+  const v = await api('POST', '/vendors', { token: admin, body: { name } });
+  check(`vendor "${name}" seeded`, v.status === 201, JSON.stringify(v.json));
+  seededVendors[name] = v.json?.id;
+}
+const freeTextTo = await api('POST', '/gate-passes', {
+  token: staff,
+  body: {
+    type: 'outward', direction: 'external', destinationPerson: 'Random Party',
+    purpose: 'Test', approverId: managerUser.json.id,
+    items: [{ itemName: 'Office Chair', quantity: 1, unit: 'pcs' }],
+  },
+});
+check('outward "To" not on the vendor list rejected', freeTextTo.status === 400, JSON.stringify(freeTextTo.json));
+const noTo = await api('POST', '/gate-passes', {
+  token: staff,
+  body: {
+    type: 'outward', direction: 'external',
+    purpose: 'Test', approverId: managerUser.json.id,
+    items: [{ itemName: 'Office Chair', quantity: 1, unit: 'pcs' }],
+  },
+});
+check('external outward without a "To" vendor rejected', noTo.status === 400, JSON.stringify(noTo.json));
+
 // ─── Create → approve → log-outward → log-inward (full lifecycle) ────────────
 const created = await api('POST', '/gate-passes', {
   token: staff,
   body: {
-    type: 'outward', direction: 'external', destinationPerson: 'Repair Shop',
+    // Typed exactly (any case/spacing) with no id — resolves to the list entry
+    type: 'outward', direction: 'external', destinationPerson: 'repair shop',
     returnable: true, purpose: 'Chair repair', expectedReturnDate: '2099-01-01T00:00:00Z',
     approverId: managerUser.json.id,
     items: [{ itemName: 'Office Chair', quantity: 4, unit: 'pcs' }],
   },
 });
 check('staff creates pending pass', created.status === 201 && created.json?.status === 'pending', JSON.stringify(created.json));
+check('outward "To" stored under the vendor-list spelling with its id',
+  created.json?.destinationPerson === 'Repair Shop' && created.json?.vendorId === seededVendors['Repair Shop'],
+  JSON.stringify({ to: created.json?.destinationPerson, vendorId: created.json?.vendorId }));
 check('numbering starts at 01 on fresh db', created.json?.passNumber === 'GPE-OR-' + new Date().getFullYear() + '-01', created.json?.passNumber);
 const passId = created.json?.id;
 
@@ -277,8 +309,10 @@ check('inward from a listed vendor stored under the list spelling',
   JSON.stringify(knownVendor.json));
 const vendorSearch = await api('GET', '/vendors?q=blue', { token: timeOffice });
 check('security can search the vendor list', vendorSearch.status === 200 && vendorSearch.json?.length === 1);
-const stillOne = await api('GET', '/vendors?all=true&limit=500', { token: admin });
-check('logging an inward never adds a vendor', stillOne.json?.length === 1, `got ${stillOne.json?.length}`);
+// Repair Shop + Vendor (seeded above) + Blue Dart — neither the rejected
+// outward "Random Party" nor any inward entry added a name
+const vendorsNow = await api('GET', '/vendors?all=true&limit=500', { token: admin });
+check('logging passes never adds a vendor', vendorsNow.json?.length === 3, `got ${vendorsNow.json?.length}`);
 
 const vendorRename = await api('PATCH', `/vendors/${vendorAdd.json?.id}`, { token: admin, body: { name: 'Blue Dart Express' } });
 const renamedPass = await api('GET', `/gate-passes/${knownVendor.json?.id}`, { token: admin });
@@ -626,6 +660,28 @@ check('manager still sees their department staff\'s routed passes',
 
 const probe = await api('GET', `/gate-passes/${superOwnPass.json?.id}`, { token: porterToken });
 check('staff cannot open an unrelated pass (scoped 404)', probe.status === 404);
+
+// ─── Outward "To" follows the vendor list: pick by id, revise, rename cascade ─
+const acme = await api('POST', '/vendors', { token: admin, body: { name: 'Acme Tools' } });
+const acmeBody = {
+  direction: 'external', destinationPerson: 'Acme Tools', vendorId: acme.json?.id,
+  purpose: 'Grinder service', items: [{ itemName: 'Angle Grinder', quantity: 1, unit: 'pcs' }],
+};
+const acmePass = await api('POST', '/gate-passes', { token: manager, body: { type: 'outward', ...acmeBody } });
+check('outward "To" picked by vendor id', acmePass.status === 201 && acmePass.json?.vendorId === acme.json?.id, JSON.stringify(acmePass.json));
+const acmeBadRevise = await api('PATCH', `/gate-passes/${acmePass.json?.id}/revise`,
+  { token: manager, body: { ...acmeBody, destinationPerson: 'Somebody Else', vendorId: undefined } });
+check('revising "To" to a name not on the vendor list rejected', acmeBadRevise.status === 400, JSON.stringify(acmeBadRevise.json));
+const acmeInternal = await api('PATCH', `/gate-passes/${acmePass.json?.id}/revise`,
+  { token: manager, body: { ...acmeBody, direction: 'internal', destinationBranch: b2 } });
+check('switching to an internal transfer drops the vendor',
+  acmeInternal.status === 200 && acmeInternal.json?.vendorId == null && acmeInternal.json?.destinationPerson == null, JSON.stringify(acmeInternal.json));
+const acmeBack = await api('PATCH', `/gate-passes/${acmePass.json?.id}/revise`, { token: manager, body: acmeBody });
+check('revising back to a listed vendor restores it', acmeBack.status === 200 && acmeBack.json?.vendorId === acme.json?.id, JSON.stringify(acmeBack.json));
+const acmeRename = await api('PATCH', `/vendors/${acme.json?.id}`, { token: admin, body: { name: 'Acme Tools Ltd' } });
+const acmeAfter = await api('GET', `/gate-passes/${acmePass.json?.id}`, { token: admin });
+check('renaming a vendor updates past outward passes too',
+  acmeRename.status === 200 && acmeAfter.json?.destinationPerson === 'Acme Tools Ltd', JSON.stringify(acmeAfter.json?.destinationPerson));
 
 // ─── Done ─────────────────────────────────────────────────────────────────────
 console.log(failures === 0 ? '\nALL SMOKE TESTS PASSED' : `\n${failures} SMOKE TEST(S) FAILED`);

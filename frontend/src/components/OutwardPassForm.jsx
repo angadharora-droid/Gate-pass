@@ -5,6 +5,7 @@ import { hasRole } from '../utils/roles';
 import { AlertTriangle, FileSpreadsheet, FileEdit } from 'lucide-react';
 import ItemImportModal from './ItemImportModal';
 import ItemsGridEditor, { UNITS, emptyRow, rowsToItems } from './ItemsGridEditor';
+import VendorPicker from './VendorPicker';
 
 // Outward type is a single explicit dropdown (like the ERP)
 const OUTWARD_TYPES = [
@@ -14,7 +15,11 @@ const OUTWARD_TYPES = [
 
 export const defaultOutwardForm = () => ({
   direction: 'external', outwardType: '',
-  purpose: '', destinationBranch: '', destinationPerson: '',
+  purpose: '', destinationBranch: '',
+  // destinationPerson is the text in the "To" box; vendorId is set only once
+  // that text is a vendor from the admin-maintained list (picked, or typed
+  // exactly) — the server rejects anything else
+  destinationPerson: '', vendorId: '',
   expectedReturnDate: '', remarks: '',
 });
 
@@ -89,8 +94,12 @@ export default function OutwardPassForm({
     if (!form.outwardType) { setError('Select the outward type — Returnable or Non-Returnable'); return; }
     if (!form.purpose.trim()) { setError('Purpose is required'); return; }
     if (form.direction === 'internal' && !form.destinationBranch) { setError('Select destination branch'); return; }
-    if (form.direction === 'external' && !form.destinationPerson.trim()) {
-      setError('Enter recipient name'); return;
+    if (form.direction === 'external') {
+      if (!form.destinationPerson.trim()) { setError('Select who the items are going to — pick a vendor from the list'); return; }
+      if (!form.vendorId) {
+        setError(`"${form.destinationPerson.trim()}" is not in the vendor list — pick a vendor from the suggestions, or ask an admin to add it under Admin → Vendors`);
+        return;
+      }
     }
     if (isReturnable) {
       if (!form.expectedReturnDate) { setError('Set the Return By date — it drives late-return tracking'); return; }
@@ -114,6 +123,7 @@ export default function OutwardPassForm({
       items,
       destinationBranch: form.direction === 'internal' ? form.destinationBranch : null,
       destinationPerson: form.direction === 'external' ? form.destinationPerson : null,
+      vendorId: form.direction === 'external' ? form.vendorId : null,
       expectedReturnDate: (isReturnable && form.expectedReturnDate) ? form.expectedReturnDate : null,
       ...(isStaff ? { approverId } : {}),
     };
@@ -222,12 +232,11 @@ export default function OutwardPassForm({
             </div>
           ) : (
             <div className="form-group">
-              <label className="form-label">To (Person / Vendor) *</label>
-              <input
-                className="form-input"
+              <label className="form-label">To (Vendor) * <span style={{ color: 'var(--text3)', fontWeight: 400 }}>(pick from the vendor list)</span></label>
+              <VendorPicker
                 value={form.destinationPerson}
-                onChange={e => set('destinationPerson', e.target.value)}
-                placeholder="e.g. John Doe, ABC Suppliers…"
+                vendorId={form.vendorId}
+                onChange={({ name, vendorId }) => setForm(f => ({ ...f, destinationPerson: name, vendorId }))}
               />
             </div>
           )}

@@ -1,13 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../utils/api';
 import { useAuth } from '../context/AuthContext';
 import { hasRole } from '../utils/roles';
-import { AlertTriangle, ArrowDownLeft, Check, Plus, ScanLine, ShieldCheck, X } from 'lucide-react';
+import { AlertTriangle, ArrowDownLeft, Plus, ScanLine, ShieldCheck, X } from 'lucide-react';
 import ItemsGridEditor, { emptyRow, rowsToItems } from '../components/ItemsGridEditor';
-
-// Same identity rule as the server's normalizeItemName: case/space-insensitive
-const nameKey = (s) => String(s || '').trim().toUpperCase().replace(/\s+/g, ' ');
+import VendorPicker from '../components/VendorPicker';
 
 // Must match INWARD_TYPES / DOCUMENT_TYPES in backend/data/db.js
 const INWARD_TYPES = [
@@ -40,36 +38,6 @@ export default function NewInwardPage() {
   // Goods often arrive with several papers at once (invoice + challan +
   // courier slip…) — each row is one { type, number } document.
   const [documents, setDocuments] = useState([{ type: 'None', number: '' }]);
-
-  // "Received From" is a pick-from-list field: the vendor list is fixed and
-  // maintained by admins, so the box only filters that list — it never
-  // creates a vendor. Suggestions are positioned off the input's own rect
-  // since the menu is position:fixed. Focusing the empty field lists known
-  // vendors right away instead of waiting for typing.
-  const [vendorSuggest, setVendorSuggest] = useState({ list: [], rect: null, q: null });
-  const closeVendorSuggest = () => setVendorSuggest({ list: [], rect: null, q: null });
-  const vendorTimer = useRef(null);
-  const vendorSeq = useRef(0);
-
-  const searchVendors = (q, rect) => {
-    clearTimeout(vendorTimer.current);
-    vendorTimer.current = setTimeout(async () => {
-      const seq = ++vendorSeq.current;
-      try {
-        const list = await api.searchVendors(q.trim());
-        if (seq !== vendorSeq.current) return;
-        setVendorSuggest({ list, rect, q: q.trim() });
-        // Typed the full name of a known vendor → treat it as picked
-        const exact = list.find(v => nameKey(v.name) === nameKey(q));
-        if (exact) setForm(f => (nameKey(f.sourceParty) === nameKey(exact.name) ? { ...f, vendorId: exact.id } : f));
-      } catch { /* vendor search is best-effort; typing still works */ }
-    }, q.trim() ? 200 : 0);
-  };
-
-  const pickVendor = (v) => {
-    setForm(f => ({ ...f, sourceParty: v.name, vendorId: v.id }));
-    closeVendorSuggest();
-  };
 
   useEffect(() => {
     Promise.all([api.getBranches(), api.getDepartments(), api.getUsers()])
@@ -182,59 +150,11 @@ export default function NewInwardPage() {
           </div>
           <div className="form-group">
             <label className="form-label">Received From <span style={{ color: 'var(--text3)', fontWeight: 400 }}>(pick a vendor from the list)</span></label>
-            <div className="input-wrap">
-              <input className="form-input" value={form.sourceParty}
-                onChange={e => {
-                  // Any edit un-picks the vendor until the text matches one again
-                  setForm(f => ({ ...f, sourceParty: e.target.value, vendorId: '' }));
-                  searchVendors(e.target.value, e.target.getBoundingClientRect());
-                }}
-                onFocus={e => searchVendors(e.target.value, e.target.getBoundingClientRect())}
-                onBlur={() => setTimeout(closeVendorSuggest, 150)}
-                onKeyDown={e => e.key === 'Escape' && closeVendorSuggest()}
-                placeholder="Start typing to search the vendor list…" />
-              {form.vendorId ? (
-                <span className="input-affix" style={{ pointerEvents: 'none', color: 'var(--green)' }} title="From the vendor list"><Check size={15} /></span>
-              ) : form.sourceParty.trim() ? (
-                <span className="input-affix" style={{ pointerEvents: 'none', color: 'var(--orange)' }} title="Not in the vendor list"><AlertTriangle size={15} /></span>
-              ) : null}
-            </div>
-            {form.sourceParty.trim() && !form.vendorId && (
-              <div className="form-hint" style={{ color: 'var(--orange)' }}>
-                Not in the vendor list — pick one of the suggestions, or ask an admin to add it under Admin → Vendors.
-              </div>
-            )}
-            {vendorSuggest.rect && (vendorSuggest.list.length > 0 || vendorSuggest.q) && (
-              <div
-                className="suggest-menu"
-                style={{
-                  top: Math.min(vendorSuggest.rect.bottom + 2, window.innerHeight - 370),
-                  left: Math.min(vendorSuggest.rect.left, window.innerWidth - 340),
-                  width: Math.max(vendorSuggest.rect.width, 300),
-                  // The whole vendor list is shown (scrollable), not a page of it
-                  maxHeight: 360,
-                }}
-              >
-                {vendorSuggest.list.length > 0 && (
-                  <div className="suggest-item" style={{ cursor: 'default', padding: '6px 12px', background: 'var(--bg3)' }}>
-                    <span className="suggest-meta">
-                      {vendorSuggest.list.length} vendor{vendorSuggest.list.length !== 1 ? 's' : ''}{vendorSuggest.q ? ` matching “${vendorSuggest.q}”` : ' on the list'} — scroll or keep typing
-                    </span>
-                  </div>
-                )}
-                {vendorSuggest.list.length === 0 ? (
-                  <div className="suggest-item" style={{ cursor: 'default' }}>
-                    <span className="suggest-name" style={{ color: 'var(--text3)' }}>No vendor matches “{vendorSuggest.q}”</span>
-                    <span className="suggest-meta">Only vendors on the admin list can be used</span>
-                  </div>
-                ) : vendorSuggest.list.map(v => (
-                  <button type="button" key={v.id} className="suggest-item"
-                    onMouseDown={e => { e.preventDefault(); pickVendor(v); }}>
-                    <span className="suggest-name">{v.name}</span>
-                  </button>
-                ))}
-              </div>
-            )}
+            <VendorPicker
+              value={form.sourceParty}
+              vendorId={form.vendorId}
+              onChange={({ name, vendorId }) => setForm(f => ({ ...f, sourceParty: name, vendorId }))}
+            />
           </div>
         </div>
 
