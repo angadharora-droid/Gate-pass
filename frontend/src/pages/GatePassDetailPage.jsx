@@ -4,12 +4,12 @@ import { api } from '../utils/api';
 import { useAuth } from '../context/AuthContext';
 import { hasRole } from '../utils/roles';
 import { StatusBadge, MovementBadge, ReturnableBadge, DirectionBadge, STATUS_LABELS } from '../components/Badges';
-import { LogOutwardModal, LogInwardModal, ReceiveTransferModal, ReturnOutModal, GateUnlockModal, CLOSE_REASONS } from './TimeOfficePage';
+import { LogOutwardModal, LogInwardModal, ReceiveTransferModal, ReturnOutModal, GateUnlockModal, GateRejectModal, CLOSE_REASONS } from './TimeOfficePage';
 import {
   ArrowLeft, Check, X, RotateCcw, Printer, Pencil,
   AlertTriangle, CheckCircle2, Info,
   FileText, ArrowUpRight, Truck, ArrowDownLeft, PackageCheck, PackageX,
-  Zap, Clock, Lock, LockOpen,
+  Zap, Clock, Lock, LockOpen, Ban,
 } from 'lucide-react';
 
 function fmt(dateStr) {
@@ -243,6 +243,12 @@ export default function GatePassDetailPage() {
               <Lock size={14} /> Lock
             </button>
           ))}
+          {canGateLock && (
+            <button className="btn btn-danger" onClick={() => setLogModal('reject')} disabled={actionLoading}
+              title="Reject — the items do not go out on this pass">
+              <Ban size={14} /> Reject
+            </button>
+          )}
           {pass.status === 'pending' && canApprove(pass) && (
             <>
               <button className="btn btn-success" onClick={() => handleAction('approve')} disabled={actionLoading}>
@@ -311,6 +317,17 @@ export default function GatePassDetailPage() {
             {pass.gateLock?.unlockedByUser ? ` (${pass.gateLock.unlockedByUser.name}, ${fmt(pass.gateLock.unlockedAt)})` : ''}
             {pass.gateLock?.remarks ? <> — “{pass.gateLock.remarks}”</> : null}. Edit the pass and save —
             the corrected version moves to the top of the gate&rsquo;s queue.
+          </span>
+        </div>
+      )}
+
+      {pass.gateRejection && (
+        <div className="alert alert-danger" style={{ marginBottom: 20 }}>
+          <Ban size={15} />
+          <span>
+            <strong>Rejected at the gate by Time Office</strong>
+            {pass.gateRejection.rejectedByUser ? ` (${pass.gateRejection.rejectedByUser.name}, ${fmt(pass.gateRejection.rejectedAt)})` : ''}
+            {pass.gateRejection.remarks ? <> — “{pass.gateRejection.remarks}”</> : null}. The items did not leave on this pass.
           </span>
         </div>
       )}
@@ -446,6 +463,15 @@ export default function GatePassDetailPage() {
                   <div className="dl">Approved On</div>
                   <div className="dv" style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5 }}>{fmt(pass.approvedAt)}</div>
                 </div>
+                {pass.gateRejection && (
+                  <div className="detail-item">
+                    <div className="dl">Rejected At Gate By</div>
+                    <div className="dv">
+                      {pass.gateRejection.rejectedByUser?.name || '—'}
+                      <span style={{ color: 'var(--text3)', fontFamily: 'var(--font-mono)', fontSize: 12 }}> · {fmt(pass.gateRejection.rejectedAt)}</span>
+                    </div>
+                  </div>
+                )}
                 {pass.editedByUser && (
                   <div className="detail-item">
                     <div className="dl">{pass.revisedAfterApproval ? 'Changed After Approval' : 'Changed Before Approval'}</div>
@@ -645,6 +671,9 @@ export default function GatePassDetailPage() {
       {logModal === 'unlock' && (
         <GateUnlockModal pass={pass} onClose={() => setLogModal(null)} onDone={handleLogDone} />
       )}
+      {logModal === 'reject' && (
+        <GateRejectModal pass={pass} onClose={() => setLogModal(null)} onDone={handleLogDone} />
+      )}
       {writeOffModalOpen && (
         <WriteOffItemsModal pass={pass} onClose={() => setWriteOffModalOpen(false)} onDone={() => { setWriteOffModalOpen(false); load(); }} />
       )}
@@ -838,9 +867,11 @@ function LifecycleTimeline({ pass }) {
     },
     {
       key: 'approved',
+      // A gate rejection comes AFTER approval — the manager's approval stands
+      // here and the refusal gets its own step right below
       label: pass.status === 'draft'
         ? 'Still a Draft'
-        : pass.status === 'rejected'
+        : pass.status === 'rejected' && !pass.gateRejection
         ? 'Rejected'
         : (pass.autoApproved ? 'Auto-Approved' : 'Approved'),
       sub: pass.status === 'draft'
@@ -852,9 +883,18 @@ function LifecycleTimeline({ pass }) {
           : undefined),
       time: pass.approvedAt,
       done: ['approved', 'completed', 'closed', 'partial_return', 'rejected', 'in_transit'].includes(pass.status),
-      Icon: pass.status === 'rejected' ? X : CheckCircle2,
-      color: pass.status === 'rejected' ? 'var(--red)' : (pass.autoApproved ? 'var(--green)' : 'var(--blue)'),
+      Icon: pass.status === 'rejected' && !pass.gateRejection ? X : CheckCircle2,
+      color: pass.status === 'rejected' && !pass.gateRejection ? 'var(--red)' : (pass.autoApproved ? 'var(--green)' : 'var(--blue)'),
     },
+    ...(pass.gateRejection ? [{
+      key: 'gate_rejected',
+      label: 'Rejected at Gate',
+      sub: `${pass.gateRejection.rejectedByUser?.name || 'Time Office'}${pass.gateRejection.remarks ? ' · ' + pass.gateRejection.remarks : ''}`,
+      time: pass.gateRejection.rejectedAt,
+      done: true,
+      Icon: Ban,
+      color: 'var(--red)',
+    }] : []),
     ...(pass.type === 'outward' ? [{
       key: 'outward_log',
       label: 'Items Went Out',
@@ -948,14 +988,20 @@ function LifecycleTimeline({ pass }) {
     },
   ].filter(Boolean);
 
-  return <TimelineSteps steps={steps} pass={pass} />;
+  // A rejected pass goes no further — cut the timeline at the rejection so it
+  // doesn't list "waiting for the gate" steps that will never happen.
+  const rejectedIdx = pass.status === 'rejected'
+    ? steps.findIndex(s => s.key === (pass.gateRejection ? 'gate_rejected' : 'approved'))
+    : -1;
+  return <TimelineSteps steps={rejectedIdx >= 0 ? steps.slice(0, rejectedIdx + 1) : steps} pass={pass} />;
 }
 
 function TimelineSteps({ steps, pass }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column' }}>
       {steps.map((step, idx) => {
-        const isRejected = step.key === 'approved' && pass.status === 'rejected';
+        const isRejected = step.key === 'gate_rejected' ||
+          (step.key === 'approved' && pass.status === 'rejected' && !pass.gateRejection);
         const dotColor = isRejected ? 'var(--red)' : step.done ? 'var(--accent)' : 'var(--border2)';
         return (
           <div key={step.key} style={{ display: 'flex', gap: 14 }}>

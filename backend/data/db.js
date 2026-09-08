@@ -36,7 +36,9 @@ import { hashPassword } from '../lib/security.js';
 //                merged into 'completed' — displayStatusOf and all filters
 //                treat it as completed (scripts/merge-closed-into-completed.mjs
 //                rewrites stored rows)
-// rejected     → denied by manager
+// rejected     → denied by the manager while pending, OR refused by Time
+//                Office at the gate after approval (gateRejection records
+//                who / when / why; the manager's approval stays on record)
 //
 // Gate logs on a pass (each stamped at its own branch's gate):
 //   outwardLog       → item physically LEFT the source branch (source TO)
@@ -48,6 +50,8 @@ import { hashPassword } from '../lib/security.js';
 //   returnOutwardLog → return physically LEFT the destination branch (destination TO)
 //   inwardLog        → item ARRIVED back at the source branch (return leg of a
 //                      returnable outward pass, or a direct inward gate entry)
+//   gateRejection    → the source gate REFUSED an approved pass instead of
+//                      letting the items out (terminal — status 'rejected')
 //   returnCycles     → archive of finished send-back cycles: when a return
 //                      arrives only PARTIALLY, returnRequest/returnOutwardLog
 //                      are reset so the destination can run another cycle for

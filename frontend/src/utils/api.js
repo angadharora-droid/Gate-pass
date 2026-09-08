@@ -60,6 +60,8 @@ export const api = {
   revisePass: (id, data) => request(`/gate-passes/${id}/revise`, { method: 'PATCH', body: JSON.stringify(data) }),
   // Time Office lock (freeze manager edits) / unlock (send back to the manager)
   gateLock: (id, action, remarks = '') => request(`/gate-passes/${id}/gate-lock`, { method: 'PATCH', body: JSON.stringify({ action, remarks }) }),
+  // Time Office refuses an approved pass at the gate — terminal, reason required
+  gateReject: (id, remarks) => request(`/gate-passes/${id}/gate-reject`, { method: 'PATCH', body: JSON.stringify({ remarks }) }),
   // Finalizes a draft — self-approves it, same as a normal manager/admin submit
   submitDraft: (id) => request(`/gate-passes/${id}/submit-draft`, { method: 'PATCH' }),
   logOutward: (id, payload) => request(`/gate-passes/${id}/log-outward`, { method: 'PATCH', body: JSON.stringify(payload) }),

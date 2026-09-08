@@ -621,6 +621,36 @@ router.patch('/:id/gate-lock', requireRole('time_office', 'admin'), asyncHandler
   res.json(enrichPass(pass, await getRefs()));
 }));
 
+// ─── TIME OFFICE: REJECT AT THE GATE ─────────────────────────────────────────
+// The gate is the last check before anything leaves. When what turns up
+// doesn't match the pass — or shouldn't go out at all — Security can refuse
+// it outright instead of sending it back for a fix (/gate-lock unlock). This
+// is terminal: the pass ends as 'rejected' exactly like a manager rejection,
+// but the manager's approval stays on record and the gate's refusal is kept
+// separately, with a mandatory reason, since it overrides that approval.
+// Same window and authority as lock/unlock: an approved outward pass whose
+// items haven't left yet, decided by the SOURCE branch gate (or admin).
+router.patch('/:id/gate-reject', requireRole('time_office', 'admin'), asyncHandler(async (req, res) => {
+  const pass = await dbc('gatePasses').findOne({ id: req.params.id }, NO_ID);
+  if (!pass) return res.status(404).json({ error: 'Gate pass not found' });
+
+  // Authorization first, so state details never leak to the wrong gate
+  if (!hasRole(req.user, 'admin') && pass.sourceBranch !== req.user.branch)
+    return res.status(403).json({ error: 'Only the source branch gate can reject this pass' });
+  if (pass.type !== 'outward' || pass.status !== 'approved' || pass.outwardLog)
+    return res.status(400).json({ error: 'Only approved passes still waiting at the gate can be rejected' });
+
+  const remarks = typeof req.body?.remarks === 'string' ? req.body.remarks.trim() : '';
+  if (!remarks) return res.status(400).json({ error: 'A reason is required to reject a pass at the gate' });
+
+  pass.status = 'rejected';
+  pass.gateRejection = { rejectedBy: req.user.id, rejectedAt: new Date().toISOString(), remarks };
+
+  await dbc('gatePasses').replaceOne({ id: pass.id }, pass);
+  await logAudit('GATE_REJECT', req.user.id, pass.id, { passNumber: pass.passNumber, remarks });
+  res.json(enrichPass(pass, await getRefs()));
+}));
+
 // ─── CREATOR: SUBMIT A DRAFT ─────────────────────────────────────────────────
 // A draft only ever belongs to a self-approving role (manager/supermanager/
 // admin), so finalizing it is exactly what creating it non-draft would have
@@ -1207,6 +1237,7 @@ function enrichPass(pass, refs) {
   const returnOutwardUser  = u(pass.returnOutwardLog?.loggedBy);
   const gateLockedUser     = u(pass.gateLock?.lockedBy);
   const gateUnlockedUser   = u(pass.gateLock?.unlockedBy);
+  const gateRejectUser     = u(pass.gateRejection?.rejectedBy);
   const sourceBranchObj = b(pass.sourceBranch);
   const destBranchObj   = b(pass.destinationBranch);
   const deptObj         = d(pass.departmentId || createdByUser?.departmentId);
@@ -1259,6 +1290,10 @@ function enrichPass(pass, refs) {
       ...pass.gateLock,
       lockedByUser:   gateLockedUser   ? { id: gateLockedUser.id,   name: gateLockedUser.name   } : null,
       unlockedByUser: gateUnlockedUser ? { id: gateUnlockedUser.id, name: gateUnlockedUser.name } : null,
+    } : null,
+    gateRejection: pass.gateRejection ? {
+      ...pass.gateRejection,
+      rejectedByUser: gateRejectUser ? { id: gateRejectUser.id, name: gateRejectUser.name } : null,
     } : null,
     closures: Array.isArray(pass.closures)
       ? pass.closures.map(c => { const cu = u(c.closedBy); return { ...c, closedByUser: cu ? { id: cu.id, name: cu.name } : null }; })

@@ -683,6 +683,56 @@ const acmeAfter = await api('GET', `/gate-passes/${acmePass.json?.id}`, { token:
 check('renaming a vendor updates past outward passes too',
   acmeRename.status === 200 && acmeAfter.json?.destinationPerson === 'Acme Tools Ltd', JSON.stringify(acmeAfter.json?.destinationPerson));
 
+// ─── Gate reject: Time Office refuses an approved pass at the gate ──────────
+// Same window as lock/unlock (approved, items not yet out, source gate only)
+// but terminal: the pass ends as 'rejected', the manager's approval stays on
+// record and the gate's reason is stored alongside. (The original staff
+// account was deactivated above — the porter is still active, same dept.)
+const grPass = await api('POST', '/gate-passes', {
+  token: porterToken,
+  body: {
+    type: 'outward', direction: 'external', destinationPerson: 'Repair Shop',
+    returnable: false, purpose: 'Scrap monitors', approverId: managerUser.json.id,
+    items: [{ itemName: 'Old Monitor', quantity: 2, unit: 'pcs' }],
+  },
+});
+check('staff creates the pass headed for gate rejection', grPass.status === 201 && grPass.json?.status === 'pending', JSON.stringify(grPass.json));
+const grId = grPass.json?.id;
+const grPending = await api('PATCH', `/gate-passes/${grId}/gate-reject`, { token: timeOffice, body: { remarks: 'Too early' } });
+check('gate cannot reject a pass still waiting for approval', grPending.status === 400, JSON.stringify(grPending.json));
+const grApproved = await api('PATCH', `/gate-passes/${grId}/status`, { token: manager, body: { action: 'approve' } });
+check('manager approves the pass headed for gate rejection', grApproved.status === 200 && grApproved.json?.status === 'approved');
+const grByManager = await api('PATCH', `/gate-passes/${grId}/gate-reject`, { token: manager, body: { remarks: 'Changed my mind' } });
+check('manager cannot reject at the gate', grByManager.status === 403);
+const grWrongGate = await api('PATCH', `/gate-passes/${grId}/gate-reject`, { token: timeOffice2, body: { remarks: 'Not my gate' } });
+check("another branch's gate cannot reject it", grWrongGate.status === 403);
+const grNoReason = await api('PATCH', `/gate-passes/${grId}/gate-reject`, { token: timeOffice, body: { remarks: '   ' } });
+check('gate reject needs a reason', grNoReason.status === 400);
+await api('PATCH', `/gate-passes/${grId}/gate-lock`, { token: timeOffice, body: { action: 'lock' } });
+const grStatsBefore = await api('GET', '/gate-passes/meta/stats', { token: timeOffice });
+const gr = await api('PATCH', `/gate-passes/${grId}/gate-reject`, { token: timeOffice, body: { remarks: 'Monitors at the gate are not the ones on the pass' } });
+check('time office rejects a locked approved pass at the gate',
+  gr.status === 200 && gr.json?.status === 'rejected' &&
+  gr.json?.gateRejection?.remarks === 'Monitors at the gate are not the ones on the pass' &&
+  gr.json?.gateRejection?.rejectedByUser?.id === toUser.json?.id &&
+  gr.json?.approvedByUser?.id === managerUser.json?.id && gr.json?.sentBack === false,
+  JSON.stringify(gr.json));
+const grStatsAfter = await api('GET', '/gate-passes/meta/stats', { token: timeOffice });
+check('gate rejection counts as rejected and leaves the gate queue',
+  grStatsAfter.json?.rejected === (grStatsBefore.json?.rejected || 0) + 1 &&
+  grStatsAfter.json?.awaitingOutward === (grStatsBefore.json?.awaitingOutward || 0) - 1,
+  JSON.stringify({ before: grStatsBefore.json, after: grStatsAfter.json }));
+const grAgain = await api('PATCH', `/gate-passes/${grId}/gate-reject`, { token: timeOffice, body: { remarks: 'Again' } });
+check('cannot reject a pass twice', grAgain.status === 400);
+const grOut = await api('PATCH', `/gate-passes/${grId}/log-outward`, { token: timeOffice, body: { guardName: 'Ajay' } });
+check('rejected pass cannot be marked out', grOut.status === 400);
+const grReapprove = await api('PATCH', `/gate-passes/${grId}/status`, { token: manager, body: { action: 'approve' } });
+check('manager cannot re-approve a gate-rejected pass', grReapprove.status === 400);
+const grAudit = await api('GET', '/audit', { token: admin });
+check('gate rejection is audited with the reason',
+  grAudit.json?.some(l => l.action === 'GATE_REJECT' && l.details?.passNumber === grPass.json?.passNumber && l.details?.remarks),
+  JSON.stringify(grAudit.json?.filter(l => l.action === 'GATE_REJECT')));
+
 // ─── Done ─────────────────────────────────────────────────────────────────────
 console.log(failures === 0 ? '\nALL SMOKE TESTS PASSED' : `\n${failures} SMOKE TEST(S) FAILED`);
 await client.db(SMOKE_DB).dropDatabase();
