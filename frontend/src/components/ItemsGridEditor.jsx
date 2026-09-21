@@ -1,6 +1,7 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { X, Plus } from 'lucide-react';
 import { api } from '../utils/api';
+import { suggestKeyNav, keepActiveVisible } from '../utils/suggestMenu';
 
 // ERP-style material items grid shared by New Inward and New Gate Pass (outward).
 // Columns: Seq · Description · Code · Qty · Unit · Rate · Amount (auto) · Serial/Batch · Remarks
@@ -14,6 +15,44 @@ import { api } from '../utils/api';
 export const UNITS = ['pcs', 'set', 'kg', 'gram', 'litre', 'ml', 'mtr', 'ft', 'sqft', 'box', 'bag', 'roll', 'pair', 'dozen', 'bundle', 'packet', 'carton'];
 
 export const emptyRow = () => ({ itemName: '', code: '', quantity: 1, unit: 'pcs', rate: '', serialNo: '', remarks: '' });
+
+// The items master only holds items entered on passes, so it stays small:
+// the whole active list is fetched once and filtered in the browser, making
+// suggestions instant instead of a server round trip per keystroke. Shared
+// across every grid on the page; refreshed each time a grid mounts so items
+// added by the last pass show up.
+const MASTER_CAP = 5000;
+const SUGGEST_LIMIT = 20;
+let master = null;        // null = not loaded yet · false = too big to cache → server search
+let masterPromise = null; // in-flight fetch, so concurrent callers share one request
+
+const refreshMaster = () => {
+  if (!masterPromise) {
+    masterPromise = api.searchItems('', MASTER_CAP)
+      .then(list => { master = list.length < MASTER_CAP ? list : false; })
+      .catch(() => { /* keep whatever we had; searchMaster falls back to the server */ })
+      .then(() => { masterPromise = null; return master || null; });
+  }
+  return masterPromise;
+};
+const getMaster = () => (master !== null ? Promise.resolve(master || null) : refreshMaster());
+
+// Same identity rule as the server's normalizeItemName: case/space-insensitive
+const nameKey = (s) => String(s || '').trim().toUpperCase().replace(/\s+/g, ' ');
+
+// Same ranking as GET /items: names/codes STARTING with the query first,
+// substring matches only top up the remaining slots (list is already A→Z).
+const filterMaster = (list, q) => {
+  const key = nameKey(q);
+  const starts = [], contains = [];
+  for (const it of list) {
+    const nk = nameKey(it.name);
+    if (nk.startsWith(key) || nameKey(it.code).startsWith(key)) starts.push(it);
+    else if (nk.includes(key)) contains.push(it);
+    if (starts.length >= SUGGEST_LIMIT) break;
+  }
+  return [...starts, ...contains].slice(0, SUGGEST_LIMIT);
+};
 
 export const rowAmount = (r) => {
   const qty = Number(r.quantity) || 0;
@@ -34,7 +73,15 @@ export const rowsToItems = (rows) =>
     }));
 
 export default function ItemsGridEditor({ rows, onChange, title = 'Items', headerExtra = null, gst = '', onGstChange = null }) {
-  const updateRow = (idx, patch) => onChange(rows.map((r, i) => i === idx ? { ...r, ...patch } : r));
+  // The moment the LAST row gets a description, a fresh blank row appears under
+  // it — no reaching for "Add Row" between items. The trailing blank is harmless:
+  // rowsToItems and the forms' validation both skip rows with nothing typed.
+  const updateRow = (idx, patch) => {
+    const next = rows.map((r, i) => i === idx ? { ...r, ...patch } : r);
+    const justNamed = !rows[idx].itemName.trim() && next[idx].itemName.trim();
+    if (idx === rows.length - 1 && justNamed) next.push(emptyRow());
+    onChange(next);
+  };
   const addRow    = () => onChange([...rows, emptyRow()]);
   const removeRow = (idx) => onChange(rows.filter((_, i) => i !== idx));
 
@@ -42,19 +89,29 @@ export default function ItemsGridEditor({ rows, onChange, title = 'Items', heade
   // The menu is position:FIXED (anchored to the input's viewport rect) so it
   // floats above the grid instead of being clipped by — or adding scrollbars
   // to — the table's overflow-x container.
-  const [suggest, setSuggest] = useState({ row: -1, list: [], rect: null });
-  const closeSuggest = () => setSuggest({ row: -1, list: [], rect: null });
+  // `active` = suggestion highlighted with ↓/↑ (-1 = none; Enter picks it).
+  const [suggest, setSuggest] = useState({ row: -1, list: [], rect: null, active: -1 });
+  const closeSuggest = () => setSuggest({ row: -1, list: [], rect: null, active: -1 });
   const searchTimer = useRef(null);
   const searchSeq = useRef(0);
+  const menuRef = useRef(null);
 
-  const searchMaster = (idx, q, rect) => {
+  // Warm (or refresh) the local items list before the user starts typing
+  useEffect(() => { refreshMaster(); return () => clearTimeout(searchTimer.current); }, []);
+  useEffect(() => { keepActiveVisible(menuRef.current); }, [suggest.active]);
+
+  const searchMaster = async (idx, q, rect) => {
     clearTimeout(searchTimer.current);
-    if (!q || q.trim().length < 2) { closeSuggest(); return; }
+    const seq = ++searchSeq.current;
+    if (!q || !q.trim()) { closeSuggest(); return; }
+    const local = await getMaster();
+    if (seq !== searchSeq.current) return;
+    if (local) { setSuggest({ row: idx, list: filterMaster(local, q), rect, active: -1 }); return; }
+    // Local list unavailable (load failed / master too big) → ask the server
     searchTimer.current = setTimeout(async () => {
-      const seq = ++searchSeq.current;
       try {
         const list = await api.searchItems(q.trim());
-        if (seq === searchSeq.current) setSuggest({ row: idx, list, rect });
+        if (seq === searchSeq.current) setSuggest({ row: idx, list, rect, active: -1 });
       } catch { /* master search is best-effort; typing still works */ }
     }, 250);
   };
@@ -118,11 +175,18 @@ export default function ItemsGridEditor({ rows, onChange, title = 'Items', heade
                       updateRow(i, { itemName: e.target.value });
                       searchMaster(i, e.target.value, e.target.getBoundingClientRect());
                     }}
-                    onBlur={() => setTimeout(() => setSuggest(s => (s.row === i ? { row: -1, list: [], rect: null } : s)), 150)}
-                    onKeyDown={e => e.key === 'Escape' && closeSuggest()}
+                    onBlur={() => setTimeout(() => setSuggest(s => (s.row === i ? { row: -1, list: [], rect: null, active: -1 } : s)), 150)}
+                    onKeyDown={e => suggestKeyNav(e, {
+                      count: suggest.row === i ? suggest.list.length : 0,
+                      active: suggest.active,
+                      setActive: (n) => setSuggest(s => ({ ...s, active: n })),
+                      pick: (n) => pickSuggestion(i, suggest.list[n]),
+                      close: closeSuggest,
+                    })}
                     placeholder="Search items or type a new one…" />
                   {suggest.row === i && suggest.list.length > 0 && suggest.rect && (
                     <div
+                      ref={menuRef}
                       className="suggest-menu"
                       style={{
                         top: Math.min(suggest.rect.bottom + 2, window.innerHeight - 250),
@@ -130,8 +194,9 @@ export default function ItemsGridEditor({ rows, onChange, title = 'Items', heade
                         width: Math.max(suggest.rect.width, 300),
                       }}
                     >
-                      {suggest.list.map(it => (
-                        <button type="button" key={it.id} className="suggest-item"
+                      {suggest.list.map((it, n) => (
+                        <button type="button" key={it.id} tabIndex={-1}
+                          className={`suggest-item${n === suggest.active ? ' active' : ''}`}
                           onMouseDown={e => { e.preventDefault(); pickSuggestion(i, it); }}>
                           <span className="suggest-name">{it.name}</span>
                           {(it.code || it.category) && (
