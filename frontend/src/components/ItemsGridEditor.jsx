@@ -11,7 +11,7 @@ import { api } from '../utils/api';
 // name + code + unit. Free-typed names still work — the server adds them to
 // the master automatically, so the list grows from real gate movements.
 
-export const UNITS = ['pcs', 'set', 'kg', 'litre', 'box', 'bag', 'roll', 'pair', 'dozen'];
+export const UNITS = ['pcs', 'set', 'kg', 'gram', 'litre', 'ml', 'mtr', 'ft', 'sqft', 'box', 'bag', 'roll', 'pair', 'dozen', 'bundle', 'packet', 'carton'];
 
 export const emptyRow = () => ({ itemName: '', code: '', quantity: 1, unit: 'pcs', rate: '', serialNo: '', remarks: '' });
 
