@@ -274,19 +274,26 @@ export function normalizeItemName(name) {
 
 // Add any names the master doesn't know yet — called whenever a pass or a
 // direct inward entry is logged, so the shared list grows organically.
+// Known items remember the unit they were LAST used with, so picking the item
+// on the next pass pre-selects that unit instead of the one it was created with.
 export async function upsertMasterItems(items, userId) {
   for (const li of items || []) {
     const nameKey = normalizeItemName(li.itemName);
     if (!nameKey) continue;
     const exists = await dbc('items').findOne({ nameKey }, NO_ID);
-    if (exists) continue;
+    if (exists) {
+      if (UNITS.includes(li.unit) && li.unit !== exists.unit) {
+        await dbc('items').updateOne({ nameKey }, { $set: { unit: li.unit } });
+      }
+      continue;
+    }
     await dbc('items').insertOne({
       id: uuidv4(),
       code: li.code?.trim() || '',
       name: li.itemName.trim(),
       nameKey,
       category: '',
-      unit: li.unit || 'pcs',
+      unit: UNITS.includes(li.unit) ? li.unit : 'pcs',
       uom: '',
       active: true,
       source: 'user',
