@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../utils/api';
 import { AlertTriangle, Check } from 'lucide-react';
+import { suggestKeyNav, keepActiveVisible } from '../utils/suggestMenu';
 
 // Same identity rule as the server's normalizeItemName: case/space-insensitive
 export const vendorNameKey = (s) => String(s || '').trim().toUpperCase().replace(/\s+/g, ' ');
@@ -19,10 +20,13 @@ export default function VendorPicker({
   // Shown under the box while the text isn't a listed vendor
   hint = 'Not in the vendor list — pick one of the suggestions, or ask an admin to add it under Admin → Vendors.',
 }) {
-  const [suggest, setSuggest] = useState({ list: [], rect: null, q: null });
-  const close = () => setSuggest({ list: [], rect: null, q: null });
+  // `active` = vendor highlighted with ↓/↑ (-1 = none; Enter picks it)
+  const [suggest, setSuggest] = useState({ list: [], rect: null, q: null, active: -1 });
+  const close = () => setSuggest({ list: [], rect: null, q: null, active: -1 });
   const timer = useRef(null);
   const seq = useRef(0);
+  const menuRef = useRef(null);
+  useEffect(() => { keepActiveVisible(menuRef.current); }, [suggest.active]);
   // Latest props for the async search callback, so a stale closure never
   // overwrites what the user has typed since
   const latest = useRef({ value, vendorId, onChange });
@@ -35,7 +39,7 @@ export default function VendorPicker({
       try {
         const list = await api.searchVendors(q.trim());
         if (mySeq !== seq.current) return;
-        setSuggest({ list, rect, q: q.trim() });
+        setSuggest({ list, rect, q: q.trim(), active: -1 });
         // Typed the full name of a known vendor → treat it as picked
         const exact = list.find(v => vendorNameKey(v.name) === vendorNameKey(q));
         const cur = latest.current;
@@ -80,7 +84,13 @@ export default function VendorPicker({
           }}
           onFocus={e => search(e.target.value, e.target.getBoundingClientRect())}
           onBlur={() => setTimeout(close, 150)}
-          onKeyDown={e => e.key === 'Escape' && close()}
+          onKeyDown={e => suggestKeyNav(e, {
+            count: suggest.rect ? suggest.list.length : 0,
+            active: suggest.active,
+            setActive: (n) => setSuggest(s => ({ ...s, active: n })),
+            pick: (n) => pick(suggest.list[n]),
+            close,
+          })}
           placeholder={placeholder} />
         {vendorId ? (
           <span className="input-affix" style={{ pointerEvents: 'none', color: 'var(--green)' }} title="From the vendor list"><Check size={15} /></span>
@@ -93,6 +103,7 @@ export default function VendorPicker({
       )}
       {suggest.rect && (suggest.list.length > 0 || suggest.q) && (
         <div
+          ref={menuRef}
           className="suggest-menu"
           style={{
             top: Math.min(suggest.rect.bottom + 2, window.innerHeight - 370),
@@ -114,8 +125,9 @@ export default function VendorPicker({
               <span className="suggest-name" style={{ color: 'var(--text3)' }}>No vendor matches “{suggest.q}”</span>
               <span className="suggest-meta">Only vendors on the admin list can be used</span>
             </div>
-          ) : suggest.list.map(v => (
-            <button type="button" key={v.id} className="suggest-item"
+          ) : suggest.list.map((v, n) => (
+            <button type="button" key={v.id} tabIndex={-1}
+              className={`suggest-item${n === suggest.active ? ' active' : ''}`}
               onMouseDown={e => { e.preventDefault(); pick(v); }}>
               <span className="suggest-name">{v.name}</span>
             </button>

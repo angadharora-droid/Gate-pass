@@ -666,6 +666,8 @@ strong { font-weight: 600; }
 }
 .suggest-item:last-child { border-bottom: none; }
 .suggest-item:hover { background: var(--bg3); }
+/* ↓/↑ keyboard highlight */
+.suggest-item.active { background: var(--accent-soft); box-shadow: inset 3px 0 0 var(--accent); }
 .suggest-name { display: block; font-size: 13px; color: var(--text); }
 .suggest-meta { display: block; font-size: 11px; color: var(--text3); font-family: var(--font-mono); margin-top: 1px; }
 
