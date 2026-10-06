@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { api } from '../utils/api';
 import { useAuth } from '../context/AuthContext';
@@ -1043,7 +1044,9 @@ function PrintGatePass({ pass }) {
   const totalClosedQty = (pass.items || []).reduce((s, li) => s + (li.closedQuantity || 0), 0);
   const isReturnableOutward = pass.returnable && pass.type === 'outward';
 
-  return (
+  // Portaled to <body> so print CSS can drop the whole app with display:none
+  // and let this flow normally across pages.
+  return createPortal(
     <div className="print-gate-pass">
       {/* Header */}
       <div className="print-header">
@@ -1223,6 +1226,7 @@ function PrintGatePass({ pass }) {
         </div>
       )}
 
+      <div className="print-signoff">
       {/* Authorization — direct inwards have no approval chain, just gate log + receiver */}
       {pass.type === 'inward' ? (
         <div className="print-auth">
@@ -1318,6 +1322,8 @@ function PrintGatePass({ pass }) {
         <span>Printed: {fmtDate(new Date().toISOString())}</span>
         <span>{pass.passNumber} · GatePass Item Movement System</span>
       </div>
-    </div>
+      </div>
+    </div>,
+    document.body
   );
 }
