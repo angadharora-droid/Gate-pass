@@ -1257,21 +1257,22 @@ a.pass-number:hover { text-decoration: underline; text-underline-offset: 3px; }
 .print-gate-pass { display: none; }
 
 @media print {
-  /* Hide everything except the print document */
-  body * { visibility: hidden; }
-  .print-gate-pass,
-  .print-gate-pass * { visibility: visible; }
+  @page { size: A4; margin: 12mm; }
+
+  /* The print document is portaled to <body>; drop everything else entirely
+     (not just visibility) so it takes no space and adds no blank pages. */
+  body > *:not(.print-gate-pass) { display: none !important; }
+  html, body { background: #fff !important; min-height: 0; }
 
   .print-gate-pass {
     display: block;
-    position: fixed;
-    inset: 0;
-    padding: 28px 36px;
     background: white;
     color: #000;
     font-family: 'Inter', Arial, sans-serif;
     font-size: 11pt;
     line-height: 1.5;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
   }
 
   .print-header {
@@ -1313,6 +1314,7 @@ a.pass-number:hover { text-decoration: underline; text-underline-offset: 3px; }
     padding-bottom: 4px;
     margin-bottom: 8px;
     font-weight: 600;
+    break-after: avoid;
   }
   .print-text { font-size: 11pt; }
 
@@ -1339,11 +1341,18 @@ a.pass-number:hover { text-decoration: underline; text-underline-offset: 3px; }
     text-transform: uppercase;
     letter-spacing: 0.05em;
   }
-  .print-items-table td {
+  .print-items-table td,
+  .print-items-table tr:last-child td {
     border: 1px solid #bbb;
     padding: 6px 10px;
   }
   .print-items-table tr:nth-child(even) td { background: #fafafa; }
+  /* Long item lists: repeat the column header on each page, never split a row */
+  .print-items-table thead { display: table-header-group; }
+  .print-items-table tr { break-inside: avoid; }
+
+  /* Sign-off block (authorization, gate logs, signatures, footer) stays on one page */
+  .print-signoff { break-inside: avoid; }
 
   .print-auth {
     display: grid;
