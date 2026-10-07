@@ -733,6 +733,88 @@ check('gate rejection is audited with the reason',
   grAudit.json?.some(l => l.action === 'GATE_REJECT' && l.details?.passNumber === grPass.json?.passNumber && l.details?.remarks),
   JSON.stringify(grAudit.json?.filter(l => l.action === 'GATE_REJECT')));
 
+// ─── Due date extension: the approving manager pushes Return By out ─────────
+// Only while items are still out, by the manager who approved the pass (or an
+// admin — or any source-branch approver once that manager can't act). Every
+// extension keeps previous → new on the pass; lateness follows the new date.
+const localInput = (days) => {
+  const d = new Date(Date.now() + days * 864e5);
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+};
+const lateDue = localInput(-2);
+const ddPass = await api('POST', '/gate-passes', {
+  token: porterToken,
+  body: {
+    type: 'outward', direction: 'external', destinationPerson: 'Repair Shop',
+    returnable: true, expectedReturnDate: lateDue, purpose: 'Projector repair',
+    approverId: managerUser.json.id,
+    items: [{ itemName: 'Projector', quantity: 2, unit: 'pcs' }],
+  },
+});
+check('staff creates the returnable pass headed for a due-date extension', ddPass.status === 201, JSON.stringify(ddPass.json));
+const ddId = ddPass.json?.id;
+const ddUrl = `/gate-passes/${ddId}/extend-due-date`;
+await api('PATCH', `/gate-passes/${ddId}/status`, { token: manager, body: { action: 'approve' } });
+const ddEarly = await api('PATCH', ddUrl, { token: manager, body: { expectedReturnDate: localInput(5) } });
+check('due date cannot be extended before the items go out', ddEarly.status === 400, JSON.stringify(ddEarly.json));
+const ddOut = await api('PATCH', `/gate-passes/${ddId}/log-outward`, { token: timeOffice, body: { guardName: 'Ajay' } });
+check('late returnable pass marked out', ddOut.status === 200 && ddOut.json?.isOverdue === true && ddOut.json?.approvedByCanAct === true, JSON.stringify(ddOut.json));
+const ddByStaff = await api('PATCH', ddUrl, { token: porterToken, body: { expectedReturnDate: localInput(5) } });
+check('staff cannot extend a due date', ddByStaff.status === 403);
+const ddByGate = await api('PATCH', ddUrl, { token: timeOffice, body: { expectedReturnDate: localInput(5) } });
+check('time office cannot extend a due date', ddByGate.status === 403);
+const ddBySuper = await api('PATCH', ddUrl, { token: superToken, body: { expectedReturnDate: localInput(5) } });
+check('another approver cannot extend while the approving manager can still act', ddBySuper.status === 403, JSON.stringify(ddBySuper.json));
+const ddNoDate = await api('PATCH', ddUrl, { token: manager, body: {} });
+check('extension needs a new date', ddNoDate.status === 400);
+const ddPast = await api('PATCH', ddUrl, { token: manager, body: { expectedReturnDate: localInput(-1) } });
+check('extension to a past date rejected', ddPast.status === 400, JSON.stringify(ddPast.json));
+const due1 = localInput(3);
+const ddExt1 = await api('PATCH', ddUrl, { token: manager, body: { expectedReturnDate: due1, reason: '  Spare part delayed ' } });
+const ext1 = ddExt1.json?.dueDateExtensions?.[0];
+check('approving manager extends the due date — previous and new both kept',
+  ddExt1.status === 200 && ddExt1.json?.expectedReturnDate === due1 && ddExt1.json?.isOverdue === false &&
+  ddExt1.json?.dueDateExtensions?.length === 1 && ext1?.from === lateDue && ext1?.to === due1 &&
+  ext1?.extendedByUser?.id === managerUser.json?.id && ext1?.reason === 'Spare part delayed',
+  JSON.stringify(ddExt1.json));
+const ddNotLater = await api('PATCH', ddUrl, { token: manager, body: { expectedReturnDate: localInput(2) } });
+check('extension must be later than the current due date', ddNotLater.status === 400, JSON.stringify(ddNotLater.json));
+const due2 = localInput(7);
+const ddExt2 = await api('PATCH', ddUrl, { token: admin, body: { expectedReturnDate: due2 } });
+check('admin extends again — history chains previous → new',
+  ddExt2.status === 200 && ddExt2.json?.dueDateExtensions?.length === 2 &&
+  ddExt2.json.dueDateExtensions[1].from === due1 && ddExt2.json.dueDateExtensions[1].to === due2,
+  JSON.stringify(ddExt2.json?.dueDateExtensions));
+const ddAudit = await api('GET', '/audit', { token: admin });
+check('due date extensions are audited',
+  ddAudit.json?.filter(l => l.action === 'EXTEND_DUE_DATE' && l.details?.passNumber === ddPass.json?.passNumber).length === 2);
+const ddBack = await api('PATCH', `/gate-passes/${ddId}/log-inward`,
+  { token: timeOffice, body: { guardName: 'Ajay', returns: [{ index: 0, quantity: 2 }] } });
+const ddAfter = await api('PATCH', ddUrl, { token: manager, body: { expectedReturnDate: localInput(9) } });
+check('no extension once everything is back', ddBack.json?.status === 'completed' && ddAfter.status === 400, JSON.stringify(ddAfter.json));
+
+// The approving manager leaves — their branch's other approvers take over
+const tempMgrUser = await mkUser('Manager Temp', 'mtemp@test.com', 'manager', d1);
+const tempMgr = await login('mtemp@test.com', 'secret1');
+const ddPass2 = await api('POST', '/gate-passes', {
+  token: porterToken,
+  body: {
+    type: 'outward', direction: 'external', destinationPerson: 'Repair Shop',
+    returnable: true, expectedReturnDate: localInput(1), purpose: 'Drill repair',
+    approverId: tempMgrUser.json?.id,
+    items: [{ itemName: 'Drill', quantity: 1, unit: 'pcs' }],
+  },
+});
+await api('PATCH', `/gate-passes/${ddPass2.json?.id}/status`, { token: tempMgr, body: { action: 'approve' } });
+await api('PATCH', `/gate-passes/${ddPass2.json?.id}/log-outward`, { token: timeOffice, body: { guardName: 'Ajay' } });
+await api('DELETE', `/users/${tempMgrUser.json?.id}`, { token: admin });
+const ddFallback = await api('PATCH', `/gate-passes/${ddPass2.json?.id}/extend-due-date`,
+  { token: superToken, body: { expectedReturnDate: localInput(4) } });
+check('once the approving manager is gone, a source-branch approver can extend',
+  ddFallback.status === 200 && ddFallback.json?.approvedByCanAct === false &&
+  ddFallback.json?.dueDateExtensions?.length === 1, JSON.stringify(ddFallback.json));
+
 // ─── Done ─────────────────────────────────────────────────────────────────────
 console.log(failures === 0 ? '\nALL SMOKE TESTS PASSED' : `\n${failures} SMOKE TEST(S) FAILED`);
 await client.db(SMOKE_DB).dropDatabase();

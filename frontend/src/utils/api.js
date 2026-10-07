@@ -75,6 +75,9 @@ export const api = {
   closeItems: (id, closures) => request(`/gate-passes/${id}/close-items`, { method: 'PATCH', body: JSON.stringify({ closures }) }),
   // Destination branch gate marks the approved return physically out
   returnOutward: (id, payload) => request(`/gate-passes/${id}/return-outward`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  // The approving manager pushes a returnable pass's Return By date out while
+  // items are still out — every old → new change stays on the pass
+  extendDueDate: (id, expectedReturnDate, reason = '') => request(`/gate-passes/${id}/extend-due-date`, { method: 'PATCH', body: JSON.stringify({ expectedReturnDate, reason }) }),
   getStats: () => request('/gate-passes/meta/stats'),
 
   // Admin edit (used by Reports)

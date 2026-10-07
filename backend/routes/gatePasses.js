@@ -429,8 +429,14 @@ router.post('/inward', requireRole('time_office', 'admin'), asyncHandler(async (
 // source branch).
 async function approverStillValid(pass) {
   if (!pass.approverId) return false;
-  const a = await dbc('users').findOne({ id: pass.approverId, active: { $ne: false } }, NO_ID);
-  return !!a && hasRole(a, 'manager', 'supermanager') && a.branch === pass.sourceBranch;
+  return canActForSource(await dbc('users').findOne({ id: pass.approverId }, NO_ID), pass);
+}
+
+// An approver who can still act for the pass's source branch: active, still a
+// manager/supermanager, still at that branch.
+function canActForSource(user, pass) {
+  return !!user && user.active !== false &&
+    hasRole(user, 'manager', 'supermanager') && user.branch === pass.sourceBranch;
 }
 
 // ─── APPROVE / REJECT ─────────────────────────────────────────────────────────
@@ -1101,6 +1107,68 @@ router.patch('/:id/log-inward', requireRole('time_office', 'admin'), asyncHandle
   return res.status(400).json({ error: 'Cannot log inward for this pass type/status' });
 }));
 
+// ─── APPROVER: EXTEND THE DUE DATE OF A RETURNABLE PASS ─────────────────────
+// Items out on a returnable pass sometimes need longer than planned (a repair
+// runs over, the other branch keeps them for another event). The manager who
+// APPROVED the pass — who signed off on the items leaving — pushes the Return
+// By date out. Every extension is kept on the pass as { from, to, extendedBy,
+// extendedAt, reason }, so the detail view and the printed pass show the
+// previous date next to the new one; expectedReturnDate always holds the
+// current date, so lateness, alerts and early-return all follow it.
+// Allowed only while items are still out (in_transit / partial_return with
+// something outstanding) — before they leave, the date is simply edited via
+// /revise. Authority: the approver (or admin); if the approver can no longer
+// act for the source branch, any manager/supermanager there takes over —
+// the same fallback as a routed approval.
+router.patch('/:id/extend-due-date', requireRole('manager', 'supermanager', 'admin'), asyncHandler(async (req, res) => {
+  const pass = await dbc('gatePasses').findOne({ id: req.params.id }, NO_ID);
+  if (!pass) return res.status(404).json({ error: 'Gate pass not found' });
+
+  // Authorization first, so state details never leak to the wrong branch
+  if (!hasRole(req.user, 'admin')) {
+    if (pass.sourceBranch !== req.user.branch)
+      return res.status(403).json({ error: 'Only the source branch can extend this pass' });
+    if (pass.approvedBy !== req.user.id) {
+      const approver = pass.approvedBy ? await dbc('users').findOne({ id: pass.approvedBy }, NO_ID) : null;
+      if (canActForSource(approver, pass))
+        return res.status(403).json({ error: `Only ${approver.name}, who approved this pass, can extend its due date` });
+    }
+  }
+
+  if (!(pass.type === 'outward' && pass.returnable))
+    return res.status(400).json({ error: 'Only returnable outward passes have a due date to extend' });
+  if (!['in_transit', 'partial_return'].includes(pass.status) || outstandingQty(pass) <= 0)
+    return res.status(400).json({ error: 'The due date can only be extended while items are still out' });
+
+  const { expectedReturnDate, reason } = req.body || {};
+  const next = new Date(expectedReturnDate);
+  if (!expectedReturnDate || isNaN(next.getTime()))
+    return res.status(400).json({ error: 'Pick the new Return By date' });
+  if (next <= new Date())
+    return res.status(400).json({ error: 'The new Return By date must be in the future' });
+  if (pass.expectedReturnDate && next <= new Date(pass.expectedReturnDate))
+    return res.status(400).json({ error: 'The new Return By date must be later than the current one' });
+
+  const extension = {
+    from: pass.expectedReturnDate || null,
+    to:   String(expectedReturnDate),
+    extendedBy: req.user.id,
+    extendedAt: new Date().toISOString(),
+    reason: typeof reason === 'string' ? reason.trim() : '',
+  };
+  pass.dueDateExtensions = [...(pass.dueDateExtensions || []), extension];
+  pass.expectedReturnDate = extension.to;
+
+  await dbc('gatePasses').replaceOne({ id: pass.id }, pass);
+  await logAudit('EXTEND_DUE_DATE', req.user.id, pass.id, {
+    passNumber: pass.passNumber,
+    from:   extension.from,
+    to:     extension.to,
+    reason: extension.reason,
+  });
+  res.json(enrichPass(pass, await getRefs()));
+}));
+
 // Total quantity not yet returned or written off across the pass. Lateness
 // keys off this as well as status: once every item is accounted for, the pass
 // is done in reality — whatever its stored status says (legacy/backfilled rows
@@ -1301,6 +1369,12 @@ function enrichPass(pass, refs) {
     quantityAdjustments: Array.isArray(pass.quantityAdjustments)
       ? pass.quantityAdjustments.map(qa => { const au = u(qa.adjustedBy); return { ...qa, adjustedByUser: au ? { id: au.id, name: au.name } : null }; })
       : [],
+    dueDateExtensions: Array.isArray(pass.dueDateExtensions)
+      ? pass.dueDateExtensions.map(x => { const xu = u(x.extendedBy); return { ...x, extendedByUser: xu ? { id: xu.id, name: xu.name } : null }; })
+      : [],
+    // When the approver can no longer act for the source branch, extending
+    // the due date falls to any manager/supermanager there (/extend-due-date)
+    approvedByCanAct: canActForSource(approvedByUser, pass),
     sourceBranchName:     sourceBranchObj?.name || null,
     destinationBranchName: destBranchObj?.name  || null,
     departmentName: deptObj?.name || null,

@@ -10,7 +10,7 @@ import {
   ArrowLeft, Check, X, RotateCcw, Printer, Pencil,
   AlertTriangle, CheckCircle2, Info,
   FileText, ArrowUpRight, Truck, ArrowDownLeft, PackageCheck, PackageX,
-  Zap, Clock, Lock, LockOpen, Ban,
+  Zap, Clock, Lock, LockOpen, Ban, CalendarClock,
 } from 'lucide-react';
 
 function fmt(dateStr) {
@@ -24,6 +24,13 @@ function fmt(dateStr) {
 function fmtDate(dateStr) {
   if (!dateStr) return '—';
   return new Date(dateStr).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+}
+
+// datetime-local inputs need "YYYY-MM-DDTHH:mm" in local time
+function toLocalInput(date) {
+  const d = new Date(date);
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
 // Mirrors INWARD_TYPES in backend/data/db.js
@@ -179,6 +186,16 @@ export default function GatePassDetailPage() {
   // After approval, the destination gate marks the return physically out
   const canReturnOut    = canLog && atDest && isTransferAway && pass.returnable &&
     pass.returnRequest && !pass.returnOutwardLog;
+  // The manager who approved a returnable pass can push its Return By date out
+  // while items are still out; if they can no longer act for the branch, any
+  // manager/supermanager of the source branch can. Mirrors /extend-due-date.
+  const canExtendDue = pass.type === 'outward' && pass.returnable &&
+    ['in_transit', 'partial_return'].includes(pass.status) &&
+    pass.items?.some(li => li.quantity - (li.returnedQuantity || 0) - (li.closedQuantity || 0) > 0) &&
+    (isAdmin ||
+      (hasRole(user, 'manager', 'supermanager') && user?.branch === pass.sourceBranch &&
+        (pass.approvedBy === user?.id || !pass.approvedByCanAct)));
+  const extensions = pass.dueDateExtensions || [];
   const isOverdue = pass.isOverdue;
   const isDirectInward = pass.type === 'inward';
   const totalClosed = (pass.items || []).reduce((s, li) => s + (li.closedQuantity || 0), 0);
@@ -288,6 +305,11 @@ export default function GatePassDetailPage() {
           {canLogReturn && (
             <button className="btn btn-primary" onClick={() => setLogModal('inward')}>
               <RotateCcw size={14} /> Log Return
+            </button>
+          )}
+          {canExtendDue && (
+            <button className="btn btn-ghost" onClick={() => setLogModal('extend')}>
+              <CalendarClock size={14} /> Extend Due Date
             </button>
           )}
         </div>
@@ -493,9 +515,17 @@ export default function GatePassDetailPage() {
                 )}
                 {pass.returnable && (
                   <div className="detail-item">
-                    <div className="dl">Return By</div>
+                    <div className="dl">{extensions.length ? 'Return By (Extended)' : 'Return By'}</div>
                     <div className="dv" style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5, color: isOverdue ? 'var(--red)' : 'inherit' }}>
                       {fmt(pass.expectedReturnDate)}
+                    </div>
+                  </div>
+                )}
+                {extensions.length > 0 && (
+                  <div className="detail-item">
+                    <div className="dl">Original Return By</div>
+                    <div className="dv" style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5, color: 'var(--text2)' }}>
+                      {fmt(extensions[0].from)}
                     </div>
                   </div>
                 )}
@@ -591,6 +621,32 @@ export default function GatePassDetailPage() {
             })()}
           </div>
 
+          {/* Due date extensions — every previous → new Return By, and who extended it */}
+          {extensions.length > 0 && (
+            <div className="card">
+              <h3 style={{ fontWeight: 700, marginBottom: 16, fontSize: 15, display: 'flex', alignItems: 'center', gap: 8 }}>
+                <CalendarClock size={15} style={{ color: 'var(--blue)' }} /> Due Date Extended
+              </h3>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                {extensions.map((x, xi) => (
+                  <div key={xi} style={{ borderLeft: '2px solid var(--blue)', paddingLeft: 12 }}>
+                    <div style={{ fontSize: 11, color: 'var(--text3)', fontFamily: 'var(--font-mono)', marginBottom: 6 }}>
+                      {fmt(x.extendedAt)}{x.extendedByUser ? ` · by ${x.extendedByUser.name}` : ''}
+                    </div>
+                    <div style={{ fontSize: 13, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'baseline' }}>
+                      <span><span style={{ color: 'var(--text3)' }}>Previous:</span> <span style={{ color: 'var(--text2)' }}>{fmt(x.from)}</span></span>
+                      <span style={{ color: 'var(--text3)' }}>→</span>
+                      <span><span style={{ color: 'var(--text3)' }}>New:</span> <strong>{fmt(x.to)}</strong></span>
+                    </div>
+                    {x.reason && (
+                      <div style={{ fontSize: 12.5, color: 'var(--text2)', marginTop: 2 }}>{x.reason}</div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Quantity corrections made by the destination branch, for observability */}
           {pass.quantityAdjustments?.length > 0 && (
             <div className="card">
@@ -674,6 +730,9 @@ export default function GatePassDetailPage() {
       )}
       {logModal === 'reject' && (
         <GateRejectModal pass={pass} onClose={() => setLogModal(null)} onDone={handleLogDone} />
+      )}
+      {logModal === 'extend' && (
+        <ExtendDueDateModal pass={pass} onClose={() => setLogModal(null)} onDone={handleLogDone} />
       )}
       {writeOffModalOpen && (
         <WriteOffItemsModal pass={pass} onClose={() => setWriteOffModalOpen(false)} onDone={() => { setWriteOffModalOpen(false); load(); }} />
@@ -809,6 +868,88 @@ function WriteOffItemsModal({ pass, onClose, onDone }) {
   );
 }
 
+/* ── Extend Due Date Modal ──────────────────────────────────────────────────── */
+// The approving manager pushes the Return By date out while items are still
+// out. The previous date is never lost — each change is listed on the pass and
+// on the printout as previous → new, with who extended it.
+function ExtendDueDateModal({ pass, onClose, onDone }) {
+  const [date, setDate] = useState('');
+  const [reason, setReason] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const current = pass.expectedReturnDate ? new Date(pass.expectedReturnDate) : null;
+  // The new date must beat both the current due date and now
+  const earliest = current && current > new Date() ? current : new Date();
+
+  const handleSave = async () => {
+    setError('');
+    if (!date) { setError('Pick the new Return By date'); return; }
+    const next = new Date(date);
+    if (next <= new Date()) { setError('The new Return By date must be in the future'); return; }
+    if (current && next <= current) { setError('The new Return By date must be later than the current one'); return; }
+    setLoading(true);
+    try {
+      await api.extendDueDate(pass.id, date, reason.trim());
+      onDone();
+    } catch (e) { setError(e.message); } finally { setLoading(false); }
+  };
+
+  return (
+    <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="modal">
+        <div className="modal-header">
+          <div>
+            <div className="modal-title">Extend Due Date</div>
+            <div style={{ fontSize: 12, color: 'var(--text3)', marginTop: 3 }}>{pass.passNumber}</div>
+          </div>
+          <button className="modal-close" onClick={onClose}><X size={16} /></button>
+        </div>
+        <div className="modal-body">
+          <div className={`alert ${pass.isOverdue ? 'alert-danger' : 'alert-info'}`} style={{ marginBottom: 20 }}>
+            <CalendarClock size={15} />
+            <span>
+              Currently due back by <strong>{fmt(pass.expectedReturnDate)}</strong>
+              {pass.isOverdue ? ' — already late' : ''}. The previous date stays on the pass
+              and on the printout, next to the new one.
+            </span>
+          </div>
+          <div className="form-group">
+            <label className="form-label">New Return By <span style={{ color: 'var(--red)' }}>*</span></label>
+            <input
+              className="form-input"
+              type="datetime-local"
+              value={date}
+              min={toLocalInput(earliest)}
+              onChange={e => setDate(e.target.value)}
+              autoFocus
+            />
+          </div>
+          <div className="form-group" style={{ marginBottom: 0 }}>
+            <label className="form-label">Reason</label>
+            <textarea className="form-textarea" rows={2} value={reason}
+              onChange={e => setReason(e.target.value)}
+              placeholder="e.g. Repair needs another week…" />
+          </div>
+          {error && (
+            <div className="alert alert-danger" style={{ marginTop: 12 }}>
+              <AlertTriangle size={15} /> {error}
+            </div>
+          )}
+        </div>
+        <div className="modal-footer">
+          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+          <button className="btn btn-primary" onClick={handleSave} disabled={loading || !date}>
+            {loading
+              ? <><div className="spinner" style={{ width: 15, height: 15 }} /> Saving…</>
+              : <><CalendarClock size={14} /> Extend Due Date</>}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ── Lifecycle Timeline ─────────────────────────────── */
 function LifecycleTimeline({ pass }) {
   const isOverdue = pass.isOverdue;
@@ -911,7 +1052,10 @@ function LifecycleTimeline({ pass }) {
       key: 'in_transit',
       label: 'Items Are Out',
       sub: pass.expectedReturnDate
-        ? `Due back ${new Date(pass.expectedReturnDate).toLocaleDateString('en-IN')}`
+        ? `Due back ${new Date(pass.expectedReturnDate).toLocaleDateString('en-IN')}` +
+          (pass.dueDateExtensions?.[0]?.from
+            ? ` (extended from ${new Date(pass.dueDateExtensions[0].from).toLocaleDateString('en-IN')})`
+            : '')
         : undefined,
       time: null,
       done: ['in_transit', 'partial_return', 'completed', 'closed'].includes(pass.status),
@@ -1198,8 +1342,37 @@ function PrintGatePass({ pass }) {
           <div className="print-section-title">Return Info</div>
           <div className="print-text">
             Due back by: <strong>{fmt(pass.expectedReturnDate)}</strong>
+            {pass.dueDateExtensions?.length > 0 && ' (extended)'}
             {pass.earlyReturn && '  ·  Came Back Early'}
           </div>
+          {/* Every extension, previous and new date side by side — the paper
+              record must show the original commitment, not just the latest */}
+          {pass.dueDateExtensions?.length > 0 && (
+            <table className="print-items-table" style={{ marginTop: 6 }}>
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Previous Due Date</th>
+                  <th>New Due Date</th>
+                  <th>Extended By</th>
+                  <th>On</th>
+                  <th>Reason</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pass.dueDateExtensions.map((x, i) => (
+                  <tr key={i}>
+                    <td>{i + 1}</td>
+                    <td>{fmt(x.from)}</td>
+                    <td><strong>{fmt(x.to)}</strong></td>
+                    <td>{x.extendedByUser?.name || '—'}</td>
+                    <td>{fmt(x.extendedAt)}</td>
+                    <td>{x.reason || '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
         </div>
       )}
 
