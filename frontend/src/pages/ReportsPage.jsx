@@ -4,7 +4,11 @@ import { api } from '../utils/api';
 import { useAuth } from '../context/AuthContext';
 import { hasRole } from '../utils/roles';
 import { StatusBadge, MovementBadge, movementFor, DirectionBadge, ReturnableBadge, STATUS_LABELS } from '../components/Badges';
-import { AlertTriangle, FileBarChart2, Timer, Download } from 'lucide-react';
+import { AlertTriangle, FileBarChart2, Timer, Download, SlidersHorizontal } from 'lucide-react';
+import ReportDialog, { defaultReportSpec } from '../components/ReportDialog';
+import {
+  REPORT_KINDS, buildReport, describeSpec, dateBasisNote, exportReportXlsx, fmtInputDay,
+} from '../utils/registerReports';
 
 function pad2(n) {
   return String(n).padStart(2, '0');
@@ -88,7 +92,10 @@ function lastMovement(p) {
   return legs.reduce((a, b) => (new Date(b.at) >= new Date(a.at) ? b : a));
 }
 
-export default function ReportsPage() {
+// ─── Overview tab ─────────────────────────────────────────────────────────────
+// Every pass with filters, stage counts and breakdowns (pass-level, not the
+// item-level gate registers below).
+function ReportsOverview() {
   const { user } = useAuth();
   const canEdit = hasRole(user, 'admin');
 
@@ -366,10 +373,9 @@ export default function ReportsPage() {
 
   return (
     <div>
-      <div className="page-header">
-        <div>
-          <div className="page-title">Reports</div>
-          <div className="page-subtitle">Monthly view with filters{canEdit ? ' and editable entries' : ''}</div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
+        <div style={{ fontSize: 13, color: 'var(--text2)' }}>
+          Every pass with filters, stage counts and breakdowns{canEdit ? ' — admins can edit entries' : ''}
         </div>
         <button
           className="btn btn-primary"
@@ -699,6 +705,236 @@ export default function ReportsPage() {
           </table>
         </div>
       )}
+    </div>
+  );
+}
+
+// ─── Registers tab ────────────────────────────────────────────────────────────
+// A dialog asks which register to build (type, what to include, time range,
+// branch); the register then renders in the shape of the old gate register
+// exports — one row per item, the document's details spanning its rows, and
+// for anything still out, who has the items right now.
+const STATUS_CLASS = {
+  Pending: 'pending', Overdue: 'overdue', 'In Transit': 'in-transit',
+  Received: 'done', Returned: 'done',
+};
+
+const fmtNum = v => (v === '' || v == null ? '' : Number(v).toLocaleString('en-IN', { maximumFractionDigits: 2 }));
+
+function RegisterReports() {
+  const { user } = useAuth();
+  const isAdmin = hasRole(user, 'admin');
+
+  const [passes, setPasses] = useState([]);
+  const [branches, setBranches] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [spec, setSpec] = useState(null);             // the report on screen
+  const [dialogOpen, setDialogOpen] = useState(true); // ask straight away
+  const [exporting, setExporting] = useState(false);
+
+  useEffect(() => { api.getBranches(true).then(setBranches).catch(() => setBranches([])); }, []);
+
+  // Fresh data for every report, so a register is never stale
+  const generate = async (next) => {
+    setDialogOpen(false);
+    setSpec(next);
+    setLoading(true);
+    setError('');
+    try { setPasses(await api.getPasses()); }
+    catch (e) { setError(e.message); }
+    finally { setLoading(false); }
+  };
+
+  const report = useMemo(() => (spec ? buildReport(passes, spec) : null), [passes, spec]);
+  const branchObj = spec?.branchId ? branches.find(b => b.id === spec.branchId) : null;
+  const branchName = spec?.branchId ? (branchObj?.name || '') : 'All Branches';
+  const userBranchName = branches.find(b => b.id === user?.branch)?.name;
+
+  const exportXlsx = async () => {
+    if (!report?.groups.length) return;
+    setExporting(true);
+    setError('');
+    try {
+      const mod = await import('xlsx');
+      const XLSX = mod.utils ? mod : mod.default;
+      const title = REPORT_KINDS[spec.kind];
+      const wb = exportReportXlsx(XLSX, report, {
+        branchName, location: branchObj?.location, title,
+        fromLabel: fmtInputDay(spec.from), toLabel: fmtInputDay(spec.to),
+        includes: describeSpec(spec), dateNote: dateBasisNote(spec), generatedBy: user?.name,
+      });
+      const safe = s => String(s).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+      XLSX.writeFile(wb, `${safe(title)}-${safe(branchName)}-${spec.from}_to_${spec.to}.xlsx`);
+    } catch (e) {
+      setError(e.message || 'Could not export the report.');
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const renderCell = (c, value, passId) => {
+    if (c.key === 'docNo') return <Link to={`/passes/${passId}`} className="pass-number">{value}</Link>;
+    if (c.key === 'status' && !c.doc) return <span className={`register-status ${STATUS_CLASS[value] || ''}`}>{value}</span>;
+    if (c.num) {
+      // Zero returned / written off / pending reads as a dash, like a register
+      if (c.key !== 'qty' && Number(value) === 0) return <span style={{ color: 'var(--text3)' }}>—</span>;
+      return fmtNum(value);
+    }
+    return value || (c.key === 'where' ? '' : <span style={{ color: 'var(--text3)' }}>—</span>);
+  };
+
+  return (
+    <div>
+      {error && <div className="alert alert-danger" style={{ marginBottom: 16 }}><AlertTriangle size={15} /> {error}</div>}
+
+      {!spec ? (
+        <div className="table-wrapper">
+          <div className="empty-state">
+            <div className="empty-icon"><FileBarChart2 size={32} strokeWidth={1.5} /></div>
+            <div className="empty-title">Choose a report</div>
+            <div className="empty-sub">Inward register, returnable or non-returnable — for any time range</div>
+            <button className="btn btn-primary" style={{ marginTop: 16 }} onClick={() => setDialogOpen(true)}>
+              <FileBarChart2 size={14} /> Generate Report
+            </button>
+          </div>
+        </div>
+      ) : (
+        <>
+          <div className="card" style={{ padding: '16px 20px', marginBottom: 16 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 11, fontFamily: 'var(--font-mono)', textTransform: 'uppercase', letterSpacing: '0.09em', color: 'var(--text3)' }}>
+                  {branchName}{branchObj?.location ? ` · ${branchObj.location}` : ''}
+                </div>
+                <div style={{ fontFamily: 'var(--font-head)', fontWeight: 700, fontSize: 18, marginTop: 2 }}>{REPORT_KINDS[spec.kind]}</div>
+                <div style={{ fontSize: 13, color: 'var(--text2)', marginTop: 2 }}>
+                  {fmtInputDay(spec.from)} – {fmtInputDay(spec.to)} · {describeSpec(spec)}
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <button className="btn btn-ghost" onClick={() => setDialogOpen(true)}>
+                  <SlidersHorizontal size={14} /> Change Report
+                </button>
+                <button className="btn btn-primary" onClick={exportXlsx}
+                  disabled={loading || exporting || !report?.groups.length}>
+                  {exporting
+                    ? <><div className="spinner" style={{ width: 14, height: 14 }} /> Exporting…</>
+                    : <><Download size={14} /> Export Excel</>}
+                </button>
+              </div>
+            </div>
+            {!loading && report && report.groups.length > 0 && (
+              <div className="stat-pills" style={{ marginTop: 14, marginBottom: 0 }}>
+                <div className="stat-pill">
+                  <span className="stat-pill-num">{report.totals.documents}</span>
+                  <span className="stat-pill-label">Documents</span>
+                </div>
+                <div className="stat-pill">
+                  <span className="stat-pill-num">{report.totals.lines}</span>
+                  <span className="stat-pill-label">Item Lines</span>
+                </div>
+                {report.totals.pendingLines > 0 && (
+                  <div className="stat-pill">
+                    <span className="stat-pill-num" style={{ color: 'var(--orange)' }}>{report.totals.pendingLines}</span>
+                    <span className="stat-pill-label">Still Out</span>
+                  </div>
+                )}
+                {report.totals.amount > 0 && (
+                  <div className="stat-pill">
+                    <span className="stat-pill-num" style={{ fontSize: 14 }}>{fmtMoney(report.totals.amount)}</span>
+                    <span className="stat-pill-label">Amount</span>
+                  </div>
+                )}
+              </div>
+            )}
+            <div style={{ fontSize: 12, color: 'var(--text3)', marginTop: 10 }}>{dateBasisNote(spec)}</div>
+          </div>
+
+          {loading ? (
+            <div className="loading-page"><div className="spinner" /><span>Building report…</span></div>
+          ) : !report.groups.length ? (
+            <div className="table-wrapper">
+              <div className="empty-state">
+                <div className="empty-icon"><FileBarChart2 size={32} strokeWidth={1.5} /></div>
+                <div className="empty-title">Nothing in this period</div>
+                <div className="empty-sub">Try a wider time range or include more</div>
+              </div>
+            </div>
+          ) : (
+            <div className="table-wrapper">
+              <table className="register-table">
+                <thead>
+                  <tr>{report.columns.map(c => <th key={c.key} className={c.num ? 'num' : ''}>{c.label}</th>)}</tr>
+                </thead>
+                <tbody>
+                  {report.groups.map(g => g.rows.map((r, ri) => (
+                    <tr key={`${g.key}-${ri}`} className={ri === 0 ? 'doc-start' : ''}>
+                      {report.columns.map(c => {
+                        // Document details span all of the document's item rows
+                        if (c.doc) {
+                          if (ri > 0) return null;
+                          return (
+                            <td key={c.key} rowSpan={g.rows.length}
+                              style={c.key === 'date' ? { fontFamily: 'var(--font-mono)', whiteSpace: 'nowrap' } : undefined}>
+                              {renderCell(c, g.cells[c.key], g.passId)}
+                            </td>
+                          );
+                        }
+                        return (
+                          <td key={c.key} className={c.num ? 'num' : c.key === 'where' ? 'register-where' : ''}>
+                            {renderCell(c, r[c.key], g.passId)}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  )))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
+      )}
+
+      {dialogOpen && (
+        <ReportDialog
+          initial={spec || defaultReportSpec(isAdmin ? '' : (user?.branch || ''))}
+          branches={branches}
+          isAdmin={isAdmin}
+          userBranchName={userBranchName}
+          onCancel={() => setDialogOpen(false)}
+          onGenerate={generate}
+        />
+      )}
+    </div>
+  );
+}
+
+const REPORT_TABS = [
+  { key: 'registers', label: 'Registers' },
+  { key: 'overview',  label: 'Overview' },
+];
+
+export default function ReportsPage() {
+  const [tab, setTab] = useState('registers');
+  return (
+    <div>
+      <div className="page-header">
+        <div>
+          <div className="page-title">Reports</div>
+          <div className="page-subtitle">Gate registers — inward, returnable and non-returnable</div>
+        </div>
+      </div>
+      <div className="tab-bar" role="tablist">
+        {REPORT_TABS.map(t => (
+          <button key={t.key} role="tab" aria-selected={tab === t.key}
+            className={`tab${tab === t.key ? ' active' : ''}`}
+            onClick={() => setTab(t.key)}>{t.label}</button>
+        ))}
+      </div>
+      {/* Registers stay mounted so the report on screen survives a tab switch */}
+      <div style={{ display: tab === 'registers' ? 'block' : 'none' }}><RegisterReports /></div>
+      {tab === 'overview' && <ReportsOverview />}
     </div>
   );
 }
