@@ -472,6 +472,86 @@ const backHome = await api('PATCH', `/gate-passes/${rId}/log-inward`, {
 });
 check('source logs full return → completed', backHome.status === 200 && backHome.json?.status === 'completed');
 
+// ─── Partial send-back: once approved, the destination GATE holds the items ──
+const pTransfer = await api('POST', '/gate-passes', {
+  token: manager,
+  body: {
+    type: 'outward', direction: 'internal', destinationBranch: b2,
+    returnable: true, purpose: 'AV kit for event', expectedReturnDate: '2099-01-01T00:00:00Z',
+    items: [
+      { itemName: 'Speaker', quantity: 4, unit: 'pcs' },
+      { itemName: 'Mic', quantity: 6, unit: 'pcs' },
+    ],
+  },
+});
+const pId = pTransfer.json?.id;
+await api('PATCH', `/gate-passes/${pId}/log-outward`, { token: timeOffice, body: { guardName: 'Ajay' } });
+await api('PATCH', `/gate-passes/${pId}/receive`, { token: timeOffice2, body: { guardName: 'Binu', departmentId: d2, receiverId: r2 } });
+
+const mgr2User = await api('POST', '/users', {
+  token: admin,
+  body: { name: 'Manager Two', email: 'manager2@test.com', password: 'secret1', role: 'manager', branch: b2, departmentId: d2 },
+});
+check('admin creates manager at second branch', mgr2User.status === 201);
+const manager2 = await login('manager2@test.com', 'secret1');
+
+const staffOff = await api('PATCH', `/gate-passes/${pId}/close-items`, { token: staff2, body: { closures: [{ index: 1, quantity: 1, reason: 'Damaged' }] } });
+check('receiver (staff) cannot write off — managers only', staffOff.status === 403);
+
+const preApprovalOff = await api('PATCH', `/gate-passes/${pId}/close-items`, { token: manager2, body: { closures: [{ index: 1, quantity: 1, reason: 'Damaged' }] } });
+check('destination manager writes off before send-back approval', preApprovalOff.status === 200 && preApprovalOff.json?.status === 'partial_return');
+
+await api('PATCH', `/gate-passes/${pId}/return-request`, { token: staff2 });
+const postApprovalOff = await api('PATCH', `/gate-passes/${pId}/close-items`, { token: manager2, body: { closures: [{ index: 1, quantity: 1, reason: 'Lost' }] } });
+check('no write-off at the destination once send-back is approved', postApprovalOff.status === 400);
+
+// Outstanding now: Speaker 4, Mic 5
+const overSend = await api('PATCH', `/gate-passes/${pId}/return-outward`, {
+  token: timeOffice2, body: { guardName: 'Binu', sends: [{ index: 1, quantity: 4 }], closures: [{ index: 1, quantity: 2, reason: 'Damaged' }] },
+});
+check('gate cannot send + write off more than outstanding', overSend.status === 400);
+
+const nothingOut = await api('PATCH', `/gate-passes/${pId}/return-outward`, { token: timeOffice2, body: { guardName: 'Binu', sends: [] } });
+check('gate must send something unless write-offs settle the pass', nothingOut.status === 400);
+
+const partialOut = await api('PATCH', `/gate-passes/${pId}/return-outward`, {
+  token: timeOffice2,
+  body: { guardName: 'Binu', sends: [{ index: 0, quantity: 2 }, { index: 1, quantity: 3 }], closures: [{ index: 1, quantity: 1, reason: 'Damaged' }] },
+});
+check('destination gate sends some and writes some off',
+  partialOut.status === 200 &&
+  partialOut.json?.returnOutwardLog?.items?.length === 2 &&
+  partialOut.json?.items?.[1]?.closedQuantity === 2 &&
+  partialOut.json?.closures?.some(c => c.at === 'destination_gate'),
+  JSON.stringify(partialOut.json?.returnOutwardLog));
+// On the way: Speaker 2, Mic 3. Still at destination: Speaker 2, Mic 1.
+
+const overArrive = await api('PATCH', `/gate-passes/${pId}/log-inward`, { token: timeOffice, body: { guardName: 'Ajay', returns: [{ index: 0, quantity: 3 }] } });
+check('source cannot receive more than the destination sent', overArrive.status === 400);
+
+const closeAtDest = await api('PATCH', `/gate-passes/${pId}/log-inward`, {
+  token: timeOffice, body: { guardName: 'Ajay', returns: [{ index: 0, quantity: 2 }], closures: [{ index: 1, quantity: 4, reason: 'Lost' }] },
+});
+check('source cannot close items still at the destination', closeAtDest.status === 400);
+
+const pArrived = await api('PATCH', `/gate-passes/${pId}/log-inward`, {
+  token: timeOffice,
+  body: { guardName: 'Ajay', returns: [{ index: 0, quantity: 2 }, { index: 1, quantity: 2 }], closures: [{ index: 1, quantity: 1, reason: 'Lost' }] },
+});
+check('partial arrival → partial_return, fresh send-back cycle opens',
+  pArrived.status === 200 && pArrived.json?.status === 'partial_return' &&
+  !pArrived.json?.returnRequest && !pArrived.json?.returnOutwardLog && pArrived.json?.returnCycles?.length === 1);
+// Still at destination: Speaker 2, Mic 1
+
+const reOff = await api('PATCH', `/gate-passes/${pId}/close-items`, { token: manager2, body: { closures: [{ index: 1, quantity: 1, reason: 'Consumed / Used up' }] } });
+check('destination manager can write off again on the new cycle', reOff.status === 200);
+await api('PATCH', `/gate-passes/${pId}/return-request`, { token: staff2 });
+const restOut = await api('PATCH', `/gate-passes/${pId}/return-outward`, { token: timeOffice2, body: { guardName: 'Binu' } });
+check('return out without counts sends everything left',
+  restOut.status === 200 && restOut.json?.returnOutwardLog?.items?.length === 1 && restOut.json?.returnOutwardLog?.items?.[0]?.quantity === 2);
+const pFinal = await api('PATCH', `/gate-passes/${pId}/log-inward`, { token: timeOffice, body: { guardName: 'Ajay', returns: [{ index: 0, quantity: 2 }] } });
+check('last items arrive → completed', pFinal.status === 200 && pFinal.json?.status === 'completed');
+
 const dupUser = await api('POST', '/users', {
   token: admin,
   body: { name: 'Dup', email: 'MANAGER@test.com', password: 'x', role: 'staff', branch: b1, departmentId: d1 },

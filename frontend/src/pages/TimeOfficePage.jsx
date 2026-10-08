@@ -7,7 +7,7 @@ import { StatusBadge, TypeBadge, ReturnableBadge } from '../components/Badges';
 import {
   X, AlertTriangle, Info, ArrowUpRight, ArrowDownLeft, RotateCcw,
   Clock, TrendingUp, Package, CheckCircle2, PackagePlus, Truck,
-  Lock, LockOpen, Pencil, Ban,
+  Lock, LockOpen, Pencil, Ban, PackageX,
 } from 'lucide-react';
 
 function fmt(d) {
@@ -268,18 +268,58 @@ export function ReceiveTransferModal({ pass, onClose, onDone }) {
 
 /* ── Return Out Modal ───────────────────────────────────────────────────────── */
 // Destination-branch gate marks an approved send-back physically OUT, headed
-// back to the source branch.
+// back to the source branch. The gate holds the items from the approval on,
+// so it records how many of each actually leave now (the rest stays here for
+// a later send-back) and writes off, with a reason, anything that never will.
 export function ReturnOutModal({ pass, onClose, onDone }) {
   const [guardName, setGuardName] = useState('');
   const [remarks, setRemarks] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
+  const outstandingOf = li => li.quantity - (li.returnedQuantity || 0) - (li.closedQuantity || 0);
+  // Everything goes by default — that's what was approved. The gate lowers a
+  // number when only some of an item is leaving now.
+  const [sendQtys, setSendQtys] = useState(() =>
+    Object.fromEntries(pass.items.map((li, i) => [i, outstandingOf(li)])));
+  const [offChecked, setOffChecked] = useState({});
+  const [offQtys, setOffQtys] = useState({});
+  const [offReason, setOffReason] = useState({});
+  const [offNote, setOffNote] = useState({});
+
+  const sendOf = i => Number(sendQtys[i] || 0);
+  const offOf  = i => offChecked[i] ? Number(offQtys[i] || 0) : 0;
+  const sendingTotal = pass.items.reduce((s, li, i) => s + (outstandingOf(li) > 0 ? sendOf(i) : 0), 0);
+  const here = pass.destinationBranchName || 'this branch';
+
+  // Writing some off takes it out of what's going first, so the two never
+  // add up to more than is outstanding
+  const setOff = (i, val) => {
+    const outstanding = outstandingOf(pass.items[i]);
+    const off = Math.max(0, Math.min(val, outstanding));
+    setOffQtys(q => ({ ...q, [i]: off }));
+    setSendQtys(q => ({ ...q, [i]: Math.min(Number(q[i] || 0), outstanding - off) }));
+  };
+
   const handleConfirm = async () => {
-    setError(''); setLoading(true);
+    setError('');
+    if (!guardName.trim()) { setError('Gate host name is required'); return; }
+    const sends = [];
+    const closures = [];
+    for (let i = 0; i < pass.items.length; i++) {
+      const li = pass.items[i];
+      if (outstandingOf(li) <= 0) continue;
+      if (sendOf(i) > 0) sends.push({ index: i, quantity: sendOf(i) });
+      if (offOf(i) > 0) {
+        if (!offReason[i]) { setError(`Pick a reason to write off "${li.itemName}"`); return; }
+        const note = (offNote[i] || '').trim();
+        closures.push({ index: i, quantity: offOf(i), reason: note ? `${offReason[i]} — ${note}` : offReason[i] });
+      }
+    }
+    if (!sends.length && !closures.length) { setError('Enter how many of at least one item are going out'); return; }
+    setLoading(true);
     try {
-      if (!guardName.trim()) { setError('Gate host name is required'); setLoading(false); return; }
-      await api.returnOutward(pass.id, { guardName: guardName.trim(), remarks });
+      await api.returnOutward(pass.id, { guardName: guardName.trim(), remarks, sends, closures });
       onDone();
     } catch (e) { setError(e.message); } finally { setLoading(false); }
   };
@@ -297,22 +337,82 @@ export function ReturnOutModal({ pass, onClose, onDone }) {
         <div className="modal-body">
           <div className="alert alert-info" style={{ marginBottom: 20 }}>
             <Info size={15} />
-            Send-back approved by <strong>{pass.returnRequest?.requestedByUser?.name || 'the receiver'}</strong>.
-            Confirm these items have <strong>actually left your gate</strong>, headed back
-            to <strong>{pass.sourceBranchName || 'the source branch'}</strong>. This cannot be undone.
+            <span>
+              Send-back approved by <strong>{pass.returnRequest?.requestedByUser?.name || 'the receiver'}</strong>.
+              Enter how many of each item <strong>actually leave your gate now</strong>, headed back
+              to <strong>{pass.sourceBranchName || 'the source branch'}</strong>. Anything you don’t send
+              stays at {here} and can go back later — write off only what will never go back. This cannot be undone.
+            </span>
           </div>
 
           <div style={{ marginBottom: 20 }}>
             <div style={{ fontSize: 12, color: 'var(--text3)', marginBottom: 10 }}>Items going back</div>
-            {pass.items?.map((li, i) => (
-              <div key={i} className="item-row">
-                <div>
-                  <div className="item-name">{li.itemName}</div>
-                  <div style={{ fontSize: 11, color: 'var(--text3)', fontFamily: 'var(--font-mono)' }}>{li.unit}</div>
+            {pass.items?.map((li, i) => {
+              const outstanding = outstandingOf(li);
+              if (outstanding <= 0) return null;
+              const staying = outstanding - sendOf(i) - offOf(i);
+              return (
+                <div key={i} style={{ padding: '12px 0', borderBottom: '1px solid var(--border)' }}>
+                  <div className="return-item-row" style={{ border: 'none', padding: 0 }}>
+                    <div style={{ flex: 1 }}>
+                      <div className="item-name">{li.itemName}</div>
+                      <div style={{ fontSize: 11, color: 'var(--text3)', fontFamily: 'var(--font-mono)' }}>Outstanding: {outstanding} {li.unit}</div>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span style={{ fontSize: 12, color: 'var(--text3)' }}>Sending now:</span>
+                      <input
+                        className="return-qty-input"
+                        type="number" min="0" max={outstanding - offOf(i)}
+                        value={sendQtys[i] ?? 0}
+                        onChange={e => setSendQtys(q => ({ ...q, [i]: Math.max(0, Math.min(Number(e.target.value), outstanding - offOf(i))) }))}
+                      />
+                      <span style={{ fontSize: 11, color: 'var(--text3)' }}>{li.unit}</span>
+                    </div>
+                  </div>
+                  {staying > 0 && (
+                    <div style={{ fontSize: 11, color: 'var(--blue)', fontFamily: 'var(--font-mono)', marginTop: 6 }}>
+                      Staying at {here}: {staying} {li.unit}
+                    </div>
+                  )}
+                  <div style={{ marginTop: 8 }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--text2)', cursor: 'pointer' }}>
+                      <input
+                        type="checkbox"
+                        checked={!!offChecked[i]}
+                        onChange={e => setOffChecked(c => ({ ...c, [i]: e.target.checked }))}
+                      />
+                      Write off some with a reason (won’t go back)
+                    </label>
+                    {offChecked[i] && (
+                      <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                        <input
+                          className="return-qty-input"
+                          type="number" min="0" max={outstanding}
+                          value={offQtys[i] ?? 0}
+                          onChange={e => setOff(i, Number(e.target.value))}
+                        />
+                        <select
+                          className="form-input"
+                          style={{ maxWidth: 200 }}
+                          value={offReason[i] || ''}
+                          onChange={e => setOffReason(r => ({ ...r, [i]: e.target.value }))}
+                        >
+                          <option value="">Select reason…</option>
+                          {CLOSE_REASONS.map(r => <option key={r} value={r}>{r}</option>)}
+                        </select>
+                        <input
+                          className="form-input"
+                          style={{ flex: 1, minWidth: 160 }}
+                          placeholder="Optional note"
+                          value={offNote[i] || ''}
+                          onChange={e => setOffNote(n => ({ ...n, [i]: e.target.value }))}
+                        />
+                      </div>
+                    )}
+                  </div>
                 </div>
-                <div className="item-qty">× {li.quantity}</div>
-              </div>
-            ))}
+              );
+            })}
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 20, padding: '12px 16px', background: 'var(--bg3)', borderRadius: 'var(--radius)', border: '1px solid var(--border)', fontSize: 13 }}>
@@ -347,7 +447,9 @@ export function ReturnOutModal({ pass, onClose, onDone }) {
           <button className="btn btn-primary" onClick={handleConfirm} disabled={loading}>
             {loading
               ? <><div className="spinner" style={{ width: 15, height: 15 }} /> Saving…</>
-              : <><ArrowUpRight size={14} /> Confirm — Items Went Back</>}
+              : sendingTotal > 0
+                ? <><ArrowUpRight size={14} /> Confirm — {sendingTotal} Going Back</>
+                : <><PackageX size={14} /> Confirm Write-Off</>}
           </button>
         </div>
       </div>
@@ -368,9 +470,20 @@ export function LogInwardModal({ pass, onClose, onDone }) {
 
   const isReturnLeg = pass.type === 'outward';
   const outstandingOf = li => li.quantity - (li.returnedQuantity || 0) - (li.closedQuantity || 0);
+  // A branch transfer's return carries what the destination gate actually
+  // sent — only that can arrive now; the rest is still at the destination.
+  // Mirrors /log-inward.
+  const sent = pass.returnOutwardLog?.items
+    ? new Map(pass.returnOutwardLog.items.map(s => [s.index, s.quantity]))
+    : null;
+  const arrivingOf = (li, i) => sent ? Math.min(sent.get(i) || 0, outstandingOf(li)) : outstandingOf(li);
+  const dest = pass.destinationBranchName || 'the destination branch';
+  const stillAtDest = sent
+    ? (pass.items || []).map((li, i) => ({ li, qty: outstandingOf(li) - arrivingOf(li, i) })).filter(x => x.qty > 0)
+    : [];
   const [returnQtys, setReturnQtys] = useState(() => {
     if (!isReturnLeg) return {};
-    return Object.fromEntries(pass.items.map((li, i) => [i, outstandingOf(li)]));
+    return Object.fromEntries(pass.items.map((li, i) => [i, arrivingOf(li, i)]));
   });
   // Per-item "close the rest with a reason" controls
   const [closeChecked, setCloseChecked] = useState({});
@@ -394,12 +507,12 @@ export function LogInwardModal({ pass, onClose, onDone }) {
     const closures = [];
     for (let i = 0; i < pass.items.length; i++) {
       const li = pass.items[i];
-      const outstanding = outstandingOf(li);
-      if (outstanding <= 0) continue;
-      const ret = Math.max(0, Math.min(Number(returnQtys[i] ?? 0), outstanding));
+      const arriving = arrivingOf(li, i);
+      if (arriving <= 0) continue;
+      const ret = Math.max(0, Math.min(Number(returnQtys[i] ?? 0), arriving));
       if (ret > 0) returns.push({ index: i, quantity: ret });
       if (closeChecked[i]) {
-        const closeQty = outstanding - ret;
+        const closeQty = arriving - ret;
         if (closeQty > 0) {
           if (!closeReason[i]) { setError(`Pick a reason to close "${li.itemName}"`); return; }
           const note = (closeNote[i] || '').trim();
@@ -431,15 +544,17 @@ export function LogInwardModal({ pass, onClose, onDone }) {
         <div className="modal-body">
           <div className="alert alert-info" style={{ marginBottom: 20 }}>
             <Info size={15} />
-            {isReturnLeg
-              ? 'Enter how many of each item came back. If something will never come back, close it with a reason so the pass does not stay open forever.'
-              : 'Confirm that the item(s) listed have arrived at the gate.'}
+            {!isReturnLeg
+              ? 'Confirm that the item(s) listed have arrived at the gate.'
+              : sent
+                ? `The numbers below are what ${dest} sent. Count what actually arrived — if anything was lost on the way, close it with a reason.`
+                : 'Enter how many of each item came back. If something will never come back, close it with a reason so the pass does not stay open forever.'}
           </div>
 
           <div style={{ marginBottom: 20 }}>
             <div style={{ fontSize: 12, color: 'var(--text3)', marginBottom: 10 }}>{isReturnLeg ? 'Items coming back' : 'Items arriving'}</div>
             {pass.items?.map((li, i) => {
-              const outstanding = outstandingOf(li);
+              const outstanding = arrivingOf(li, i);
               if (isReturnLeg && outstanding <= 0) return null;
               if (!isReturnLeg) {
                 return (
@@ -459,7 +574,9 @@ export function LogInwardModal({ pass, onClose, onDone }) {
                   <div className="return-item-row" style={{ border: 'none', padding: 0 }}>
                     <div style={{ flex: 1 }}>
                       <div className="item-name">{li.itemName}</div>
-                      <div style={{ fontSize: 11, color: 'var(--text3)', fontFamily: 'var(--font-mono)' }}>Outstanding: {outstanding} {li.unit}</div>
+                      <div style={{ fontSize: 11, color: 'var(--text3)', fontFamily: 'var(--font-mono)' }}>
+                        {sent ? `Sent from ${dest}` : 'Outstanding'}: {outstanding} {li.unit}
+                      </div>
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                       <span style={{ fontSize: 12, color: 'var(--text3)' }}>Returning:</span>
@@ -472,6 +589,11 @@ export function LogInwardModal({ pass, onClose, onDone }) {
                       <span style={{ fontSize: 11, color: 'var(--text3)' }}>{li.unit}</span>
                     </div>
                   </div>
+                  {sent && ret < outstanding && !closeChecked[i] && (
+                    <div style={{ fontSize: 11, color: 'var(--orange)', fontFamily: 'var(--font-mono)', marginTop: 6 }}>
+                      {outstanding - ret} fewer than {dest} sent — if lost on the way, close with a reason; otherwise they stay counted at {dest}
+                    </div>
+                  )}
                   <div style={{ marginTop: 8 }}>
                     <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--text2)', cursor: 'pointer' }}>
                       <input
@@ -479,7 +601,7 @@ export function LogInwardModal({ pass, onClose, onDone }) {
                         checked={!!closeChecked[i]}
                         onChange={e => setCloseChecked(c => ({ ...c, [i]: e.target.checked }))}
                       />
-                      Close remaining with a reason (item won’t come back)
+                      {sent ? 'Close the shortfall with a reason (lost on the way)' : 'Close remaining with a reason (item won’t come back)'}
                     </label>
                     {closeChecked[i] && (
                       <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -508,6 +630,12 @@ export function LogInwardModal({ pass, onClose, onDone }) {
                 </div>
               );
             })}
+            {stillAtDest.length > 0 && (
+              <div style={{ fontSize: 12, color: 'var(--text3)', marginTop: 12 }}>
+                Still at {dest}, not on this trip:{' '}
+                {stillAtDest.map(({ li, qty }) => `${qty}× ${li.itemName}`).join(', ')}
+              </div>
+            )}
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 20, padding: '12px 16px', background: 'var(--bg3)', borderRadius: 'var(--radius)', border: '1px solid var(--border)', fontSize: 13 }}>
