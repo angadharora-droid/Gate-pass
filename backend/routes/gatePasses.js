@@ -812,17 +812,25 @@ router.patch('/:id/receive', requireRole('time_office', 'admin'), asyncHandler(a
 // Who speaks for the destination side of a branch transfer once it's arrived:
 // the specific person who took custody, or any manager/supermanager of the
 // destination branch (their backup when the receiver is unavailable). Used by
-// both the send-back approval and the quantity-adjustment endpoint below.
+// the send-back approval below.
 function canActForDestination(pass, user) {
   if (hasRole(user, 'admin')) return true;
   if (user.id === pass.receivedLog?.receiverId) return true;
+  return canWriteOffAtDestination(pass, user);
+}
+
+// Writing items off is a manager's call: the receiver who took custody can
+// approve the send-back, but only a manager/supermanager of the destination
+// branch can declare items gone.
+function canWriteOffAtDestination(pass, user) {
+  if (hasRole(user, 'admin')) return true;
   return hasRole(user, 'manager', 'supermanager') && user.branch === pass.destinationBranch;
 }
 
-// ─── RECEIVER/DEST MANAGER: WRITE OFF ITEMS AT THE DESTINATION ───────────────
+// ─── DEST MANAGER: WRITE OFF ITEMS AT THE DESTINATION ────────────────────────
 // While a returnable transfer sits at the destination branch, some of it may
 // never make the trip back — items get consumed, broken, lost in transit, or
-// kept. The receiver (or a manager/supermanager of the destination branch)
+// kept. A manager/supermanager of the destination branch (not the receiver)
 // writes those quantities off WITH A REASON, exactly like the source gate's
 // closures on the return leg. The originally dispatched quantity is never
 // rewritten — the write-off lands in closedQuantity, so every later leg
@@ -833,10 +841,10 @@ function canActForDestination(pass, user) {
 // separate 'closed' status; the closure records keep that story now.)
 // Allowed from the moment items are marked in until the receiver approves the
 // send-back (returnRequest). After that the items are in the destination
-// gate's hands — the receiver no longer has custody, so they can't make items
-// vanish from the gate's queue. Anything that turns out missing is closed by
-// the source gate when the return arrives (/log-inward closures). Admin keeps
-// an override until the return physically leaves (returnOutwardLog).
+// gate's hands, so nobody at the branch can make items vanish from the
+// gate's queue. The gate writes off anything not going back
+// when it marks the return out (/return-outward closures). Admin keeps an
+// override until the return physically leaves (returnOutwardLog).
 router.patch('/:id/close-items', asyncHandler(async (req, res) => {
   const pass = await dbc('gatePasses').findOne({ id: req.params.id }, NO_ID);
   if (!pass) return res.status(404).json({ error: 'Gate pass not found' });
@@ -850,11 +858,11 @@ router.patch('/:id/close-items', asyncHandler(async (req, res) => {
   if (pass.returnOutwardLog)
     return res.status(400).json({ error: 'Return already marked out at the destination branch; quantities are locked' });
   if (pass.returnRequest && !hasRole(req.user, 'admin'))
-    return res.status(400).json({ error: 'Send-back already approved — the items are with the gate now and can no longer be written off. Any shortfall is closed at the source gate when the return arrives.' });
+    return res.status(400).json({ error: 'Send-back already approved — the items are with the gate now. The gate writes off anything not going back when it marks the return out.' });
   if (!['in_transit', 'partial_return'].includes(pass.status))
     return res.status(400).json({ error: `Cannot write off items in ${pass.status} status` });
-  if (!canActForDestination(pass, req.user))
-    return res.status(403).json({ error: 'Only the receiver (or a manager/supermanager of their branch) can write off items' });
+  if (!canWriteOffAtDestination(pass, req.user))
+    return res.status(403).json({ error: 'Only a manager/supermanager of the destination branch can write off items' });
 
   const { closures } = req.body;
   if (!Array.isArray(closures) || !closures.length)
@@ -943,6 +951,15 @@ router.patch('/:id/return-request', asyncHandler(async (req, res) => {
 // After the receiver approves the send-back, the destination branch's gate
 // marks the items physically leaving. The pass then heads back to the source
 // branch, whose gate logs the arrival via /log-inward as usual.
+// From the approval on the items are in the gate's custody, so the gate
+// records what actually leaves:
+//   sends    = [{ index, quantity }]         — what goes out now. Whatever is
+//              neither sent nor written off stays at the destination; once the
+//              source gate logs the arrival, a fresh send-back cycle opens for
+//              it. Omitted → everything outstanding goes (older clients).
+//   closures = [{ index, quantity, reason }] — written off at the gate (found
+//              damaged, missing at hand-over, …), same rules as /close-items.
+// At least one item must go out, unless the write-offs settle the pass.
 router.patch('/:id/return-outward', requireRole('time_office', 'admin'), asyncHandler(async (req, res) => {
   const pass = await dbc('gatePasses').findOne({ id: req.params.id }, NO_ID);
   if (!pass) return res.status(404).json({ error: 'Gate pass not found' });
@@ -958,17 +975,81 @@ router.patch('/:id/return-outward', requireRole('time_office', 'admin'), asyncHa
   if (!['in_transit', 'partial_return'].includes(pass.status))
     return res.status(400).json({ error: `Cannot mark a return out in ${pass.status} status` });
 
-  const { remarks, guardName } = req.body;
+  const { remarks, guardName, sends, closures = [] } = req.body;
   if (!guardName?.trim()) return res.status(400).json({ error: 'Gate host name is required' });
-  pass.returnOutwardLog = {
-    loggedAt: new Date().toISOString(),
-    loggedBy: req.user.id,
-    guardName: guardName.trim(),
-    remarks:  remarks?.trim() || '',
-  };
+  if ((sends != null && !Array.isArray(sends)) || !Array.isArray(closures))
+    return res.status(400).json({ error: 'sends and closures must be arrays' });
+
+  const outstanding = li => li.quantity - (li.returnedQuantity || 0) - (li.closedQuantity || 0);
+
+  // Validate everything first — aggregate duplicate indexes so a repeated
+  // index can never slip past the outstanding cap.
+  const sendTotals = new Map();
+  for (const s of sends ?? pass.items.map((li, index) => ({ index, quantity: outstanding(li) }))) {
+    const qty = Number(s?.quantity);
+    if (!Number.isFinite(qty) || qty < 0)
+      return res.status(400).json({ error: 'Quantities going out must be non-negative numbers' });
+    if (qty === 0) continue;
+    if (!pass.items[s.index]) return res.status(400).json({ error: `No item at index ${s.index}` });
+    sendTotals.set(s.index, (sendTotals.get(s.index) || 0) + qty);
+  }
+  for (const [index, qty] of sendTotals) {
+    const li = pass.items[index];
+    if (qty > outstanding(li))
+      return res.status(400).json({ error: `Cannot send ${qty} of ${li.itemName}; only ${outstanding(li)} outstanding` });
+  }
+
+  const plannedClose = new Map();
+  for (const cl of closures) {
+    const li = pass.items[cl?.index];
+    if (!li) return res.status(400).json({ error: `No item at index ${cl?.index}` });
+    if (!cl.reason?.trim()) return res.status(400).json({ error: `A reason is required to write off ${li.itemName}` });
+    const qty = Number(cl.quantity);
+    if (!Number.isFinite(qty) || qty <= 0)
+      return res.status(400).json({ error: `Write-off quantity must be > 0 for "${li.itemName}"` });
+    const remain = outstanding(li) - (sendTotals.get(cl.index) || 0) - (plannedClose.get(cl.index) || 0);
+    if (qty > remain)
+      return res.status(400).json({ error: `Cannot write off ${qty} of ${li.itemName}; only ${remain} left after what is going out` });
+    plannedClose.set(cl.index, (plannedClose.get(cl.index) || 0) + qty);
+  }
+
+  const settled = pass.items.every((li, i) => outstanding(li) - (plannedClose.get(i) || 0) <= 0);
+  if (!sendTotals.size && !(plannedClose.size && settled))
+    return res.status(400).json({ error: 'Enter how many of at least one item are going out' });
+
+  const loggedAt = new Date().toISOString();
+  const closureRecords = [];
+  for (const cl of closures) {
+    const li = pass.items[cl.index];
+    const qty = Number(cl.quantity);
+    li.closedQuantity = (li.closedQuantity || 0) + qty;
+    closureRecords.push({ index: cl.index, itemName: li.itemName, quantity: qty, reason: cl.reason.trim() });
+  }
+  if (closureRecords.length) {
+    // `at: 'destination_gate'` — written off by the gate holding the items,
+    // as opposed to the receiver ('destination') or the source gate (none)
+    pass.closures = pass.closures || [];
+    pass.closures.push({ closedAt: loggedAt, closedBy: req.user.id, at: 'destination_gate', items: closureRecords });
+    pass.status = settled ? 'completed' : 'partial_return';
+  }
+  // Written off down to nothing → nothing physically leaves, no dispatch
+  if (sendTotals.size) {
+    pass.returnOutwardLog = {
+      loggedAt,
+      loggedBy: req.user.id,
+      guardName: guardName.trim(),
+      remarks:  remarks?.trim() || '',
+      items: [...sendTotals].map(([index, quantity]) => ({ index, itemName: pass.items[index].itemName, quantity })),
+    };
+  }
 
   await dbc('gatePasses').replaceOne({ id: pass.id }, pass);
-  await logAudit('LOG_RETURN_OUTWARD', req.user.id, pass.id, { passNumber: pass.passNumber });
+  await logAudit('LOG_RETURN_OUTWARD', req.user.id, pass.id, {
+    passNumber: pass.passNumber,
+    status: pass.status,
+    sent: pass.returnOutwardLog?.items || [],
+    closures: closureRecords,
+  });
   res.json(enrichPass(pass, await getRefs()));
 }));
 
@@ -1006,6 +1087,16 @@ router.patch('/:id/log-inward', requireRole('time_office', 'admin'), asyncHandle
       return res.status(400).json({ error: 'returns and closures must be arrays' });
 
     const outstanding = li => li.quantity - (li.returnedQuantity || 0) - (li.closedQuantity || 0);
+    // A branch transfer's dispatch records what the destination gate actually
+    // sent — only that can arrive now (or be closed as lost on the way); the
+    // rest is still at the destination, in its custody, and comes back on a
+    // later send-back cycle. Dispatches without a count fall back to
+    // everything outstanding.
+    const sentNow = pass.returnOutwardLog?.items
+      ? new Map(pass.returnOutwardLog.items.map(s => [s.index, s.quantity]))
+      : null;
+    const arriving = (li, i) => sentNow ? Math.min(sentNow.get(i) || 0, outstanding(li)) : outstanding(li);
+    const capLabel = sentNow ? 'sent back' : 'outstanding';
 
     // returns = [{ index, quantity }] — items that physically came back.
     // Coerce quantities, drop zero rows, and AGGREGATE duplicate indexes so a
@@ -1021,29 +1112,30 @@ router.patch('/:id/log-inward', requireRole('time_office', 'admin'), asyncHandle
     }
     for (const [index, qty] of returnTotals) {
       const li = pass.items[index];
-      if (qty > outstanding(li))
-        return res.status(400).json({ error: `Cannot return ${qty} of ${li.itemName}; only ${outstanding(li)} outstanding` });
+      if (qty > arriving(li, index))
+        return res.status(400).json({ error: `Cannot return ${qty} of ${li.itemName}; only ${arriving(li, index)} ${capLabel}` });
     }
 
     // closures = [{ index, quantity?, reason }] — items written off with a
-    // reason. Omitting quantity closes everything still outstanding. Explicit
+    // reason. Omitting quantity closes everything still arriving. Explicit
     // quantities are validated against what remains AFTER the returns above.
     const plannedClose = new Map();
+    const closurePlan = [];
     for (const cl of closures) {
       const li = pass.items[cl.index];
       if (!li) return res.status(400).json({ error: `No item at index ${cl.index}` });
       if (!cl.reason?.trim()) return res.status(400).json({ error: `A reason is required to close ${li.itemName}` });
-      const remainAfterReturns = outstanding(li) - (returnTotals.get(cl.index) || 0) - (plannedClose.get(cl.index) || 0);
+      const remainAfterReturns = arriving(li, cl.index) - (returnTotals.get(cl.index) || 0) - (plannedClose.get(cl.index) || 0);
+      let qty = remainAfterReturns;
       if (cl.quantity != null) {
-        const qty = Number(cl.quantity);
+        qty = Number(cl.quantity);
         if (!Number.isFinite(qty) || qty < 0)
           return res.status(400).json({ error: 'Closure quantities must be non-negative numbers' });
         if (qty > remainAfterReturns)
-          return res.status(400).json({ error: `Cannot close ${qty} of ${li.itemName}; only ${remainAfterReturns} outstanding after returns` });
-        plannedClose.set(cl.index, (plannedClose.get(cl.index) || 0) + qty);
-      } else {
-        plannedClose.set(cl.index, (plannedClose.get(cl.index) || 0) + remainAfterReturns);
+          return res.status(400).json({ error: `Cannot close ${qty} of ${li.itemName}; only ${remainAfterReturns} ${capLabel} after returns` });
       }
+      plannedClose.set(cl.index, (plannedClose.get(cl.index) || 0) + qty);
+      closurePlan.push({ index: cl.index, quantity: qty, reason: cl.reason.trim() });
     }
 
     const anyEffectiveClosure = [...plannedClose.values()].some(q => q > 0);
@@ -1056,12 +1148,11 @@ router.patch('/:id/log-inward', requireRole('time_office', 'admin'), asyncHandle
     }
     const loggedAt = new Date().toISOString();
     const closureRecords = [];
-    for (const cl of closures) {
+    for (const cl of closurePlan) {
+      if (cl.quantity <= 0) continue;
       const li = pass.items[cl.index];
-      const qty = cl.quantity != null ? Number(cl.quantity) : outstanding(li);
-      if (qty <= 0) continue;
-      li.closedQuantity = (li.closedQuantity || 0) + qty;
-      closureRecords.push({ index: cl.index, itemName: li.itemName, quantity: qty, reason: cl.reason.trim() });
+      li.closedQuantity = (li.closedQuantity || 0) + cl.quantity;
+      closureRecords.push({ index: cl.index, itemName: li.itemName, quantity: cl.quantity, reason: cl.reason });
     }
 
     // Record closures separately for observability (who closed what, why, when)

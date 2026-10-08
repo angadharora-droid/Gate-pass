@@ -93,7 +93,7 @@ export default function GatePassDetailPage() {
 
   // Receiver approving the items going back to the source branch
   const handleSendBack = async () => {
-    if (!confirm('Approve sending these items back?\n\nAfter this the items are with the gate and nothing can be written off here. If anything is not going back, write it off first.')) return;
+    if (!confirm('Approve sending these items back?\n\nAfter this the items are with the gate: security records what leaves and writes off anything not going back.')) return;
     setError('');
     setActionLoading(true);
     try {
@@ -176,17 +176,15 @@ export default function GatePassDetailPage() {
     (isAdmin ||
       user?.id === pass.receivedLog.receiverId ||
       (hasRole(user, 'manager', 'supermanager') && user?.branch === pass.destinationBranch));
-  // Same authority as send-back approval, open from the moment items are
-  // received until the send-back is approved — covers writing off breakage
-  // right when custody is taken, and again right before approving send-back.
-  // Once approved the items are with the gate; admin keeps an override until
-  // the return physically leaves. Mirrors /close-items.
+  // Managers/supermanagers of the destination branch only — the receiver can
+  // approve the send-back but not write items off. Open from the moment items
+  // are received until the send-back is approved; after that the items are
+  // with the gate, and admin keeps an override until the return physically
+  // leaves. Mirrors /close-items.
   const canWriteOff = isTransferAway && pass.returnable && pass.receivedLog &&
     (isAdmin ? !pass.returnOutwardLog : !pass.returnRequest) &&
     pass.items?.some(li => li.quantity - (li.returnedQuantity || 0) - (li.closedQuantity || 0) > 0) &&
-    (isAdmin ||
-      user?.id === pass.receivedLog.receiverId ||
-      (hasRole(user, 'manager', 'supermanager') && user?.branch === pass.destinationBranch));
+    (isAdmin || (hasRole(user, 'manager', 'supermanager') && user?.branch === pass.destinationBranch));
   // After approval, the destination gate marks the return physically out
   const canReturnOut    = canLog && atDest && isTransferAway && pass.returnable &&
     pass.returnRequest && !pass.returnOutwardLog;
@@ -689,7 +687,9 @@ export default function GatePassDetailPage() {
                       {' · '}
                       {c.at === 'destination'
                         ? `written off at ${pass.destinationBranchName || 'the destination branch'}`
-                        : 'closed at the source gate (return log)'}
+                        : c.at === 'destination_gate'
+                          ? `written off at the ${pass.destinationBranchName || 'destination branch'} gate (return out)`
+                          : 'closed at the source gate (return log)'}
                     </div>
                     {c.items?.map((it, ii) => (
                       <div key={ii} style={{ fontSize: 13, marginBottom: 2 }}>
@@ -962,6 +962,13 @@ function LifecycleTimeline({ pass }) {
   // quantities, not via a separate status.
   const isDone = ['completed', 'closed'].includes(pass.status);
   const anyWrittenOff = (pass.items || []).some(li => (li.closedQuantity || 0) > 0);
+  // What the destination gate sent on the current return trip, and what it
+  // kept back — older dispatches carry no count (null)
+  const sentBackQty = pass.returnOutwardLog?.items
+    ? pass.returnOutwardLog.items.reduce((s, x) => s + x.quantity, 0)
+    : null;
+  const outstandingQty = (pass.items || []).reduce((s, li) => s + li.quantity - (li.returnedQuantity || 0) - (li.closedQuantity || 0), 0);
+  const stillAtDestQty = sentBackQty != null ? Math.max(0, outstandingQty - sentBackQty) : 0;
 
   // Direct inward: Security logged it at the gate, done. No request/approval trail.
   if (pass.type === 'inward') {
@@ -1096,7 +1103,8 @@ function LifecycleTimeline({ pass }) {
       key: 'return_out',
       label: `Left ${pass.destinationBranchName || 'Destination Branch'}`,
       sub: pass.returnOutwardLog
-        ? `${pass.returnOutwardLog.loggedByUser?.name || '—'} · Host: ${pass.returnOutwardLog.guardName || '—'}`
+        ? `${pass.returnOutwardLog.loggedByUser?.name || '—'} · Host: ${pass.returnOutwardLog.guardName || '—'}` +
+          (sentBackQty != null ? ` · Sent ${sentBackQty}${stillAtDestQty > 0 ? ` · ${stillAtDestQty} still at ${pass.destinationBranchName || 'destination'}` : ''}` : '')
         : 'Waiting for the destination gate to mark the return out',
       time: pass.returnOutwardLog?.loggedAt,
       done: !!pass.returnOutwardLog,
@@ -1395,7 +1403,9 @@ function PrintGatePass({ pass }) {
               <div style={{ fontSize: '8.5pt', color: '#555' }}>
                 {c.at === 'destination'
                   ? `Written off at ${pass.destinationBranchName || 'destination branch'}`
-                  : 'Closed at source gate on return log'}
+                  : c.at === 'destination_gate'
+                    ? `Written off at ${pass.destinationBranchName || 'destination branch'} gate on return out`
+                    : 'Closed at source gate on return log'}
                 {c.closedByUser ? ` by ${c.closedByUser.name}` : ''} · {fmt(c.closedAt)}
               </div>
             </div>
@@ -1463,6 +1473,7 @@ function PrintGatePass({ pass }) {
               <div className="print-auth-value">{pass.returnOutwardLog.loggedByUser?.name || '—'}</div>
               <div className="print-auth-time">
                 {fmt(pass.returnOutwardLog.loggedAt)} · Host: {pass.returnOutwardLog.guardName || '—'}
+                {pass.returnOutwardLog.items ? ` · Sent: ${pass.returnOutwardLog.items.map(s => `${s.quantity}× ${s.itemName}`).join(', ')}` : ''}
               </div>
             </div>
           )}
