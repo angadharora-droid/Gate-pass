@@ -1,8 +1,8 @@
 // Styled Excel export for the gate registers (registerReports.js builds the
 // rows). Designed to match the on-screen register: a light title block, a
 // pale header with small uppercase labels, each gate pass's details shown
-// once at the top of its rows, passes banded white / light grey with a single
-// light line where each new one starts, and coloured status text. The header
+// once at the top of its rows, passes banded white / light grey inside a
+// light outer box with soft row lines, and coloured status text. The header
 // stays frozen with filters, and the sheet prints landscape with the header
 // repeated on every page.
 import { fmtStamp } from './registerReports';
@@ -108,7 +108,12 @@ export function buildReportWorkbook(ExcelJS, report, meta) {
     cell.font = mono({ size: 9, bold: true, color: { argb: C.text3 } });
     cell.fill = fill(C.band);
     cell.alignment = { vertical: 'middle', horizontal: c.num ? 'right' : 'left', indent: 1, wrapText: true };
-    cell.border = { top: thin(C.border), bottom: thin(C.border) };
+    cell.border = {
+      top: thin(C.border2), bottom: thin(C.border2),
+      // the table's outer box, as on screen
+      ...(i === 0 && { left: thin(C.border2) }),
+      ...(i === n - 1 && { right: thin(C.border2) }),
+    };
   });
   r++;
 
@@ -133,8 +138,17 @@ export function buildReportWorkbook(ExcelJS, report, meta) {
           vertical: 'top', horizontal: c.num ? 'right' : 'left', indent: 1,
           wrapText: !NO_WRAP.includes(c.key),
         };
-        // One light line where each new gate pass starts — nothing else
-        if (ri === 0 && gi > 0) cell.border = { top: thin(C.border) };
+        // Lines as on screen: a darker one where each new gate pass starts, a
+        // light one between a pass's item rows (not through its details, which
+        // read as one block), the table's outer box, no column lines
+        const isLast = gi === groups.length - 1 && ri === g.rows.length - 1;
+        cell.border = {
+          ...(ri === 0 && gi > 0 && { top: thin(C.border2) }),
+          ...(ri > 0 && !c.doc && { top: thin(C.border) }),
+          ...(i === 0 && { left: thin(C.border2) }),
+          ...(i === n - 1 && { right: thin(C.border2) }),
+          ...(isLast && { bottom: thin(C.border2) }),
+        };
         if (MONEY.includes(c.key)) cell.numFmt = '#,##0.00';
         else if (DASH_ZERO.includes(c.key)) cell.numFmt = '[=0]"—";General';
 
