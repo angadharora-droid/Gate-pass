@@ -297,7 +297,7 @@ export function buildReport(passes, spec) {
                                  [NON_RETURNABLE_COLUMNS, nonReturnableGroups(passes, spec, within, atBranch)];
 
   // A report across every branch says which branch each document belongs to
-  const columns = spec.branchId ? kindColumns : [{ key: 'branch', label: 'Branch', doc: true, wch: 20 }, ...kindColumns];
+  const columns = spec.branchId ? kindColumns : [{ key: 'branch', label: 'Branch', doc: true, wch: 28 }, ...kindColumns];
 
   // Registers read chronologically, like the gate book
   groups.sort((a, b) => new Date(a.at) - new Date(b.at) || String(a.docNo).localeCompare(String(b.docNo)));

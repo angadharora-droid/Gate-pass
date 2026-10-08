@@ -962,7 +962,7 @@ a.pass-number:hover { text-decoration: underline; text-underline-offset: 3px; }
 .register-table td.num, .register-table th.num { text-align: right; font-family: var(--font-mono); }
 .register-table tbody tr:hover { background: none; }
 .register-table tbody tr.doc-start td { border-top: 2px solid var(--border2); }
-.register-table tbody tr.band td { background: var(--accent-soft); }
+.register-table tbody tr.band td { background: var(--bg3); }
 .register-status { font-weight: 600; white-space: nowrap; }
 .register-status.pending, .register-status.in-transit { color: var(--orange); }
 .register-status.overdue { color: var(--red); }

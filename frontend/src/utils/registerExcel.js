@@ -1,31 +1,31 @@
 // Styled Excel export for the gate registers (registerReports.js builds the
 // rows). Same shape as the old register exports — title block, then one row
 // per item with each document's details repeated — but designed: every gate
-// pass gets its own colour band so the start of a new pass is obvious, the
-// header stays frozen with filters, statuses are coloured, and the sheet
+// pass gets its own grey band so the start of a new pass is obvious, the
+// header stays frozen with filters, status text is coloured, and the sheet
 // prints landscape with the header repeated on every page.
 import { fmtStamp } from './registerReports';
 
 const C = {
-  titleBg:  'FF1E3A8A', titleFg: 'FFFFFFFF',
-  infoBg:   'FFEFF6FF', infoFg:  'FF1E293B', muted: 'FF64748B',
-  headBg:   'FF334155', headFg:  'FFFFFFFF', headLine: 'FF1E293B',
-  grid:     'FFCBD5E1',
-  bandA:    'FFFFFFFF', bandB:   'FFE8F0FE',   // alternate per gate pass
-  passLine: 'FF64748B',                         // top edge of a new pass
-  docNo:    'FF1D4ED8', repeat:  'FF94A3B8',    // repeated details greyed
-  totalBg:  'FFF1F5F9',
+  titleBg:  'FF374151', titleFg: 'FFFFFFFF',
+  infoBg:   'FFF3F4F6', infoFg:  'FF111827', muted: 'FF6B7280',
+  headBg:   'FF4B5563', headFg:  'FFFFFFFF', headLine: 'FF374151',
+  grid:     'FFD1D5DB',
+  bandA:    'FFFFFFFF', bandB:   'FFF3F4F6',   // alternate per gate pass
+  passLine: 'FF6B7280',                         // top edge of a new pass
+  docNo:    'FF111827', repeat:  'FF9CA3AF',    // repeated details greyed
+  totalBg:  'FFE5E7EB',
 };
 
-// [text, fill] per status
+// Status text colour only — the row keeps its grey band
 const STATUS = {
-  Pending:            ['FFC2410C', 'FFFFEDD5'],
-  'In Transit':       ['FFC2410C', 'FFFFEDD5'],
-  Overdue:            ['FFB91C1C', 'FFFEE2E2'],
-  Received:           ['FF15803D', 'FFDCFCE7'],
-  Returned:           ['FF15803D', 'FFDCFCE7'],
-  'Written Off':      ['FF475569', 'FFF1F5F9'],
-  'Part Written Off': ['FF475569', 'FFF1F5F9'],
+  Pending:            'FFB45309',
+  'In Transit':       'FFB45309',
+  Overdue:            'FFB91C1C',
+  Received:           'FF15803D',
+  Returned:           'FF15803D',
+  'Written Off':      'FF6B7280',
+  'Part Written Off': 'FF6B7280',
 };
 function statusStyle(value) {
   if (STATUS[value]) return STATUS[value];
@@ -133,10 +133,7 @@ export function buildReportWorkbook(ExcelJS, report, meta) {
 
         if (c.key === 'status' && !repeated) {
           const st = statusStyle(String(raw || ''));
-          if (st) {
-            cell.font = font({ bold: true, color: { argb: st[0] } });
-            cell.fill = fill(st[1]);
-          }
+          if (st) cell.font = font({ bold: true, color: { argb: st } });
         }
       });
       r++;
