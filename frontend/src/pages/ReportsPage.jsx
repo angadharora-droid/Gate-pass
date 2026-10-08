@@ -7,8 +7,9 @@ import { StatusBadge, MovementBadge, movementFor, DirectionBadge, ReturnableBadg
 import { AlertTriangle, FileBarChart2, Timer, Download, SlidersHorizontal } from 'lucide-react';
 import ReportDialog, { defaultReportSpec } from '../components/ReportDialog';
 import {
-  REPORT_KINDS, buildReport, describeSpec, dateBasisNote, exportReportXlsx, fmtInputDay,
+  REPORT_KINDS, buildReport, describeSpec, dateBasisNote, fmtInputDay,
 } from '../utils/registerReports';
+import { buildReportWorkbook, downloadWorkbook } from '../utils/registerExcel';
 
 function pad2(n) {
   return String(n).padStart(2, '0');
@@ -756,16 +757,17 @@ function RegisterReports() {
     setExporting(true);
     setError('');
     try {
-      const mod = await import('xlsx');
-      const XLSX = mod.utils ? mod : mod.default;
+      // ExcelJS (not SheetJS) — the community SheetJS build can't write styles
+      const mod = await import('exceljs');
+      const ExcelJS = mod.default || mod;
       const title = REPORT_KINDS[spec.kind];
-      const wb = exportReportXlsx(XLSX, report, {
+      const wb = buildReportWorkbook(ExcelJS, report, {
         branchName, location: branchObj?.location, title,
         fromLabel: fmtInputDay(spec.from), toLabel: fmtInputDay(spec.to),
         includes: describeSpec(spec), dateNote: dateBasisNote(spec), generatedBy: user?.name,
       });
       const safe = s => String(s).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
-      XLSX.writeFile(wb, `${safe(title)}-${safe(branchName)}-${spec.from}_to_${spec.to}.xlsx`);
+      await downloadWorkbook(wb, `${safe(title)}-${safe(branchName)}-${spec.from}_to_${spec.to}.xlsx`);
     } catch (e) {
       setError(e.message || 'Could not export the report.');
     } finally {
@@ -868,8 +870,9 @@ function RegisterReports() {
                   <tr>{report.columns.map(c => <th key={c.key} className={c.num ? 'num' : ''}>{c.label}</th>)}</tr>
                 </thead>
                 <tbody>
-                  {report.groups.map(g => g.rows.map((r, ri) => (
-                    <tr key={`${g.key}-${ri}`} className={ri === 0 ? 'doc-start' : ''}>
+                  {/* Every other gate pass is tinted, so each new pass stands out */}
+                  {report.groups.map((g, gi) => g.rows.map((r, ri) => (
+                    <tr key={`${g.key}-${ri}`} className={`${ri === 0 ? 'doc-start' : ''}${gi % 2 ? ' band' : ''}`}>
                       {report.columns.map(c => {
                         // Document details span all of the document's item rows
                         if (c.doc) {
