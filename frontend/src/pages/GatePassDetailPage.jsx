@@ -93,6 +93,7 @@ export default function GatePassDetailPage() {
 
   // Receiver approving the items going back to the source branch
   const handleSendBack = async () => {
+    if (!confirm('Approve sending these items back?\n\nAfter this the items are with the gate and nothing can be written off here. If anything is not going back, write it off first.')) return;
     setError('');
     setActionLoading(true);
     try {
@@ -175,10 +176,13 @@ export default function GatePassDetailPage() {
     (isAdmin ||
       user?.id === pass.receivedLog.receiverId ||
       (hasRole(user, 'manager', 'supermanager') && user?.branch === pass.destinationBranch));
-  // Same authority as send-back approval, but open from the moment items are
-  // received until the return physically leaves — covers writing off breakage
+  // Same authority as send-back approval, open from the moment items are
+  // received until the send-back is approved — covers writing off breakage
   // right when custody is taken, and again right before approving send-back.
-  const canWriteOff = isTransferAway && pass.returnable && pass.receivedLog && !pass.returnOutwardLog &&
+  // Once approved the items are with the gate; admin keeps an override until
+  // the return physically leaves. Mirrors /close-items.
+  const canWriteOff = isTransferAway && pass.returnable && pass.receivedLog &&
+    (isAdmin ? !pass.returnOutwardLog : !pass.returnRequest) &&
     pass.items?.some(li => li.quantity - (li.returnedQuantity || 0) - (li.closedQuantity || 0) > 0) &&
     (isAdmin ||
       user?.id === pass.receivedLog.receiverId ||

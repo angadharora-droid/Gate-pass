@@ -831,8 +831,12 @@ function canActForDestination(pass, user) {
 // Status follows the gate's closure rule: everything accounted for →
 // 'completed'; otherwise → 'partial_return'. (Write-offs used to end in a
 // separate 'closed' status; the closure records keep that story now.)
-// Allowed from the moment items are marked in until the return physically
-// leaves (returnOutwardLog).
+// Allowed from the moment items are marked in until the receiver approves the
+// send-back (returnRequest). After that the items are in the destination
+// gate's hands — the receiver no longer has custody, so they can't make items
+// vanish from the gate's queue. Anything that turns out missing is closed by
+// the source gate when the return arrives (/log-inward closures). Admin keeps
+// an override until the return physically leaves (returnOutwardLog).
 router.patch('/:id/close-items', asyncHandler(async (req, res) => {
   const pass = await dbc('gatePasses').findOne({ id: req.params.id }, NO_ID);
   if (!pass) return res.status(404).json({ error: 'Gate pass not found' });
@@ -845,6 +849,8 @@ router.patch('/:id/close-items', asyncHandler(async (req, res) => {
     return res.status(400).json({ error: 'Items have not been marked in at the destination branch yet' });
   if (pass.returnOutwardLog)
     return res.status(400).json({ error: 'Return already marked out at the destination branch; quantities are locked' });
+  if (pass.returnRequest && !hasRole(req.user, 'admin'))
+    return res.status(400).json({ error: 'Send-back already approved — the items are with the gate now and can no longer be written off. Any shortfall is closed at the source gate when the return arrives.' });
   if (!['in_transit', 'partial_return'].includes(pass.status))
     return res.status(400).json({ error: `Cannot write off items in ${pass.status} status` });
   if (!canActForDestination(pass, req.user))
