@@ -748,6 +748,10 @@ function RegisterReports() {
   };
 
   const report = useMemo(() => (spec ? buildReport(passes, spec) : null), [passes, spec]);
+
+  // Fetch the Excel library in the background once a report is on screen, so
+  // Export doesn't wait on a ~270 KB download at click time
+  useEffect(() => { if (spec) import('exceljs').catch(() => {}); }, [spec]);
   const branchObj = spec?.branchId ? branches.find(b => b.id === spec.branchId) : null;
   const branchName = spec?.branchId ? (branchObj?.name || '') : 'All Branches';
   const userBranchName = branches.find(b => b.id === user?.branch)?.name;
