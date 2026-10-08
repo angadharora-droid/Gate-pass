@@ -98,7 +98,7 @@ const itemCells = li => ({
 const INWARD_COLUMNS = [
   { key: 'date',       label: 'Date',           doc: true, wch: 17 },
   { key: 'docNo',      label: 'Document No',    doc: true, wch: 16 },
-  { key: 'tranType',   label: 'Type',           doc: true, wch: 24 },
+  { key: 'tranType',   label: 'Type',           doc: true, wch: 32 },
   { key: 'from',       label: 'From',           doc: true, wch: 26 },
   { key: 'department', label: 'Department',     doc: true, wch: 16 },
   { key: 'carriedBy',  label: 'Carried By',     doc: true, wch: 16 },

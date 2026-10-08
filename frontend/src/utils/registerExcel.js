@@ -9,10 +9,10 @@ import { fmtStamp } from './registerReports';
 const C = {
   titleBg:  'FF374151', titleFg: 'FFFFFFFF',
   infoBg:   'FFF3F4F6', infoFg:  'FF111827', muted: 'FF6B7280',
-  headBg:   'FF4B5563', headFg:  'FFFFFFFF', headLine: 'FF374151',
-  grid:     'FFD1D5DB',
+  headBg:   'FF4B5563', headFg:  'FFFFFFFF',
+  grid:     'FFD1D5DB',                         // light line where a pass starts
   bandA:    'FFFFFFFF', bandB:   'FFF3F4F6',   // alternate per gate pass
-  passLine: 'FF6B7280',                         // top edge of a new pass
+  passLine: 'FF6B7280',                         // above the total row
   docNo:    'FF111827', repeat:  'FF9CA3AF',    // repeated details greyed
   totalBg:  'FFE5E7EB',
 };
@@ -101,7 +101,6 @@ export function buildReportWorkbook(ExcelJS, report, meta) {
     cell.font = font({ bold: true, color: { argb: C.headFg } });
     cell.fill = fill(C.headBg);
     cell.alignment = { vertical: 'middle', horizontal: c.num ? 'right' : 'left', wrapText: true };
-    cell.border = { top: thin(C.headLine), bottom: thin(C.headLine), left: thin(C.headLine), right: thin(C.headLine) };
   });
   r++;
 
@@ -123,11 +122,9 @@ export function buildReportWorkbook(ExcelJS, report, meta) {
         });
         cell.fill = fill(bg);
         cell.alignment = { vertical: 'top', horizontal: c.num ? 'right' : 'left', wrapText: WRAP.includes(c.key) };
-        cell.border = {
-          // A darker line where each new gate pass starts
-          top: ri === 0 ? { style: 'medium', color: { argb: C.passLine } } : thin(C.grid),
-          bottom: thin(C.grid), left: thin(C.grid), right: thin(C.grid),
-        };
+        // No cell grid — the grey bands separate the passes; one light line
+        // marks where each new gate pass starts
+        if (ri === 0) cell.border = { top: thin(C.grid) };
         if (MONEY.includes(c.key)) cell.numFmt = '#,##0.00';
         else if (DASH_ZERO.includes(c.key)) cell.numFmt = '[=0]"—";General';
 
@@ -151,7 +148,7 @@ export function buildReportWorkbook(ExcelJS, report, meta) {
     const cell = tr.getCell(i);
     cell.font = font({ bold: true, color: { argb: C.infoFg } });
     cell.fill = fill(C.totalBg);
-    cell.border = { top: { style: 'double', color: { argb: C.passLine } }, bottom: thin(C.grid) };
+    cell.border = { top: thin(C.passLine) };
     cell.alignment = { vertical: 'middle', horizontal: i === 1 ? 'left' : 'right' };
   }
   if (amountIdx >= 0 && lastData >= firstData) {
