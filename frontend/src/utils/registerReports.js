@@ -106,8 +106,8 @@ const INWARD_COLUMNS = [
   { key: 'item',       label: 'Item Name',      wch: 30 },
   { key: 'qty',        label: 'Qty',            num: true, wch: 8 },
   { key: 'unit',       label: 'Unit',           wch: 7 },
-  { key: 'rate',       label: 'Rate',           num: true, wch: 9 },
-  { key: 'amount',     label: 'Amount',         num: true, wch: 11 },
+  { key: 'rate',       label: 'Rate',           num: true, wch: 12 },
+  { key: 'amount',     label: 'Amount',         num: true, wch: 14 },
   { key: 'remarks',    label: 'Remarks',        wch: 24 },
   { key: 'receiver',   label: 'Receiver',       doc: true, wch: 18 },
   { key: 'status',     label: 'Status',         wch: 11 },
@@ -128,7 +128,7 @@ const RETURNABLE_COLUMNS = [
   { key: 'writtenOff', label: 'Written Off',    num: true, wch: 10 },
   { key: 'pending',    label: 'Pending',        num: true, wch: 8 },
   { key: 'unit',       label: 'Unit',           wch: 7 },
-  { key: 'returnBy',   label: 'Return By',      doc: true, wch: 11 },
+  { key: 'returnBy',   label: 'Return By',      doc: true, wch: 12 },
   { key: 'status',     label: 'Status',         wch: 12 },
   { key: 'where',      label: 'Items Are With', wch: 36 },
 ];
@@ -145,8 +145,8 @@ const NON_RETURNABLE_COLUMNS = [
   { key: 'item',       label: 'Item Name',      wch: 30 },
   { key: 'qty',        label: 'Qty',            num: true, wch: 8 },
   { key: 'unit',       label: 'Unit',           wch: 7 },
-  { key: 'rate',       label: 'Rate',           num: true, wch: 9 },
-  { key: 'amount',     label: 'Amount',         num: true, wch: 11 },
+  { key: 'rate',       label: 'Rate',           num: true, wch: 12 },
+  { key: 'amount',     label: 'Amount',         num: true, wch: 14 },
   { key: 'remarks',    label: 'Remarks',        wch: 24 },
   { key: 'status',     label: 'Status',         doc: true, wch: 26 },
 ];
@@ -332,43 +332,3 @@ export function dateBasisNote(spec) {
   return 'Dated by when the items went out of the gate.';
 }
 
-// ─── Excel export ─────────────────────────────────────────────────────────────
-// Same shape as the old register exports: a title line with the branch, report
-// type and period, the address, then the item rows with each document's
-// details repeated on every one of its rows.
-export function exportReportXlsx(XLSX, report, meta) {
-  const { columns, groups, totals } = report;
-  const n = columns.length;
-  const aoa = [
-    [`${(meta.branchName || 'All Branches').toUpperCase()}   Type: ${meta.title}; From Date: ${meta.fromLabel}; To Date: ${meta.toLabel};`],
-    [`Includes: ${meta.includes}`],
-    [`Address : ${meta.location || ''}`],
-    [],
-    columns.map(c => c.label),
-  ];
-  for (const g of groups) {
-    for (const r of g.rows) {
-      aoa.push(columns.map(c => {
-        const v = c.doc ? g.cells[c.key] : r[c.key];
-        if (c.num) return v === '' || v == null ? '' : Number(v);
-        return v ?? '';
-      }));
-    }
-  }
-  aoa.push([]);
-  const totalRow = new Array(n).fill('');
-  totalRow[0] = 'Total';
-  totalRow[1] = `${totals.documents} documents · ${totals.lines} item lines`;
-  const amountCol = columns.findIndex(c => c.key === 'amount');
-  if (amountCol >= 0 && totals.amount) totalRow[amountCol] = Math.round(totals.amount * 100) / 100;
-  aoa.push(totalRow);
-  aoa.push([`${meta.dateNote} Generated ${fmtStamp(new Date().toISOString())}${meta.generatedBy ? ` by ${meta.generatedBy}` : ''}.`]);
-
-  const ws = XLSX.utils.aoa_to_sheet(aoa);
-  ws['!cols'] = columns.map(c => ({ wch: c.wch || 12 }));
-  const fullWidth = r => ({ s: { r, c: 0 }, e: { r, c: n - 1 } });
-  ws['!merges'] = [fullWidth(0), fullWidth(1), fullWidth(2), fullWidth(aoa.length - 1)];
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, meta.title.slice(0, 31));
-  return wb;
-}
