@@ -593,8 +593,24 @@ const ACTION_BG = {
   LOG_RETURN_OUTWARD: 'rgba(249,115,22,0.1)',
 };
 
+// Admin changes to users and master data (CREATE_USER, UPDATE_VENDOR,
+// DEACTIVATE_BRANCH…) are coloured by what they did
+function actionColors(action) {
+  if (ACTION_COLOR[action]) return { color: ACTION_COLOR[action], background: ACTION_BG[action] };
+  if (/^(CREATE|RESTORE)_/.test(action)) return { color: 'var(--blue)', background: 'rgba(59,130,246,0.1)' };
+  if (/^UPDATE_/.test(action))           return { color: 'var(--purple)', background: 'rgba(124,58,237,0.1)' };
+  if (/^DEACTIVATE_/.test(action))       return { color: 'var(--red)', background: 'rgba(220,38,38,0.1)' };
+  return { color: 'var(--text2)', background: 'var(--bg3)' };
+}
+
 function fmtAuditDetails(details) {
   if (!details || typeof details !== 'object') return '—';
+  // Admin edits: who/what, then which fields changed (before → after is in the record)
+  const changed = details.changes && typeof details.changes === 'object' ? Object.keys(details.changes) : [];
+  if (details.name && (changed.length || details.passwordReset)) {
+    const what = [...changed, ...(details.passwordReset ? ['password reset'] : [])];
+    return `${details.name} · ${what.join(', ')}`;
+  }
   const priority = ['passNumber', 'email', 'name', 'action', 'branchName'];
   for (const key of priority) {
     if (details[key]) return String(details[key]);
@@ -930,8 +946,7 @@ function AuditTab() {
                       display: 'inline-block',
                       padding: '2px 8px', borderRadius: 4,
                       fontFamily: 'var(--font-mono)', fontSize: 11, fontWeight: 600,
-                      color: ACTION_COLOR[l.action] || 'var(--text2)',
-                      background: ACTION_BG[l.action] || 'var(--bg3)',
+                      ...actionColors(l.action),
                       letterSpacing: '0.03em',
                     }}>
                       {l.action}

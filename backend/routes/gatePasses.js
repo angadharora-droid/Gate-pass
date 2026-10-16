@@ -2,62 +2,39 @@ import { Router } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { dbc, NO_ID, generatePassNumber, logAudit, upsertMasterItems, findActiveVendor, INWARD_TYPES, DOCUMENT_TYPES, UNITS } from '../data/db.js';
 import { authMiddleware, requireRole } from '../middleware/auth.js';
-import { hasRole, rolesOf } from '../lib/roles.js';
+import { hasRole } from '../lib/roles.js';
 import { asyncHandler } from '../lib/asyncHandler.js';
+import { HttpError } from '../lib/httpError.js';
+import {
+  OPEN_STATUSES, canSeePass, scopeFilter, withScope, canApproveSendBack, outstandingQty,
+  STATS_PROJECTION, computeStats,
+} from '../lib/passRules.js';
 
 const router = Router();
 router.use(authMiddleware);
 
-// ─── SCOPING HELPER ───────────────────────────────────────────────────────────
-// Visibility follows INVOLVEMENT, not just the branch:
-//   draft        → only its own creator (and admin) — it isn't real yet
-//   admin        → everything
-//   time_office  → every pass crossing THEIR gate (source or destination = their
-//                  branch) — the gate must log all of it
-//   staff        → only passes they created, and transfer items in their custody
-//   manager      → their own department's passes, anything routed to / decided
-//                  by them, the branch's unrouted pending pool, and internal
-//                  transfers arriving at their branch
-//   supermanager → anything routed to / decided by them, the unrouted pending
-//                  pool, and internal transfers arriving at their branch
-// A user holding several roles sees the union of those views.
-function scopePasses(passes, user) {
-  if (hasRole(user, 'admin')) return passes;
-  const roles = rolesOf(user);
-  return passes.filter(p => {
-    // A draft isn't real yet — only its creator can see it. This must come
-    // first: it overrides every other rule below (branch gate, department
-    // traffic, approval pools), none of which should apply to something
-    // nobody has decided to submit.
-    if (p.status === 'draft') return p.createdBy === user.id;
+// Visibility (who sees which pass) lives in lib/passRules.js: canSeePass for
+// one pass in hand, scopeFilter for database queries.
 
-    // Gate view: everything physically crossing my branch's gate
-    if (roles.includes('time_office') &&
-        (p.sourceBranch === user.branch || p.destinationBranch === user.branch)) return true;
-
-    // Personal involvement — applies to every role
-    if (p.createdBy === user.id) return true;
-    if (p.approverId === user.id || p.approvedBy === user.id) return true;
-    if (p.receivedLog?.receiverId === user.id) return true;
-    if (p.returnRequest?.requestedBy === user.id) return true;
-    if (p.sendBackRequest?.requestedBy === user.id) return true;
-
-    const isApproverRole = roles.includes('manager') || roles.includes('supermanager');
-    if (isApproverRole) {
-      // The branch's unrouted pending passes are the shared approval pool
-      // (legacy passes and routed passes whose approver has left)
-      if (p.status === 'pending' && !p.approverId && p.sourceBranch === user.branch) return true;
-      // Incoming transfers land at my branch — receipts and send-back
-      // approvals are this branch's approvers' responsibility
-      if (p.direction === 'internal' && p.destinationBranch === user.branch) return true;
-    }
-    if (roles.includes('manager')) {
-      // My department's traffic is my responsibility
-      if (p.departmentId && p.departmentId === user.departmentId && p.sourceBranch === user.branch) return true;
-      if (p.receivedLog?.departmentId && p.receivedLog.departmentId === user.departmentId) return true;
-    }
-    return false;
-  });
+// ─── SAVE (optimistic concurrency) ────────────────────────────────────────────
+// Every pass change is read → change in memory → save the whole document. Two
+// people acting on the same pass at once (the receiver writing off while the
+// gate logs the return, two guards marking the same pass out) would otherwise
+// silently overwrite each other's work. Each save bumps `version` and only
+// lands if the stored version is still the one that was read; otherwise the
+// request fails with 409 and the user reloads. Rows saved before versioning
+// existed have no `version` field — their first save starts it at 1.
+async function savePass(pass) {
+  const readVersion = pass.version;
+  const next = { ...pass, version: (readVersion || 0) + 1 };
+  const { matchedCount } = await dbc('gatePasses').replaceOne(
+    { id: pass.id, version: readVersion ?? { $exists: false } },
+    next,
+  );
+  if (!matchedCount) {
+    throw new HttpError(409, 'Someone else updated this pass a moment ago. Reload it and try again.');
+  }
+  pass.version = next.version;
 }
 
 // Reference data used to enrich passes with user/branch/department names —
@@ -77,31 +54,118 @@ async function getRefs() {
   };
 }
 
-// ─── GET ALL GATE PASSES ──────────────────────────────────────────────────────
-router.get('/', asyncHandler(async (req, res) => {
-  const { type, status, branch, direction, passNumber, departmentId } = req.query;
-  const [allPasses, refs] = await Promise.all([dbc('gatePasses').find({}, NO_ID).toArray(), getRefs()]);
-  let passes = allPasses.map(p => enrichPass(p, refs));
+// ─── LIST FILTER HELPERS ──────────────────────────────────────────────────────
+// Gate events a pass carries. All are ISO strings (toISOString), so ISO
+// bounds compare correctly as plain text in the database.
+const ACTIVITY_FIELDS = [
+  'createdAt', 'outwardLog.loggedAt', 'inwardLog.loggedAt', 'receivedLog.loggedAt', 'returnOutwardLog.loggedAt',
+];
+const LIST_LIMIT_MAX = 5000;
 
-  if (type)      passes = passes.filter(p => p.type === type);
+const escapeRegex = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+// Query-string values are strings — or arrays/objects when crafted
+// (?status[$ne]=x). Anything but a plain string is dropped so a parameter can
+// never smuggle a query operator into the database filter.
+const str = v => (typeof v === 'string' ? v.trim() : '');
+
+// { $gte, $lt } over ISO strings; `to` is exclusive.
+function isoRange(from, to) {
+  const range = {};
+  for (const [op, raw] of [['$gte', from], ['$lt', to]]) {
+    if (!raw) continue;
+    const d = new Date(raw);
+    if (isNaN(d.getTime())) throw new HttpError(400, `Not a valid date: ${raw}`);
+    range[op] = d.toISOString();
+  }
+  return range;
+}
+
+// The list page's search box: pass number, purpose, outside party, item
+// names, and branch / department names (resolved to ids from the small
+// reference lists) — the same fields GatePassListPage matches on screen.
+function searchClause(q, refs) {
+  const rx = { $regex: escapeRegex(q), $options: 'i' };
+  const term = q.toLowerCase();
+  const or = [{ passNumber: rx }, { purpose: rx }, { destinationPerson: rx }, { 'items.itemName': rx }];
+  const branchIds = refs.branches.filter(b => b.name?.toLowerCase().includes(term)).map(b => b.id);
+  if (branchIds.length) or.push({ sourceBranch: { $in: branchIds } }, { destinationBranch: { $in: branchIds } });
+  const deptIds = refs.departments.filter(d => d.name?.toLowerCase().includes(term)).map(d => d.id);
+  if (deptIds.length) {
+    or.push({ departmentId: { $in: deptIds } });
+    // A pass without a department shows its creator's (see enrichPass)
+    const creators = refs.users.filter(u => deptIds.includes(u.departmentId)).map(u => u.id);
+    if (creators.length) or.push({ departmentId: { $in: [null, ''] }, createdBy: { $in: creators } });
+  }
+  return { $or: or };
+}
+
+// movementFor in frontend/src/components/Badges.jsx: 'in' = a direct inward
+// entry, or — for branch-bound viewers — a transfer arriving at my branch from
+// another one; everything else is 'out'.
+function movementClause(movement, user) {
+  const incoming = [{ type: 'inward' }];
+  if (!hasRole(user, 'admin') && user.branch) {
+    incoming.push({ direction: 'internal', destinationBranch: user.branch, sourceBranch: { $ne: user.branch } });
+  }
+  return movement === 'in' ? { $or: incoming } : { $nor: incoming };
+}
+
+// ─── GET ALL GATE PASSES ──────────────────────────────────────────────────────
+// Filtered by the database — visibility included — instead of loading every
+// pass. Every parameter is optional; with none, the response is every visible
+// pass, newest first, exactly as before.
+//   type, status, direction, departmentId   exact ('completed' also matches legacy 'closed')
+//   branch          source OR destination branch
+//   passNumber      substring, case-insensitive
+//   q               search box (searchClause)
+//   movement        'in' | 'out', relative to the viewer's branch
+//   open=true       only OPEN_STATUSES
+//   overdue=true    only late returnable passes still out
+//   from, to        createdAt window (ISO; `to` exclusive)
+//   activeFrom, activeTo   created OR any gate log stamped in the window
+//   includeOpen=true       with activeFrom/activeTo: open passes too, whatever their dates
+//   limit           newest N only — the response becomes { passes, hasMore }
+router.get('/', asyncHandler(async (req, res) => {
+  const qs = Object.fromEntries(Object.entries(req.query).map(([k, v]) => [k, str(v)]));
+  const refsP = getRefs();
+  refsP.catch(() => {});   // awaited below; this only stops an early 400 leaving it unhandled
+  const clauses = [scopeFilter(req.user)];
+
+  if (qs.type)         clauses.push({ type: qs.type });
   // 'closed' was merged into 'completed' — filtering by either matches both,
   // so legacy rows stored as 'closed' keep appearing under Completed.
-  if (status) {
-    const wanted = ['completed', 'closed'].includes(status) ? ['completed', 'closed'] : [status];
-    passes = passes.filter(p => wanted.includes(p.status));
-  }
-  if (direction) passes = passes.filter(p => p.direction === direction);
-  if (departmentId) passes = passes.filter(p => p.departmentId === departmentId);
-  if (branch)    passes = passes.filter(p =>
-    p.sourceBranch === branch || p.destinationBranch === branch
-  );
-  if (passNumber) {
-    const q = String(passNumber).trim().toLowerCase();
-    passes = passes.filter(p => String(p.passNumber).toLowerCase().includes(q));
+  if (qs.status)       clauses.push({ status: { $in: ['completed', 'closed'].includes(qs.status) ? ['completed', 'closed'] : [qs.status] } });
+  if (qs.direction)    clauses.push({ direction: qs.direction });
+  if (qs.departmentId) clauses.push({ departmentId: qs.departmentId });
+  if (qs.branch)       clauses.push({ $or: [{ sourceBranch: qs.branch }, { destinationBranch: qs.branch }] });
+  if (qs.passNumber)   clauses.push({ passNumber: { $regex: escapeRegex(qs.passNumber), $options: 'i' } });
+  if (qs.q)            clauses.push(searchClause(qs.q, await refsP));
+  if (qs.movement === 'in' || qs.movement === 'out') clauses.push(movementClause(qs.movement, req.user));
+  if (qs.open === 'true') clauses.push({ status: { $in: OPEN_STATUSES } });
+  // Candidates only — lateness itself is decided below by enrichPass
+  if (qs.overdue === 'true') clauses.push({
+    type: 'outward', status: { $in: ['in_transit', 'partial_return'] }, expectedReturnDate: { $nin: [null, ''] },
+  });
+  if (qs.from || qs.to) clauses.push({ createdAt: isoRange(qs.from, qs.to) });
+  if (qs.activeFrom || qs.activeTo) {
+    const range = isoRange(qs.activeFrom, qs.activeTo);
+    const active = { $or: ACTIVITY_FIELDS.map(f => ({ [f]: range })) };
+    clauses.push(qs.includeOpen === 'true' ? { $or: [active, { status: { $in: OPEN_STATUSES } }] } : active);
   }
 
-  passes = scopePasses(passes, req.user);
-  res.json(passes.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)));
+  const n = parseInt(qs.limit, 10);
+  const limit = n > 0 ? Math.min(n, LIST_LIMIT_MAX) : 0;
+  let cursor = dbc('gatePasses').find(withScope(...clauses), NO_ID).sort({ createdAt: -1 });
+  // The overdue cut happens after enrichment, so it can't be capped earlier —
+  // its candidates (open returnable legs with a due date) are few anyway.
+  if (limit && qs.overdue !== 'true') cursor = cursor.limit(limit + 1);
+  const [docs, refs] = await Promise.all([cursor.toArray(), refsP]);
+  let passes = docs.map(p => enrichPass(p, refs));
+  if (qs.overdue === 'true') passes = passes.filter(p => p.isOverdue);
+
+  if (!limit) return res.json(passes);
+  res.json({ passes: passes.slice(0, limit), hasMore: passes.length > limit });
 }));
 
 // ─── GET SINGLE ───────────────────────────────────────────────────────────────
@@ -111,7 +175,7 @@ router.get('/:id', asyncHandler(async (req, res) => {
   if (!pass) return res.status(404).json({ error: 'Gate pass not found' });
   // Enforce the same branch scoping as the list view. Return 404 (not 403) so a
   // user can't probe which pass ids exist outside their branch.
-  if (!scopePasses([pass], req.user).length) {
+  if (!canSeePass(pass, req.user)) {
     return res.status(404).json({ error: 'Gate pass not found' });
   }
   res.json(enrichPass(pass, await getRefs()));
@@ -256,6 +320,7 @@ router.post('/', requireRole('admin', 'supermanager', 'manager', 'staff'), async
       };
     }),
     remarks: remarks?.trim() || '',
+    version: 1,   // bumped by every savePass
   };
 
   await dbc('gatePasses').insertOne({ ...newPass });
@@ -410,6 +475,7 @@ router.post('/inward', requireRole('time_office', 'admin'), asyncHandler(async (
       };
     }),
     remarks: remarks?.trim() || '',
+    version: 1,   // bumped by every savePass
   };
 
   await dbc('gatePasses').insertOne({ ...newPass });
@@ -466,7 +532,7 @@ router.patch('/:id/status', requireRole('manager', 'supermanager', 'admin'), asy
   pass.approvedAt = new Date().toISOString();
   pass.autoApproved = false;
 
-  await dbc('gatePasses').replaceOne({ id: pass.id }, pass);
+  await savePass(pass);
   await logAudit(action.toUpperCase(), req.user.id, pass.id, { passNumber: pass.passNumber });
   res.json(enrichPass(pass, await getRefs()));
 }));
@@ -579,7 +645,7 @@ router.patch('/:id/revise', requireRole('manager', 'supermanager', 'admin', 'sta
   pass.editedBy = req.user.id;
   pass.editedAt = new Date().toISOString();
 
-  await dbc('gatePasses').replaceOne({ id: pass.id }, pass);
+  await savePass(pass);
   await logAudit('REVISE_PASS', req.user.id, pass.id, { passNumber: pass.passNumber });
   res.json(enrichPass(pass, await getRefs()));
 }));
@@ -624,7 +690,7 @@ router.patch('/:id/gate-lock', requireRole('time_office', 'admin'), asyncHandler
     };
   }
 
-  await dbc('gatePasses').replaceOne({ id: pass.id }, pass);
+  await savePass(pass);
   await logAudit(action === 'lock' ? 'LOCK_PASS' : 'UNLOCK_PASS', req.user.id, pass.id, { passNumber: pass.passNumber });
   res.json(enrichPass(pass, await getRefs()));
 }));
@@ -654,7 +720,7 @@ router.patch('/:id/gate-reject', requireRole('time_office', 'admin'), asyncHandl
   pass.status = 'rejected';
   pass.gateRejection = { rejectedBy: req.user.id, rejectedAt: new Date().toISOString(), remarks };
 
-  await dbc('gatePasses').replaceOne({ id: pass.id }, pass);
+  await savePass(pass);
   await logAudit('GATE_REJECT', req.user.id, pass.id, { passNumber: pass.passNumber, remarks });
   res.json(enrichPass(pass, await getRefs()));
 }));
@@ -677,7 +743,7 @@ router.patch('/:id/submit-draft', requireRole('manager', 'supermanager', 'admin'
   pass.approvedAt = now;
   pass.autoApproved = true;
 
-  await dbc('gatePasses').replaceOne({ id: pass.id }, pass);
+  await savePass(pass);
   await logAudit('SUBMIT_DRAFT', req.user.id, pass.id, { passNumber: pass.passNumber });
   res.json(enrichPass(pass, await getRefs()));
 }));
@@ -707,7 +773,7 @@ router.patch('/:id', requireRole('admin'), asyncHandler(async (req, res) => {
     changed.expectedReturnDate = true;
   }
 
-  await dbc('gatePasses').replaceOne({ id: pass.id }, pass);
+  await savePass(pass);
   await logAudit('EDIT_PASS', req.user.id, pass.id, { passNumber: pass.passNumber, changed });
   res.json(enrichPass(pass, await getRefs()));
 }));
@@ -745,7 +811,7 @@ router.patch('/:id/log-outward', requireRole('time_office', 'admin'), asyncHandl
   const isBranchTransfer = pass.direction === 'internal' && pass.destinationBranch;
   pass.status = (pass.returnable || isBranchTransfer) ? 'in_transit' : 'completed';
 
-  await dbc('gatePasses').replaceOne({ id: pass.id }, pass);
+  await savePass(pass);
   await logAudit('LOG_OUTWARD', req.user.id, pass.id, { passNumber: pass.passNumber, returnable: pass.returnable });
   res.json(enrichPass(pass, await getRefs()));
 }));
@@ -802,7 +868,7 @@ router.patch('/:id/receive', requireRole('time_office', 'admin'), asyncHandler(a
   };
   if (!pass.returnable) pass.status = 'completed';
 
-  await dbc('gatePasses').replaceOne({ id: pass.id }, pass);
+  await savePass(pass);
   await logAudit('RECEIVE_TRANSFER', req.user.id, pass.id, {
     passNumber: pass.passNumber,
     destinationBranch: pass.destinationBranch,
@@ -811,18 +877,7 @@ router.patch('/:id/receive', requireRole('time_office', 'admin'), asyncHandler(a
   res.json(enrichPass(pass, await getRefs()));
 }));
 
-// Who approves a send-back: the manager of the department that received the
-// items, at the destination branch. A supermanager of that branch can always
-// approve too — it's the only approver when the department has no manager,
-// and the backup when the manager is away. Admin can always approve.
-// Mirrors canApproveSendBack in frontend/src/utils/roles.js.
-function canApproveSendBack(pass, user) {
-  if (hasRole(user, 'admin')) return true;
-  if (user.branch !== pass.destinationBranch) return false;
-  if (hasRole(user, 'supermanager')) return true;
-  return hasRole(user, 'manager') && !!user.departmentId &&
-    user.departmentId === pass.receivedLog?.departmentId;
-}
+// Who approves a send-back: canApproveSendBack in lib/passRules.js.
 
 // Writing items off is a manager's call: the receiver who took custody can
 // request the send-back, but only a manager/supermanager of the destination
@@ -854,7 +909,7 @@ function canWriteOffAtDestination(pass, user) {
 router.patch('/:id/close-items', asyncHandler(async (req, res) => {
   const pass = await dbc('gatePasses').findOne({ id: req.params.id }, NO_ID);
   if (!pass) return res.status(404).json({ error: 'Gate pass not found' });
-  if (!scopePasses([pass], req.user).length)
+  if (!canSeePass(pass, req.user))
     return res.status(404).json({ error: 'Gate pass not found' });
 
   if (!(pass.type === 'outward' && pass.direction === 'internal' && pass.returnable && pass.destinationBranch))
@@ -877,7 +932,7 @@ router.patch('/:id/close-items', asyncHandler(async (req, res) => {
   const writeOff = applyDestinationWriteOffs(pass, closures, req.user.id);
   if (writeOff.error) return res.status(400).json({ error: writeOff.error });
 
-  await dbc('gatePasses').replaceOne({ id: pass.id }, pass);
+  await savePass(pass);
   await logAudit('CLOSE_ITEMS_DESTINATION', req.user.id, pass.id, {
     passNumber: pass.passNumber,
     status: pass.status,
@@ -963,7 +1018,7 @@ router.patch('/:id/return-request', asyncHandler(async (req, res) => {
   const pass = await dbc('gatePasses').findOne({ id: req.params.id }, NO_ID);
   if (!pass) return res.status(404).json({ error: 'Gate pass not found' });
   // Same visibility rule as GET /:id — don't reveal passes outside the branch
-  if (!scopePasses([pass], req.user).length)
+  if (!canSeePass(pass, req.user))
     return res.status(404).json({ error: 'Gate pass not found' });
 
   const stateError = sendBackStateError(pass);
@@ -985,7 +1040,7 @@ router.patch('/:id/return-request', asyncHandler(async (req, res) => {
     });
     // Everything written off — nothing physically goes back
     if (writeOff?.fullyAccounted) {
-      await dbc('gatePasses').replaceOne({ id: pass.id }, pass);
+      await savePass(pass);
       await auditWriteOff();
       return res.json(enrichPass(pass, await getRefs()));
     }
@@ -997,7 +1052,7 @@ router.patch('/:id/return-request', asyncHandler(async (req, res) => {
       staffRequest: pass.sendBackRequest || null,
     };
     pass.sendBackRequest = null;
-    await dbc('gatePasses').replaceOne({ id: pass.id }, pass);
+    await savePass(pass);
     await auditWriteOff();
     await logAudit('APPROVE_RETURN', req.user.id, pass.id, { passNumber: pass.passNumber });
     return res.json(enrichPass(pass, await getRefs()));
@@ -1009,7 +1064,7 @@ router.patch('/:id/return-request', asyncHandler(async (req, res) => {
     return res.status(400).json({ error: 'Send-back already requested — waiting for the manager to approve' });
 
   pass.sendBackRequest = { requestedAt: now, requestedBy: req.user.id, remarks };
-  await dbc('gatePasses').replaceOne({ id: pass.id }, pass);
+  await savePass(pass);
   await logAudit('REQUEST_RETURN', req.user.id, pass.id, { passNumber: pass.passNumber });
   res.json(enrichPass(pass, await getRefs()));
 }));
@@ -1020,7 +1075,7 @@ router.patch('/:id/return-request', asyncHandler(async (req, res) => {
 router.patch('/:id/return-request/reject', asyncHandler(async (req, res) => {
   const pass = await dbc('gatePasses').findOne({ id: req.params.id }, NO_ID);
   if (!pass) return res.status(404).json({ error: 'Gate pass not found' });
-  if (!scopePasses([pass], req.user).length)
+  if (!canSeePass(pass, req.user))
     return res.status(404).json({ error: 'Gate pass not found' });
 
   const stateError = sendBackStateError(pass);
@@ -1040,7 +1095,7 @@ router.patch('/:id/return-request/reject', asyncHandler(async (req, res) => {
   }];
   pass.sendBackRequest = null;
 
-  await dbc('gatePasses').replaceOne({ id: pass.id }, pass);
+  await savePass(pass);
   await logAudit('REJECT_RETURN_REQUEST', req.user.id, pass.id, { passNumber: pass.passNumber, reason });
   res.json(enrichPass(pass, await getRefs()));
 }));
@@ -1141,7 +1196,7 @@ router.patch('/:id/return-outward', requireRole('time_office', 'admin'), asyncHa
     };
   }
 
-  await dbc('gatePasses').replaceOne({ id: pass.id }, pass);
+  await savePass(pass);
   await logAudit('LOG_RETURN_OUTWARD', req.user.id, pass.id, {
     passNumber: pass.passNumber,
     status: pass.status,
@@ -1288,7 +1343,7 @@ router.patch('/:id/log-inward', requireRole('time_office', 'admin'), asyncHandle
       pass.returnOutwardLog = null;
     }
 
-    await dbc('gatePasses').replaceOne({ id: pass.id }, pass);
+    await savePass(pass);
     await logAudit('LOG_INWARD', req.user.id, pass.id, {
       passNumber: pass.passNumber,
       type:       'return_leg',
@@ -1354,7 +1409,7 @@ router.patch('/:id/extend-due-date', requireRole('manager', 'supermanager', 'adm
   pass.dueDateExtensions = [...(pass.dueDateExtensions || []), extension];
   pass.expectedReturnDate = extension.to;
 
-  await dbc('gatePasses').replaceOne({ id: pass.id }, pass);
+  await savePass(pass);
   await logAudit('EXTEND_DUE_DATE', req.user.id, pass.id, {
     passNumber: pass.passNumber,
     from:   extension.from,
@@ -1364,102 +1419,24 @@ router.patch('/:id/extend-due-date', requireRole('manager', 'supermanager', 'adm
   res.json(enrichPass(pass, await getRefs()));
 }));
 
-// Total quantity not yet returned or written off across the pass. Lateness
-// keys off this as well as status: once every item is accounted for, the pass
-// is done in reality — whatever its stored status says (legacy/backfilled rows
-// can lag) — and must never keep showing in the late alerts.
-function outstandingQty(pass) {
-  return (pass.items || []).reduce((s, li) =>
-    s + Math.max(0, li.quantity - (li.returnedQuantity || 0) - (li.closedQuantity || 0)), 0);
-}
-
 // ─── STATS ────────────────────────────────────────────────────────────────────
+// Fetched on every page change (nav badges), so it never loads whole passes:
+// status/type totals are counted by MongoDB, and the action counts run over the
+// user's OPEN passes only, with just the fields they read (computeStats in
+// lib/passRules.js — every action count only matches open statuses anyway).
 router.get('/meta/stats', asyncHandler(async (req, res) => {
-  const now = new Date();
-  let passes = await dbc('gatePasses').find({}, NO_ID).toArray();
-  passes = scopePasses(passes, req.user);
-
-  // Departures and returns happen at the SOURCE branch gate; receiving a branch
-  // transfer happens at the DESTINATION. Non-admins only count their own gate.
-  const atMySource = p => hasRole(req.user, 'admin') || p.sourceBranch === req.user.branch;
-  const atMyDest   = p => hasRole(req.user, 'admin') || p.destinationBranch === req.user.branch;
-
-  // Overdue = my branch's returnable items that should have been back by now
-  // and are GENUINELY still out — a completed/closed pass (or one with nothing
-  // outstanding) never alerts as late.
-  const overdue = passes.filter(p =>
-    p.returnable && p.type === 'outward' &&
-    ['in_transit', 'partial_return'].includes(p.status) &&
-    p.expectedReturnDate && new Date(p.expectedReturnDate) < now &&
-    outstandingQty(p) > 0 &&
-    atMySource(p)
-  );
-
-  const awaitingOutward = passes.filter(p =>
-    p.type === 'outward' && p.status === 'approved' && !p.outwardLog && atMySource(p)
-  );
-  // Pending passes THIS user can actually decide (approver-routing aware) —
-  // a pass routed to a colleague is not in my to-do
-  const myPendingApprovals = passes.filter(p =>
-    p.status === 'pending' &&
-    (hasRole(req.user, 'admin') ||
-      (hasRole(req.user, 'manager', 'supermanager') &&
-       p.sourceBranch === req.user.branch &&
-       (!p.approverId || p.approverId === req.user.id)))
-  );
-  // Returns the source gate could log RIGHT NOW: external items out, or branch
-  // transfers whose return the destination has already dispatched. Transfers
-  // still sitting with the destination receiver are not actionable here.
-  const awaitingInward  = passes.filter(p =>
-    p.type === 'outward' && p.returnable && ['in_transit', 'partial_return'].includes(p.status) && atMySource(p) &&
-    (p.direction !== 'internal' || !p.destinationBranch || !!p.returnOutwardLog)
-  );
-  // Internal branch transfers dispatched by the source branch, not yet marked in here
-  const incomingTransfers = passes.filter(p =>
-    p.type === 'outward' && p.direction === 'internal' && p.destinationBranch &&
-    p.outwardLog && !p.receivedLog &&
-    ['in_transit', 'partial_return'].includes(p.status) && atMyDest(p)
-  );
-  // Approved send-backs, waiting for the destination gate to mark out
-  const awaitingReturnOut = passes.filter(p =>
-    p.type === 'outward' && p.direction === 'internal' && p.returnable &&
-    p.returnRequest && !p.returnOutwardLog &&
-    ['in_transit', 'partial_return'].includes(p.status) && atMyDest(p)
-  );
-  // Returnable transfers currently in THIS user's custody, send-back not yet
-  // requested (once requested, the next move is the manager's)
-  const itemsWithMe = passes.filter(p =>
-    p.type === 'outward' && p.direction === 'internal' && p.returnable &&
-    p.receivedLog?.receiverId === req.user.id && !p.returnRequest && !p.sendBackRequest &&
-    ['in_transit', 'partial_return'].includes(p.status)
-  );
-  // Receivers' send-back requests THIS user can approve or reject
-  const sendBacksToApprove = passes.filter(p =>
-    p.sendBackRequest && !p.returnRequest &&
-    ['in_transit', 'partial_return'].includes(p.status) &&
-    canApproveSendBack(p, req.user)
-  );
-
-  res.json({
-    total:           passes.length,
-    pending:         passes.filter(p => p.status === 'pending').length,
-    approved:        passes.filter(p => p.status === 'approved').length,
-    inTransit:       passes.filter(p => p.status === 'in_transit').length,
-    partialReturn:   passes.filter(p => p.status === 'partial_return').length,
-    // 'closed' merged into 'completed' — legacy rows still count here
-    completed:       passes.filter(p => ['completed', 'closed'].includes(p.status)).length,
-    rejected:        passes.filter(p => p.status === 'rejected').length,
-    overdueReturns:  overdue.length,
-    awaitingOutward: awaitingOutward.length,
-    awaitingInward:  awaitingInward.length,
-    incomingTransfers: incomingTransfers.length,
-    awaitingReturnOut: awaitingReturnOut.length,
-    itemsWithMe:       itemsWithMe.length,
-    sendBacksToApprove: sendBacksToApprove.length,
-    myPendingApprovals: myPendingApprovals.length,
-    outward:         passes.filter(p => p.type === 'outward').length,
-    inward:          passes.filter(p => p.type === 'inward').length,
-  });
+  const scope = scopeFilter(req.user);
+  const [groups, openPasses] = await Promise.all([
+    dbc('gatePasses').aggregate([
+      { $match: scope },
+      { $group: { _id: { status: '$status', type: '$type' }, n: { $sum: 1 } } },
+    ]).toArray(),
+    dbc('gatePasses')
+      .find(withScope(scope, { status: { $in: OPEN_STATUSES } }), { projection: STATS_PROJECTION })
+      .toArray(),
+  ]);
+  const counts = groups.map(g => ({ status: g._id.status, type: g._id.type, n: g.n }));
+  res.json(computeStats(req.user, openPasses, counts));
 }));
 
 // ─── DISPLAY STATUS ───────────────────────────────────────────────────────────

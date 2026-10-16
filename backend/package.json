@@ -6,12 +6,14 @@
     "start": "node server.js",
     "dev": "node --watch server.js",
     "test:smoke": "node scripts/smoke.mjs",
+    "check:scope": "node scripts/check-scope.mjs",
     "migrate:pass-numbers": "node scripts/renumber-pass-numbers.mjs",
     "migrate:resequence-pass-numbers": "node scripts/resequence-pass-numbers.mjs",
     "migrate:closed-to-completed": "node scripts/merge-closed-into-completed.mjs",
     "migrate:drop-catalogue-items": "node scripts/drop-catalogue-items.mjs"
   },
   "dependencies": {
+    "compression": "^1.8.2",
     "cors": "^2.8.5",
     "dotenv": "^17.4.2",
     "express": "^4.18.2",

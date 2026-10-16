@@ -1,10 +1,25 @@
 import { Router } from 'express';
 import { v4 as uuidv4 } from 'uuid';
-import { dbc, NO_ID, ROLES, NO_DEPT_ROLES, UNITS, CATEGORIES, normalizeItemName } from '../data/db.js';
+import { dbc, NO_ID, ROLES, NO_DEPT_ROLES, UNITS, CATEGORIES, normalizeItemName, logAudit } from '../data/db.js';
 import { authMiddleware, requireRole } from '../middleware/auth.js';
 import { hasRole, rolesOf, primaryRole } from '../lib/roles.js';
 import { hashPassword } from '../lib/security.js';
 import { asyncHandler } from '../lib/asyncHandler.js';
+
+// ─── AUDIT ────────────────────────────────────────────────────────────────────
+// Every admin change to users and master data is audited with the fields that
+// changed, before → after. Passwords never appear — a reset is recorded only
+// as `passwordReset: true`.
+function changesOf(before, after, fields) {
+  const changes = {};
+  for (const f of fields) {
+    const from = before[f] ?? null;
+    const to = after[f] ?? null;
+    if (JSON.stringify(from) !== JSON.stringify(to)) changes[f] = { from, to };
+  }
+  return changes;
+}
+const USER_AUDIT_FIELDS = ['name', 'email', 'loginId', 'roles', 'branch', 'departmentId', 'active'];
 
 // Strip any secret fields before sending a user record to the client.
 // `departments` is the pre-fetched departments list (one query per request,
@@ -38,12 +53,14 @@ branchesRouter.post('/', requireRole('admin'), asyncHandler(async (req, res) => 
     active: true,
   };
   await dbc('branches').insertOne({ ...branch });
+  await logAudit('CREATE_BRANCH', req.user.id, branch.id, { name: branch.name, location: branch.location });
   res.status(201).json(branch);
 }));
 
 branchesRouter.patch('/:id', requireRole('admin'), asyncHandler(async (req, res) => {
   const branch = await dbc('branches').findOne({ id: req.params.id }, NO_ID);
   if (!branch) return res.status(404).json({ error: 'Branch not found' });
+  const before = { ...branch };
   const { name, location, active } = req.body;
   if (name !== undefined) {
     const trimmed = name.trim();
@@ -57,6 +74,8 @@ branchesRouter.patch('/:id', requireRole('admin'), asyncHandler(async (req, res)
   if (location !== undefined) branch.location = location.trim();
   if (active !== undefined) branch.active = active;
   await dbc('branches').replaceOne({ id: branch.id }, branch);
+  const changes = changesOf(before, branch, ['name', 'location', 'active']);
+  if (Object.keys(changes).length) await logAudit('UPDATE_BRANCH', req.user.id, branch.id, { name: branch.name, changes });
   res.json(branch);
 }));
 
@@ -75,8 +94,9 @@ branchesRouter.delete('/:id', requireRole('admin'), asyncHandler(async (req, res
     return res.status(400).json({ error: `Cannot deactivate: ${activeUsers} active user(s) belong to this branch. Move or deactivate them first.` });
   if (openPasses > 0)
     return res.status(400).json({ error: `Cannot deactivate: ${openPasses} open pass(es) still reference this branch. Complete or close them first.` });
-  const { matchedCount } = await dbc('branches').updateOne({ id: branchId }, { $set: { active: false } });
-  if (!matchedCount) return res.status(404).json({ error: 'Branch not found' });
+  const branch = await dbc('branches').findOneAndUpdate({ id: branchId }, { $set: { active: false } }, NO_ID);
+  if (!branch) return res.status(404).json({ error: 'Branch not found' });
+  await logAudit('DEACTIVATE_BRANCH', req.user.id, branchId, { name: branch.name });
   res.json({ success: true });
 }));
 
@@ -188,6 +208,10 @@ usersRouter.post('/', requireRole('admin'), asyncHandler(async (req, res) => {
     active: true,
   };
   await dbc('users').insertOne({ ...user });
+  await logAudit('CREATE_USER', req.user.id, user.id, {
+    name: user.name,
+    changes: changesOf({}, user, USER_AUDIT_FIELDS.filter(f => f !== 'active')),
+  });
   const departments = await dbc('departments').find({}, NO_ID).toArray();
   res.status(201).json(enrichUser(user, departments));
 }));
@@ -195,6 +219,7 @@ usersRouter.post('/', requireRole('admin'), asyncHandler(async (req, res) => {
 usersRouter.patch('/:id', requireRole('admin'), asyncHandler(async (req, res) => {
   const user = await dbc('users').findOne({ id: req.params.id }, NO_ID);
   if (!user) return res.status(404).json({ error: 'User not found' });
+  const before = { ...user };
   const { name, email, loginId, password, role, roles, branch, departmentId, active } = req.body;
 
   // Role changes: accept `roles` (array) or a bare `role` from older clients
@@ -255,6 +280,13 @@ usersRouter.patch('/:id', requireRole('admin'), asyncHandler(async (req, res) =>
   }
   if (active !== undefined) user.active = active;
   await dbc('users').replaceOne({ id: user.id }, user);
+  const changes = changesOf(before, user, USER_AUDIT_FIELDS);
+  const passwordReset = user.passwordHash !== before.passwordHash;
+  if (Object.keys(changes).length || passwordReset) {
+    await logAudit('UPDATE_USER', req.user.id, user.id, {
+      name: user.name, changes, ...(passwordReset ? { passwordReset: true } : {}),
+    });
+  }
   const departments = await dbc('departments').find({}, NO_ID).toArray();
   res.json(enrichUser(user, departments));
 }));
@@ -263,8 +295,9 @@ usersRouter.delete('/:id', requireRole('admin'), asyncHandler(async (req, res) =
   if (req.params.id === req.user.id) {
     return res.status(400).json({ error: 'Cannot deactivate yourself' });
   }
-  const { matchedCount } = await dbc('users').updateOne({ id: req.params.id }, { $set: { active: false } });
-  if (!matchedCount) return res.status(404).json({ error: 'User not found' });
+  const user = await dbc('users').findOneAndUpdate({ id: req.params.id }, { $set: { active: false } }, NO_ID);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  await logAudit('DEACTIVATE_USER', req.user.id, user.id, { name: user.name });
   res.json({ success: true });
 }));
 
@@ -339,6 +372,7 @@ itemsRouter.post('/', asyncHandler(async (req, res) => {
     addedBy: req.user.id,
   };
   await dbc('items').insertOne({ ...item });
+  await logAudit('CREATE_ITEM', req.user.id, item.id, { name: item.name });
   res.status(201).json(item);
 }));
 
@@ -349,6 +383,7 @@ itemsRouter.post('/', asyncHandler(async (req, res) => {
 itemsRouter.patch('/:id', requireRole('admin'), asyncHandler(async (req, res) => {
   const item = await dbc('items').findOne({ id: req.params.id }, NO_ID);
   if (!item) return res.status(404).json({ error: 'Item not found' });
+  const before = { ...item };
   const { name, code, unit, category, active } = req.body || {};
   const oldName = item.name;
   if (name !== undefined) {
@@ -372,20 +407,25 @@ itemsRouter.patch('/:id', requireRole('admin'), asyncHandler(async (req, res) =>
     // "dinner  plate" / "Dinner Plate" / "DINNER PLATE" all mean the old item
     const pattern = '^\\s*' + oldName.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+') + '\\s*$';
     const match = { $regex: pattern, $options: 'i' };
+    // Bump `version` too, so a pass save based on a read from before the
+    // rename fails (409) instead of writing the old name back (savePass)
     await dbc('gatePasses').updateMany(
       { 'items.itemName': match },
-      { $set: { 'items.$[el].itemName': item.name } },
+      { $set: { 'items.$[el].itemName': item.name }, $inc: { version: 1 } },
       { arrayFilters: [{ 'el.itemName': match }] },
     );
   }
+  const changes = changesOf(before, item, ['name', 'code', 'unit', 'category', 'active']);
+  if (Object.keys(changes).length) await logAudit('UPDATE_ITEM', req.user.id, item.id, { name: item.name, changes });
   res.json({ ...item, active: item.active !== false });
 }));
 
 // Remove from the suggestion list (deactivate — restorable via PATCH).
 // Pass lines keep the item's name as plain text, so history is untouched.
 itemsRouter.delete('/:id', requireRole('admin'), asyncHandler(async (req, res) => {
-  const { matchedCount } = await dbc('items').updateOne({ id: req.params.id }, { $set: { active: false } });
-  if (!matchedCount) return res.status(404).json({ error: 'Item not found' });
+  const item = await dbc('items').findOneAndUpdate({ id: req.params.id }, { $set: { active: false } }, NO_ID);
+  if (!item) return res.status(404).json({ error: 'Item not found' });
+  await logAudit('DEACTIVATE_ITEM', req.user.id, item.id, { name: item.name });
   res.json({ success: true });
 }));
 
@@ -434,6 +474,7 @@ vendorsRouter.post('/', requireRole('admin'), asyncHandler(async (req, res) => {
     if (existing.active !== false)
       return res.status(400).json({ error: `Vendor "${existing.name}" already exists` });
     await dbc('vendors').updateOne({ id: existing.id }, { $set: { name, active: true } });
+    await logAudit('RESTORE_VENDOR', req.user.id, existing.id, { name });
     return res.json(vendorPublic({ ...existing, name, active: true }));
   }
   const vendor = {
@@ -441,6 +482,7 @@ vendorsRouter.post('/', requireRole('admin'), asyncHandler(async (req, res) => {
     source: 'admin', addedBy: req.user.id, createdAt: new Date().toISOString(),
   };
   await dbc('vendors').insertOne({ ...vendor });
+  await logAudit('CREATE_VENDOR', req.user.id, vendor.id, { name });
   res.status(201).json(vendorPublic(vendor));
 }));
 
@@ -451,6 +493,7 @@ vendorsRouter.post('/', requireRole('admin'), asyncHandler(async (req, res) => {
 vendorsRouter.patch('/:id', requireRole('admin'), asyncHandler(async (req, res) => {
   const vendor = await dbc('vendors').findOne({ id: req.params.id }, NO_ID);
   if (!vendor) return res.status(404).json({ error: 'Vendor not found' });
+  const before = { ...vendor };
   const { name, active } = req.body || {};
   const oldName = vendor.name;
   if (name !== undefined) {
@@ -465,17 +508,21 @@ vendorsRouter.patch('/:id', requireRole('admin'), asyncHandler(async (req, res) 
   if (active !== undefined) vendor.active = !!active;
   await dbc('vendors').replaceOne({ id: vendor.id }, vendor);
   if (vendor.name !== oldName) {
+    // `version` bump: see the item rename above
     await dbc('gatePasses').updateMany(
       { $or: [{ vendorId: vendor.id }, { destinationPerson: oldName }] },
-      { $set: { destinationPerson: vendor.name } },
+      { $set: { destinationPerson: vendor.name }, $inc: { version: 1 } },
     );
   }
+  const changes = changesOf(before, vendor, ['name', 'active']);
+  if (Object.keys(changes).length) await logAudit('UPDATE_VENDOR', req.user.id, vendor.id, { name: vendor.name, changes });
   res.json(vendorPublic(vendor));
 }));
 
 vendorsRouter.delete('/:id', requireRole('admin'), asyncHandler(async (req, res) => {
-  const { matchedCount } = await dbc('vendors').updateOne({ id: req.params.id }, { $set: { active: false } });
-  if (!matchedCount) return res.status(404).json({ error: 'Vendor not found' });
+  const vendor = await dbc('vendors').findOneAndUpdate({ id: req.params.id }, { $set: { active: false } }, NO_ID);
+  if (!vendor) return res.status(404).json({ error: 'Vendor not found' });
+  await logAudit('DEACTIVATE_VENDOR', req.user.id, vendor.id, { name: vendor.name });
   res.json({ success: true });
 }));
 
@@ -511,12 +558,14 @@ departmentsRouter.post('/', requireRole('admin'), asyncHandler(async (req, res) 
 
   const dept = { id: uuidv4(), branchId, name: name.trim(), active: true };
   await dbc('departments').insertOne({ ...dept });
+  await logAudit('CREATE_DEPARTMENT', req.user.id, dept.id, { name: dept.name, branchId });
   res.status(201).json(dept);
 }));
 
 departmentsRouter.patch('/:id', requireRole('admin'), asyncHandler(async (req, res) => {
   const dept = await dbc('departments').findOne({ id: req.params.id }, NO_ID);
   if (!dept) return res.status(404).json({ error: 'Department not found' });
+  const before = { ...dept };
 
   const { name, branchId, active } = req.body;
 
@@ -538,11 +587,14 @@ departmentsRouter.patch('/:id', requireRole('admin'), asyncHandler(async (req, r
   if (branchId !== undefined) dept.branchId = branchId;
   if (active !== undefined) dept.active = active;
   await dbc('departments').replaceOne({ id: dept.id }, dept);
+  const changes = changesOf(before, dept, ['name', 'branchId', 'active']);
+  if (Object.keys(changes).length) await logAudit('UPDATE_DEPARTMENT', req.user.id, dept.id, { name: dept.name, changes });
   res.json(dept);
 }));
 
 departmentsRouter.delete('/:id', requireRole('admin'), asyncHandler(async (req, res) => {
-  const { matchedCount } = await dbc('departments').updateOne({ id: req.params.id }, { $set: { active: false } });
-  if (!matchedCount) return res.status(404).json({ error: 'Department not found' });
+  const dept = await dbc('departments').findOneAndUpdate({ id: req.params.id }, { $set: { active: false } }, NO_ID);
+  if (!dept) return res.status(404).json({ error: 'Department not found' });
+  await logAudit('DEACTIVATE_DEPARTMENT', req.user.id, dept.id, { name: dept.name });
   res.json({ success: true });
 }));

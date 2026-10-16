@@ -981,6 +981,168 @@ check('once the approving manager is gone, a source-branch approver can extend',
   ddFallback.status === 200 && ddFallback.json?.approvedByCanAct === false &&
   ddFallback.json?.dueDateExtensions?.length === 1, JSON.stringify(ddFallback.json));
 
+// ─── Visibility & badge counts are computed by the database ─────────────────
+// Lists and counts no longer load every pass: visibility is a MongoDB filter
+// (scopeFilter). For every role, the list must hold exactly the passes the
+// in-code rule (canSeePass) allows, and the badge counts must equal the ones
+// computed from those passes in full. A draft is in the fixtures so its
+// creator-only rule is covered too.
+const { canSeePass, computeStats, countsOf } = await import('../lib/passRules.js');
+const draft = await api('POST', '/gate-passes', {
+  token: manager,
+  body: {
+    type: 'outward', direction: 'external', destinationPerson: 'Repair Shop', returnable: false,
+    purpose: 'Draft visibility probe', saveAsDraft: true, items: [{ itemName: 'Probe Item', quantity: 1, unit: 'pcs' }],
+  },
+});
+check('manager saves a draft', draft.status === 201 && draft.json?.status === 'draft', JSON.stringify(draft.json));
+
+const everyPass = (await api('GET', '/gate-passes', { token: admin })).json;
+const roleTokens = { manager, timeOffice, timeOffice2, staff2, super2, manager2, manager3, superToken, porterToken, dualToken };
+for (const [label, token] of Object.entries(roleTokens)) {
+  const me = (await api('GET', '/auth/me', { token })).json?.user;
+  const expected = everyPass.filter(p => canSeePass(p, me));
+  const list = (await api('GET', '/gate-passes', { token })).json;
+  const sameIds = Array.isArray(list) && list.length === expected.length &&
+    expected.every(p => list.some(l => l.id === p.id));
+  check(`${label}: list = exactly the passes the visibility rule allows`, !!me && sameIds,
+    `got ${list?.length}, expected ${expected.length}`);
+  const stats = (await api('GET', '/gate-passes/meta/stats', { token })).json;
+  const full = computeStats(me, expected, countsOf(expected));
+  const diff = Object.keys(full).filter(k => full[k] !== stats?.[k]);
+  check(`${label}: badge counts match counts over every visible pass`, !!me && !diff.length,
+    diff.map(k => `${k}: ${stats?.[k]} vs ${full[k]}`).join(', '));
+}
+const toList = (await api('GET', '/gate-passes', { token: timeOffice })).json;
+const draftMgrList = (await api('GET', '/gate-passes', { token: manager })).json;
+check('a draft is visible to its creator only (not the same-branch gate)',
+  draftMgrList.some(p => p.id === draft.json?.id) && !toList.some(p => p.id === draft.json?.id));
+
+// ─── Pass list filters run in the database ───────────────────────────────────
+const OPEN = ['pending', 'approved', 'in_transit', 'partial_return'];
+const openList = (await api('GET', '/gate-passes?open=true', { token: admin })).json;
+check('open=true returns exactly the open passes',
+  openList.length === everyPass.filter(p => OPEN.includes(p.status)).length && openList.every(p => OPEN.includes(p.status)));
+
+const page = (await api('GET', '/gate-passes?limit=2', { token: admin })).json;
+check('limit returns the newest N with hasMore',
+  page?.passes?.length === 2 && page.hasMore === true &&
+  page.passes[0].id === everyPass[0].id && page.passes[1].id === everyPass[1].id, JSON.stringify(page?.hasMore));
+
+const someNumber = everyPass[3].passNumber;
+const byNumber = (await api('GET', `/gate-passes?passNumber=${encodeURIComponent(someNumber.slice(-6).toLowerCase())}`, { token: admin })).json;
+check('pass-number search is a case-insensitive substring match', byNumber.some(p => p.passNumber === someNumber));
+
+// The search box: same fields the list page matches on screen
+const screenMatch = (p, term) => [
+  p.passNumber, p.sourceBranchName, p.destinationBranchName, p.destinationPerson, p.purpose, p.departmentName,
+  ...(p.items || []).map(li => li.itemName),
+].some(v => v && String(v).toLowerCase().includes(term));
+// item name · department name · branch name · outside party
+for (const term of ['drill', 'administration', 'second branch', 'repair']) {
+  const found = (await api('GET', `/gate-passes?q=${encodeURIComponent(term)}`, { token: admin })).json;
+  const want = everyPass.filter(p => screenMatch(p, term));
+  check(`search "${term}" matches what the page would match`,
+    want.length > 0 && found.length === want.length && want.every(p => found.some(f => f.id === p.id)),
+    `got ${found.length}, expected ${want.length}`);
+}
+
+// movement is relative to the viewer's branch (movementFor in Badges.jsx)
+const me2 = (await api('GET', '/auth/me', { token: timeOffice2 })).json.user;
+const list2 = (await api('GET', '/gate-passes', { token: timeOffice2 })).json;
+const movementOf = p => (p.type === 'inward' ||
+  (p.direction === 'internal' && p.destinationBranch && p.destinationBranch === me2.branch && p.sourceBranch !== me2.branch)) ? 'in' : 'out';
+for (const m of ['in', 'out']) {
+  const got = (await api('GET', `/gate-passes?movement=${m}`, { token: timeOffice2 })).json;
+  const want = list2.filter(p => movementOf(p) === m);
+  check(`movement=${m} for a destination gate`, got.length === want.length && want.every(p => got.some(g => g.id === p.id)),
+    `got ${got.length}, expected ${want.length}`);
+}
+
+const future = new Date(Date.now() + 365 * 864e5).toISOString();
+const noneActive = (await api('GET', `/gate-passes?activeFrom=${future}`, { token: admin })).json;
+const openOnly = (await api('GET', `/gate-passes?activeFrom=${future}&includeOpen=true`, { token: admin })).json;
+check('activity window excludes passes with nothing in it; includeOpen adds open ones back',
+  noneActive.length === 0 && openOnly.length === openList.length);
+const sinceThird = everyPass[2].createdAt;
+const createdSince = (await api('GET', `/gate-passes?from=${encodeURIComponent(sinceThird)}`, { token: admin })).json;
+check('from= keeps passes created at or after the bound',
+  createdSince.length ===everyPass.filter(p => p.createdAt >= sinceThird).length);
+const badDate = await api('GET', '/gate-passes?from=not-a-date', { token: admin });
+check('an invalid date is a 400, not a 500', badDate.status === 400, JSON.stringify(badDate.json));
+const injected = (await api('GET', '/gate-passes?status[$ne]=completed', { token: admin })).json;
+check('query operators cannot be smuggled in through parameters', injected.length === everyPass.length);
+const overdueList = (await api('GET', '/gate-passes?overdue=true', { token: admin })).json;
+check('overdue=true returns exactly the late passes',
+  overdueList.length === everyPass.filter(p => p.isOverdue).length && overdueList.every(p => p.isOverdue));
+
+const gz = await fetch(`${BASE}/gate-passes`, { headers: { Authorization: `Bearer ${admin}`, 'Accept-Encoding': 'gzip' } });
+check('pass lists are sent compressed', gz.headers.get('content-encoding') === 'gzip', gz.headers.get('content-encoding'));
+
+// ─── Concurrent updates: no silent overwrites ────────────────────────────────
+// Two guards mark the same pass out at the same moment. Without the versioned
+// save both could "succeed" and the second overwrite the first; now exactly
+// one wins and the other gets a 400 (already logged) or 409 (changed meanwhile).
+let raceWinsOk = true;
+let conflicts = 0;
+for (let i = 0; i < 4; i++) {
+  const p = await api('POST', '/gate-passes', {
+    token: manager,
+    body: { type: 'outward', direction: 'external', destinationPerson: 'Repair Shop', returnable: false,
+      purpose: `Race ${i}`, items: [{ itemName: 'Race Item', quantity: 1, unit: 'pcs' }] },
+  });
+  const tries = await Promise.all([1, 2].map(() =>
+    api('PATCH', `/gate-passes/${p.json?.id}/log-outward`, { token: timeOffice, body: { guardName: 'Ajay' } })));
+  const wins = tries.filter(t => t.status === 200).length;
+  conflicts += tries.filter(t => t.status === 409).length;
+  if (wins !== 1 || !tries.every(t => [200, 400, 409].includes(t.status))) raceWinsOk = false;
+  if (i === 0) {
+    const after = (await api('GET', `/gate-passes/${p.json?.id}`, { token: admin })).json;
+    check('a new pass starts at version 1 and each save bumps it', p.json?.version === 1 && after?.version === 2,
+      `${p.json?.version} → ${after?.version}`);
+  }
+}
+check(`simultaneous mark-outs: exactly one wins each time (${conflicts} hit the 409 path)`, raceWinsOk);
+
+const repair = (await api('GET', '/vendors?all=true&q=Repair%20Shop', { token: admin })).json?.[0];
+const repairPass = everyPass.find(p => p.destinationPerson === 'Repair Shop' && p.status !== 'draft');
+const vBefore = (await api('GET', `/gate-passes/${repairPass.id}`, { token: admin })).json.version || 0;
+await api('PATCH', `/vendors/${repair.id}`, { token: admin, body: { name: 'Repair Shop Renamed' } });
+const vAfter = (await api('GET', `/gate-passes/${repairPass.id}`, { token: admin })).json.version;
+await api('PATCH', `/vendors/${repair.id}`, { token: admin, body: { name: 'Repair Shop' } });
+check('a vendor rename bumps the version of the passes it rewrites', vAfter === vBefore + 1, `${vBefore} → ${vAfter}`);
+
+// ─── Admin actions are audited ───────────────────────────────────────────────
+const auditProbe = await api('POST', '/users', {
+  token: admin, body: { name: 'Audit Probe', loginId: 'audit.probe', password: 'probe-pass-1', roles: ['staff'], branch: b1, departmentId: d1 },
+});
+await api('PATCH', `/users/${auditProbe.json?.id}`, { token: admin, body: { roles: ['manager'], password: 'probe-pass-2' } });
+await api('DELETE', `/users/${auditProbe.json?.id}`, { token: admin });
+const probeAudit = (await api('GET', '/audit', { token: admin })).json.filter(l => l.targetId === auditProbe.json?.id);
+const upd = probeAudit.find(l => l.action === 'UPDATE_USER');
+check('creating, editing and deactivating a user are audited',
+  ['CREATE_USER', 'UPDATE_USER', 'DEACTIVATE_USER'].every(a => probeAudit.some(l => l.action === a)) &&
+  JSON.stringify(upd?.details?.changes?.roles) === JSON.stringify({ from: ['staff'], to: ['manager'] }) &&
+  upd?.details?.passwordReset === true, JSON.stringify(probeAudit.map(l => l.details)));
+check('user audit entries carry no password material',
+  !/probe-pass|passwordHash|scrypt\$/.test(JSON.stringify(probeAudit)));
+const dept4 = await api('POST', '/departments', { token: admin, body: { name: 'Audit Dept', branchId: b1 } });
+await api('PATCH', `/departments/${dept4.json?.id}`, { token: admin, body: { name: 'Audit Dept 2' } });
+const deptAudit = (await api('GET', '/audit', { token: admin })).json.filter(l => l.targetId === dept4.json?.id);
+check('department changes are audited with before → after',
+  deptAudit.some(l => l.action === 'CREATE_DEPARTMENT') &&
+  deptAudit.some(l => l.action === 'UPDATE_DEPARTMENT' && l.details?.changes?.name?.to === 'Audit Dept 2'));
+
+// ─── Production refuses to start on the public dev JWT secret ────────────────
+const { spawnSync } = await import('node:child_process');
+const secretCheck = (env) => spawnSync(process.execPath, ['--input-type=module', '-e',
+  `import { assertTokenSecret } from ${JSON.stringify(new URL('../lib/security.js', import.meta.url).href)}; assertTokenSecret();`,
+], { env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, ...env }, encoding: 'utf8' });
+check('missing JWT_SECRET on Railway stops startup', secretCheck({ RAILWAY_ENVIRONMENT_NAME: 'production' }).status !== 0);
+check('missing JWT_SECRET locally only warns', secretCheck({}).status === 0);
+check('JWT_SECRET set on Railway starts normally',
+  secretCheck({ RAILWAY_ENVIRONMENT_NAME: 'production', JWT_SECRET: 'x'.repeat(40) }).status === 0);
+
 // ─── Done ─────────────────────────────────────────────────────────────────────
 console.log(failures === 0 ? '\nALL SMOKE TESTS PASSED' : `\n${failures} SMOKE TEST(S) FAILED`);
 await client.db(SMOKE_DB).dropDatabase();

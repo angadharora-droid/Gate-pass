@@ -39,6 +39,9 @@ function rangeToBounds(fromDate, toDate) {
   return { start, end };
 }
 
+// A bound for the server (ISO instant), or null when open-ended / incomplete
+const isoOrNull = d => (d && !isNaN(d.getTime()) ? d.toISOString() : null);
+
 function fmtDate(dateStr) {
   if (!dateStr) return '—';
   return new Date(dateStr).toLocaleString('en-IN', {
@@ -120,21 +123,21 @@ function ReportsOverview() {
   const [saveLoading, setSaveLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
 
-  const load = async () => {
+  useEffect(() => { api.getBranches(true).then(setBranches).catch(() => setBranches([])); }, []);
+
+  // Only the passes created in the chosen range come down; the other filters
+  // (branch, department, type, status) run on screen against them
+  useEffect(() => {
+    let stale = false;
     setLoading(true);
     setError('');
-    try {
-      const [p, b] = await Promise.all([api.getPasses(), api.getBranches(true)]);
-      setPasses(p);
-      setBranches(b);
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => { load(); }, []);
+    const { start, end } = rangeToBounds(fromDate, toDate);
+    api.getPasses({ from: isoOrNull(start), to: isoOrNull(end) })
+      .then(p => { if (!stale) setPasses(p); })
+      .catch(e => { if (!stale) setError(e.message); })
+      .finally(() => { if (!stale) setLoading(false); });
+    return () => { stale = true; };
+  }, [fromDate, toDate]);
 
   useEffect(() => {
     const params = branch ? { branch } : {};
@@ -744,7 +747,14 @@ function RegisterReports() {
     setSpec(next);
     setLoading(true);
     setError('');
-    try { setPasses(await api.getPasses()); }
+    // Register rows are dated by their gate log (out, in, received…), not by
+    // when the pass was created — so ask for any gate activity in the period
+    const { start, end } = rangeToBounds(next.from, next.to);
+    try {
+      setPasses(await api.getPasses({
+        activeFrom: isoOrNull(start), activeTo: isoOrNull(end), branch: next.branchId || null,
+      }));
+    }
     catch (e) { setError(e.message); }
     finally { setLoading(false); }
   };
