@@ -100,6 +100,19 @@ function searchClause(q, refs) {
   return { $or: or };
 }
 
+// Keyset pagination for infinite scroll. Lists sort newest first by
+// (createdAt, id); a page's `next` names its last pass, and the following page
+// starts strictly after it — so passes created meanwhile at the top never
+// shift later pages (no duplicates or gaps, unlike skipping N rows).
+const cursorOf = p => `${p.createdAt}|${p.id}`;
+function afterCursor(cursor) {
+  const cut = cursor.lastIndexOf('|');
+  const createdAt = cursor.slice(0, cut);
+  const id = cursor.slice(cut + 1);
+  if (cut < 1 || !id || isNaN(new Date(createdAt).getTime())) throw new HttpError(400, 'Invalid page cursor');
+  return { $or: [{ createdAt: { $lt: createdAt } }, { createdAt, id: { $lt: id } }] };
+}
+
 // movementFor in frontend/src/components/Badges.jsx: 'in' = a direct inward
 // entry, or — for branch-bound viewers — a transfer arriving at my branch from
 // another one; everything else is 'out'.
@@ -125,7 +138,8 @@ function movementClause(movement, user) {
 //   from, to        createdAt window (ISO; `to` exclusive)
 //   activeFrom, activeTo   created OR any gate log stamped in the window
 //   includeOpen=true       with activeFrom/activeTo: open passes too, whatever their dates
-//   limit           newest N only — the response becomes { passes, hasMore }
+//   limit           newest N only — the response becomes { passes, hasMore, next }
+//   before          with limit: the page after `next` of the previous page
 router.get('/', asyncHandler(async (req, res) => {
   const qs = Object.fromEntries(Object.entries(req.query).map(([k, v]) => [k, str(v)]));
   const refsP = getRefs();
@@ -154,9 +168,11 @@ router.get('/', asyncHandler(async (req, res) => {
     clauses.push(qs.includeOpen === 'true' ? { $or: [active, { status: { $in: OPEN_STATUSES } }] } : active);
   }
 
+  if (qs.before) clauses.push(afterCursor(qs.before));
+
   const n = parseInt(qs.limit, 10);
   const limit = n > 0 ? Math.min(n, LIST_LIMIT_MAX) : 0;
-  let cursor = dbc('gatePasses').find(withScope(...clauses), NO_ID).sort({ createdAt: -1 });
+  let cursor = dbc('gatePasses').find(withScope(...clauses), NO_ID).sort({ createdAt: -1, id: -1 });
   // The overdue cut happens after enrichment, so it can't be capped earlier —
   // its candidates (open returnable legs with a due date) are few anyway.
   if (limit && qs.overdue !== 'true') cursor = cursor.limit(limit + 1);
@@ -165,7 +181,9 @@ router.get('/', asyncHandler(async (req, res) => {
   if (qs.overdue === 'true') passes = passes.filter(p => p.isOverdue);
 
   if (!limit) return res.json(passes);
-  res.json({ passes: passes.slice(0, limit), hasMore: passes.length > limit });
+  const page = passes.slice(0, limit);
+  const hasMore = passes.length > limit;
+  res.json({ passes: page, hasMore, next: hasMore ? cursorOf(page[page.length - 1]) : null });
 }));
 
 // ─── GET SINGLE ───────────────────────────────────────────────────────────────

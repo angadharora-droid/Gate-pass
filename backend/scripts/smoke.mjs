@@ -1025,8 +1025,8 @@ check('open=true returns exactly the open passes',
   openList.length === everyPass.filter(p => OPEN.includes(p.status)).length && openList.every(p => OPEN.includes(p.status)));
 
 const page = (await api('GET', '/gate-passes?limit=2', { token: admin })).json;
-check('limit returns the newest N with hasMore',
-  page?.passes?.length === 2 && page.hasMore === true &&
+check('limit returns the newest N with hasMore and a next-page cursor',
+  page?.passes?.length === 2 && page.hasMore === true && typeof page.next === 'string' &&
   page.passes[0].id === everyPass[0].id && page.passes[1].id === everyPass[1].id, JSON.stringify(page?.hasMore));
 
 const someNumber = everyPass[3].passNumber;
@@ -1075,6 +1075,31 @@ check('query operators cannot be smuggled in through parameters', injected.lengt
 const overdueList = (await api('GET', '/gate-passes?overdue=true', { token: admin })).json;
 check('overdue=true returns exactly the late passes',
   overdueList.length === everyPass.filter(p => p.isOverdue).length && overdueList.every(p => p.isOverdue));
+
+// Infinite scroll: following `next` page by page yields every pass exactly
+// once, in list order — even when a pass is created at the top mid-scroll.
+// (Runs after the checks above, which compare against the everyPass snapshot.)
+const walked = [];
+let nextPage = null;
+let addedMidScroll = false;
+do {
+  const qs = `limit=4${nextPage ? `&before=${encodeURIComponent(nextPage)}` : ''}`;
+  const pg = (await api('GET', `/gate-passes?${qs}`, { token: admin })).json;
+  walked.push(...pg.passes.map(p => p.id));
+  nextPage = pg.next;
+  if (!addedMidScroll) {
+    addedMidScroll = true;
+    await api('POST', '/gate-passes', { token: manager, body: {
+      type: 'outward', direction: 'external', destinationPerson: 'Repair Shop', returnable: false,
+      purpose: 'Created mid-scroll', saveAsDraft: true, items: [{ itemName: 'Scroll Item', quantity: 1, unit: 'pcs' }],
+    } });
+  }
+} while (nextPage && walked.length <= everyPass.length);
+check('paging with the cursor returns every pass once, in order, no shifts from new passes',
+  walked.length === everyPass.length && walked.every((id, i) => id === everyPass[i].id),
+  `walked ${walked.length} of ${everyPass.length}, unique ${new Set(walked).size}`);
+const badCursor = await api('GET', '/gate-passes?limit=4&before=garbage', { token: admin });
+check('a malformed page cursor is a 400', badCursor.status === 400);
 
 const gz = await fetch(`${BASE}/gate-passes`, { headers: { Authorization: `Bearer ${admin}`, 'Accept-Encoding': 'gzip' } });
 check('pass lists are sent compressed', gz.headers.get('content-encoding') === 'gzip', gz.headers.get('content-encoding'));

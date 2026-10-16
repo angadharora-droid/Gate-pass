@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { api } from '../utils/api';
 import { useAuth } from '../context/AuthContext';
@@ -17,9 +17,8 @@ const STATUS_TABS = [
   { key: 'rejected',       label: 'Rejected' },
 ];
 
-// The server returns at most this many (newest first) unless the user asks
-// for everything — narrowing by date or search reaches older passes.
-const PAGE_SIZE = 200;
+// Passes fetched per page, newest first; scrolling down fetches the next page.
+const PAGE_SIZE = 100;
 
 // Viewer-relative: "Coming In" = anything arriving at MY branch (direct inward
 // entries + transfers sent to us); "Going Out" = anything leaving my branch.
@@ -102,10 +101,12 @@ export default function GatePassListPage() {
   const [fromDate, setFromDate] = useState('');
   const [toDate, setToDate] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
-  const [hasMore, setHasMore] = useState(false);
-  const [showAll, setShowAll] = useState(false);
-  const latestRequest = useRef(0);
+  const [nextCursor, setNextCursor] = useState(null);   // null = nothing more to load
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [loadMoreFailed, setLoadMoreFailed] = useState(false);
+  const generation = useRef(0);       // bumped by every fresh load — older pages are dropped
   const lastFilterKey = useRef(null);
+  const sentinel = useRef(null);
 
   // Ask the server once typing pauses, not on every keystroke
   useEffect(() => {
@@ -113,34 +114,75 @@ export default function GatePassListPage() {
     return () => clearTimeout(t);
   }, [search]);
 
-  // Every filter runs on the server, so only matching passes come down. The
-  // same filters also run on screen below — typing narrows the rows instantly
-  // while the server's answer is on its way.
-  useEffect(() => {
-    const requestId = ++latestRequest.current;
-    // Spinner for a new tab/filter/range; a search refresh keeps rows visible
-    const filterKey = JSON.stringify([statusFilter, movementFilter, overdueOnly, fromDate, toDate, showAll]);
-    if (filterKey !== lastFilterKey.current) {
-      lastFilterKey.current = filterKey;
-      setLoading(true);
-    }
+  // Every filter runs on the server, so only matching passes come down — a
+  // page at a time. The same filters also run on screen below, so typing
+  // narrows the rows instantly while the server's answer is on its way.
+  const serverFilters = useMemo(() => {
     const { start, end } = rangeToBounds(fromDate, toDate);
-    api.getPasses({
+    return {
       status: statusFilter,
       movement: movementFilter,
       overdue: overdueOnly ? 'true' : null,
       q: debouncedSearch,
       from: isoOrNull(start),
       to: isoOrNull(end),
-      limit: showAll ? null : PAGE_SIZE,
-    })
+      limit: PAGE_SIZE,
+    };
+  }, [statusFilter, movementFilter, overdueOnly, debouncedSearch, fromDate, toDate]);
+
+  // First page, whenever the filters change
+  useEffect(() => {
+    const gen = ++generation.current;
+    // Spinner for a new tab/filter/range; a search refresh keeps rows visible
+    const filterKey = JSON.stringify([statusFilter, movementFilter, overdueOnly, fromDate, toDate]);
+    if (filterKey !== lastFilterKey.current) {
+      lastFilterKey.current = filterKey;
+      setLoading(true);
+    }
+    // The old cursor belongs to the old filters — no next page until this one lands
+    setNextCursor(null);
+    setLoadingMore(false);
+    setLoadMoreFailed(false);
+    api.getPasses(serverFilters)
       .then(res => {
-        if (requestId !== latestRequest.current) return;   // a newer request superseded this one
+        if (gen !== generation.current) return;   // the filters changed again meanwhile
+        // (a backend from before paging existed answers with the whole list)
         setPasses(Array.isArray(res) ? res : res.passes);
-        setHasMore(!Array.isArray(res) && res.hasMore);
+        setNextCursor(Array.isArray(res) ? null : res.next);
       })
-      .finally(() => { if (requestId === latestRequest.current) setLoading(false); });
-  }, [statusFilter, movementFilter, overdueOnly, debouncedSearch, fromDate, toDate, showAll]);
+      .finally(() => { if (gen === generation.current) setLoading(false); });
+  }, [serverFilters]);
+
+  // Next page, continuing after the last pass already on screen
+  const loadMore = useCallback(() => {
+    // Mid-typing the next page would belong to the previous search — wait
+    if (!nextCursor || loadingMore || loadMoreFailed || search.trim() !== debouncedSearch) return;
+    const gen = generation.current;
+    setLoadingMore(true);
+    api.getPasses({ ...serverFilters, before: nextCursor })
+      .then(res => {
+        if (gen !== generation.current) return;
+        setPasses(ps => {
+          const seen = new Set(ps.map(p => p.id));
+          return [...ps, ...res.passes.filter(p => !seen.has(p.id))];
+        });
+        setNextCursor(res.next);
+      })
+      .catch(() => { if (gen === generation.current) setLoadMoreFailed(true); })
+      .finally(() => { if (gen === generation.current) setLoadingMore(false); });
+  }, [nextCursor, loadingMore, loadMoreFailed, search, debouncedSearch, serverFilters]);
+
+  // Fetch the next page shortly before the bottom of the list scrolls into view
+  useEffect(() => {
+    const el = sentinel.current;
+    if (!el || !nextCursor) return undefined;
+    const observer = new IntersectionObserver(
+      entries => { if (entries[0].isIntersecting) loadMore(); },
+      { rootMargin: '600px 0px' },
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [loadMore, nextCursor, loading]);
 
   // Movement is relative to the viewer's branch
   let shown = movementFilter ? passes.filter(p => movementFor(p, user) === movementFilter) : passes;
@@ -178,7 +220,7 @@ export default function GatePassListPage() {
         <div>
           <div className="page-title">Gate Passes</div>
           <div className="page-subtitle">
-            {shown.length}{hasMore ? '+' : ''} pass{shown.length !== 1 ? 'es' : ''}
+            {shown.length}{nextCursor ? '+' : ''} pass{shown.length !== 1 ? 'es' : ''}
             {pendingCount > 0  && ` · ${pendingCount} waiting approval`}
             {overdueCount > 0  && ` · ${overdueCount} late`}
           </div>
@@ -247,13 +289,6 @@ export default function GatePassListPage() {
         >Late only</button>
       </div>
 
-      {hasMore && !loading && (
-        <div className="alert alert-info" style={{ marginBottom: 16, alignItems: 'center', flexWrap: 'wrap' }}>
-          Showing the newest {PAGE_SIZE} passes. Pick a date range or search to find older ones.
-          <button className="btn btn-ghost btn-sm" onClick={() => setShowAll(true)}>Show all</button>
-        </div>
-      )}
-
       {loading ? (
         <div className="loading-page"><div className="spinner" /><span>Loading…</span></div>
       ) : shown.length === 0 ? (
@@ -311,6 +346,23 @@ export default function GatePassListPage() {
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {/* Scroll marker: reaching it loads the next page */}
+      {!loading && nextCursor && (
+        <div ref={sentinel} style={{
+          display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 8,
+          padding: 16, fontSize: 13, color: 'var(--text3)',
+        }}>
+          {loadMoreFailed ? (
+            <>
+              Couldn't load more passes.
+              <button className="btn btn-ghost btn-sm" onClick={() => setLoadMoreFailed(false)}>Try again</button>
+            </>
+          ) : loadingMore ? (
+            <><div className="spinner" style={{ width: 16, height: 16 }} /> Loading more…</>
+          ) : null}
         </div>
       )}
     </div>
