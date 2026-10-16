@@ -1,3 +1,4 @@
+import * as Sentry from '@sentry/node';
 import { dbc, NO_ID } from '../data/db.js';
 import { verifyToken } from '../lib/security.js';
 import { hasRole } from '../lib/roles.js';
@@ -18,6 +19,9 @@ export async function authMiddleware(req, res, next) {
     if (!user) return res.status(401).json({ error: 'User not found or inactive' });
 
     req.user = user;
+    // Errors in this request say who hit them — id and role only, no name/email
+    Sentry.setUser({ id: user.id });
+    Sentry.setTag('role', user.role);
     next();
   } catch (err) {
     next(err);

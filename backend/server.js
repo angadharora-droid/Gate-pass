@@ -1,4 +1,6 @@
+import './instrument.js';   // Sentry — must stay the first import
 import 'dotenv/config';
+import * as Sentry from '@sentry/node';
 import express from 'express';
 import cors from 'cors';
 import compression from 'compression';
@@ -57,6 +59,11 @@ app.use(cors({
     if (ALLOWED_ORIGINS.includes(origin.toLowerCase())) return cb(null, true);
     return cb(null, false);
   },
+  // The frontend is on another origin and sends the login token, so the
+  // browser asks permission (OPTIONS) before calls — this lets it remember the
+  // answer instead of paying that extra round trip again every few seconds.
+  // Browsers cap it (Chrome at 2 hours).
+  maxAge: 7200,
 }));
 
 // Cap request bodies to limit abuse / accidental huge payloads.
@@ -97,6 +104,10 @@ app.get('/api/health', asyncHandler(async (_, res) => {
 // Unknown routes → JSON 404 (not an HTML stack page).
 app.use((req, res) => res.status(404).json({ error: 'Not found' }));
 
+// Reports unexpected errors (500s) to Sentry, then hands them on to the
+// handler below. Deliberate 4xx answers (HttpError, bad JSON) are not reported.
+Sentry.setupExpressErrorHandler(app);
+
 // Central error handler — returns JSON and never leaks stack traces to clients.
 // eslint-disable-next-line no-unused-vars
 app.use((err, req, res, next) => {
@@ -128,6 +139,10 @@ try {
   }
 } catch (err) {
   console.error('✗ Startup failed:', err.message);
+  // A deploy that can't start (database unreachable, missing secret) is
+  // exactly what should alert — report it before exiting
+  Sentry.captureException(err);
+  await Sentry.flush(2000);
   process.exit(1);
 }
 
@@ -141,14 +156,16 @@ const server = app.listen(PORT, () => {
 // connections, let in-flight requests finish (a guard half-way through
 // logging a pass), then close MongoDB and exit. Railway force-kills after its
 // draining window, so this needs RAILWAY_DEPLOYMENT_DRAINING_SECONDS set above
-// SHUTDOWN_TIMEOUT_MS, and the start command should be `node server.js` —
-// `npm start` can swallow SIGTERM instead of passing it on to node.
+// SHUTDOWN_TIMEOUT_MS, and the start command should be
+// `node --import ./instrument.js server.js` — `npm start` can swallow SIGTERM
+// instead of passing it on to node.
 function shutdown(signal) {
   if (shuttingDown) return;
   shuttingDown = true;
   console.log(`${signal} received — finishing in-flight requests…`);
   server.close(async () => {
-    await closeDb().catch(() => {});
+    // Send any errors still queued for Sentry, and release MongoDB
+    await Promise.all([closeDb().catch(() => {}), Sentry.close(2000)]);
     console.log('✓ Shut down cleanly');
     process.exit(0);
   });

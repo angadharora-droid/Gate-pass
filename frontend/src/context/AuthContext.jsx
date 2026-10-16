@@ -1,6 +1,7 @@
 import { createContext, useContext, useState, useEffect } from 'react';
 import { api } from '../utils/api';
 import { getToken, setToken, clearToken } from '../utils/api';
+import { identifyUser } from '../sentry';
 
 const AuthCtx = createContext(null);
 export const useAuth = () => useContext(AuthCtx);
@@ -8,6 +9,9 @@ export const useAuth = () => useContext(AuthCtx);
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
+
+  // Errors reported to Sentry say which user (id + role) hit them
+  useEffect(() => { identifyUser(user); }, [user]);
 
   useEffect(() => {
     if (getToken()) {

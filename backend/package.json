@@ -3,8 +3,8 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "start": "node server.js",
-    "dev": "node --watch server.js",
+    "start": "node --import ./instrument.js server.js",
+    "dev": "node --watch --import ./instrument.js server.js",
     "test:smoke": "node scripts/smoke.mjs",
     "check:scope": "node scripts/check-scope.mjs",
     "migrate:pass-numbers": "node scripts/renumber-pass-numbers.mjs",
@@ -13,6 +13,7 @@
     "migrate:drop-catalogue-items": "node scripts/drop-catalogue-items.mjs"
   },
   "dependencies": {
+    "@sentry/node": "^10.75.3",
     "compression": "^1.8.2",
     "cors": "^2.8.5",
     "dotenv": "^17.4.2",
