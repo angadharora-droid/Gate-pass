@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { registerQuery, statsQuery, DEFAULT_REGISTER_DAYS } from '../queries';
 import { api } from '../utils/api';
 import { useAuth } from '../context/AuthContext';
 import { hasRole } from '../utils/roles';
@@ -868,19 +869,15 @@ export default function TimeOfficePage() {
   const [tab, setTab] = useState('outward');
   const [search, setSearch] = useState('');
   const [searchActive, setSearchActive] = useState(false);
-  const [periodDays, setPeriodDays] = useState(7);
+  const [periodDays, setPeriodDays] = useState(DEFAULT_REGISTER_DAYS);
 
-  // Cached per period (queryClient.js): coming back to the Time Office shows
-  // the registers at once and refreshes them quietly. Every gate action
-  // refreshes them too (api.js), so other guards' work shows up as well.
-  const registerKey = ['passes', 'register', periodDays];
-  const registerQ = useQuery({
-    queryKey: registerKey,
-    queryFn: () => api.getPasses(periodDays
-      ? { activeFrom: new Date(Date.now() - periodDays * 864e5).toISOString(), includeOpen: 'true' }
-      : {}),
-  });
-  const statsQ = useQuery({ queryKey: ['stats'], queryFn: api.getStats });
+  // Cached per period (queryClient.js) and prefetched in the background
+  // (prefetch.js): the registers show at once and refresh quietly. Every gate
+  // action refreshes them too (api.js), so other guards' work shows up as well.
+  const register = registerQuery(periodDays);
+  const registerKey = register.queryKey;
+  const registerQ = useQuery(register);
+  const statsQ = useQuery(statsQuery());
   const passes = registerQ.data ?? [];
   const stats = statsQ.data ?? {};
   const loading = registerQ.isPending;

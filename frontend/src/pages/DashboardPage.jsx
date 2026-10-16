@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { api } from '../utils/api';
+import { statsQuery, recentPassesQuery, openPassesQuery } from '../queries';
 import { Link } from 'react-router-dom';
 import { StatusBadge, MovementBadge } from '../components/Badges';
 import { useAuth } from '../context/AuthContext';
@@ -48,9 +48,9 @@ export default function DashboardPage() {
   // Only what the dashboard shows: the 6 newest passes, plus open passes for
   // the alerts (late, sent back and send-back requests are all still open).
   // Cached (queryClient.js): coming back to the dashboard shows it at once.
-  const statsQ  = useQuery({ queryKey: ['stats'], queryFn: api.getStats });
-  const recentQ = useQuery({ queryKey: ['passes', 'recent'], queryFn: () => api.getPasses({ limit: 6 }) });
-  const openQ   = useQuery({ queryKey: ['passes', 'open'], queryFn: () => api.getPasses({ open: true }) });
+  const statsQ  = useQuery(statsQuery());
+  const recentQ = useQuery(recentPassesQuery());
+  const openQ   = useQuery(openPassesQuery());
 
   const stats = statsQ.data ?? null;
   // A backend from before `limit` existed answers with a plain array

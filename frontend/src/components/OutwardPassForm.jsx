@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../utils/api';
-import { REFERENCE_STALE_MS } from '../queryClient';
+import { branchesQuery, approversQuery } from '../queries';
 import { useAuth } from '../context/AuthContext';
 import { hasRole } from '../utils/roles';
 import { AlertTriangle, FileSpreadsheet, FileEdit } from 'lucide-react';
@@ -61,10 +61,8 @@ export default function OutwardPassForm({
   const [approverId, setApproverId] = useState('');
 
   // Reference lists, cached (queryClient.js) — the form opens instantly next time
-  const branchesQ = useQuery({ queryKey: ['branches', 'active'], queryFn: () => api.getBranches(), staleTime: REFERENCE_STALE_MS });
-  const approversQ = useQuery({
-    queryKey: ['approvers'], queryFn: api.getApprovers, enabled: isStaff, staleTime: REFERENCE_STALE_MS,
-  });
+  const branchesQ = useQuery(branchesQuery());
+  const approversQ = useQuery({ ...approversQuery(), enabled: isStaff });
   const branches = branchesQ.data ?? [];
   const approvers = approversQ.data ?? [];
   const approversLoaded = approversQ.isSuccess;

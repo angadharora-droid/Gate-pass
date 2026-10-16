@@ -2,7 +2,8 @@ import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useEffect } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { api } from '../utils/api';
+import { statsQuery } from '../queries';
+import { prefetchMainPages, prefetchPage } from '../prefetch';
 import { hasRole, rolesOf } from '../utils/roles';
 import {
   LayoutDashboard,
@@ -27,13 +28,17 @@ export default function Layout() {
   const location = useLocation();
   const queryClient = useQueryClient();
   // Shared with the Dashboard and Time Office — one request serves all three
-  const { data: stats = {} } = useQuery({ queryKey: ['stats'], queryFn: api.getStats });
+  const { data: stats = {} } = useQuery(statsQuery());
 
   // Refresh on navigation so badges also catch what OTHER people just did
   // (your own actions already refresh them — see api.js)
   useEffect(() => {
     queryClient.invalidateQueries({ queryKey: ['stats'] });
   }, [location.pathname, queryClient]);
+
+  // Once the page just opened has loaded, load the other main pages' data in
+  // the background, so switching to them is instant (prefetch.js)
+  useEffect(() => (user ? prefetchMainPages(user) : undefined), [user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleLogout = () => { logout(); navigate('/login'); };
   const initials = user?.name?.split(' ').map(n => n[0]).join('').slice(0, 2) || '?';
@@ -97,6 +102,9 @@ export default function Layout() {
               end={exact}
               title={label}
               className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}
+              // Heading for a link: start loading that page now
+              onPointerEnter={() => prefetchPage(to, user)}
+              onFocus={() => prefetchPage(to, user)}
             >
               <span className="nav-icon"><Icon size={NAV_ICON_SIZE} /></span>
               <span className="nav-label">{label}</span>

@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useSearchParams } from 'react-router-dom';
 import { useInfiniteQuery } from '@tanstack/react-query';
-import { api } from '../utils/api';
+import { passListQuery, passListFilters } from '../queries';
+import { toDateInput, firstOfMonth, rangeToBounds } from '../utils/dateRange';
 import { useAuth } from '../context/AuthContext';
 import { hasRole } from '../utils/roles';
 import { StatusBadge, MovementBadge, movementFor, DirectionBadge, ReturnableBadge } from '../components/Badges';
@@ -18,9 +19,6 @@ const STATUS_TABS = [
   { key: 'rejected',       label: 'Rejected' },
 ];
 
-// Passes fetched per page, newest first; scrolling down fetches the next page.
-const PAGE_SIZE = 100;
-
 // Viewer-relative: "Coming In" = anything arriving at MY branch (direct inward
 // entries + transfers sent to us); "Going Out" = anything leaving my branch.
 // Admin sees the org-wide stored type, so the chips use the plain type words.
@@ -34,36 +32,6 @@ function fmt(dateStr) {
   if (!dateStr) return '—';
   return new Date(dateStr).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
 }
-
-function pad2(n) {
-  return String(n).padStart(2, '0');
-}
-
-// LOCAL time throughout, so the range matches the dates the table displays
-// (UTC boundaries would shift a day for IST users).
-const toDateInput = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
-
-function firstOfMonth() {
-  const d = new Date();
-  return toDateInput(new Date(d.getFullYear(), d.getMonth(), 1));
-}
-
-// From/To are inclusive calendar days; either side may be left empty for an
-// open-ended range.
-function rangeToBounds(fromDate, toDate) {
-  const parse = (s) => {
-    if (!s) return null;
-    const [y, m, d] = s.split('-').map(Number);
-    return new Date(y, m - 1, d);
-  };
-  const start = parse(fromDate);
-  const endDay = parse(toDate);
-  const end = endDay ? new Date(endDay.getFullYear(), endDay.getMonth(), endDay.getDate() + 1) : null;
-  return { start, end };
-}
-
-// A bound for the server (ISO instant), or null when open-ended / incomplete
-const isoOrNull = d => (d && !isNaN(d.getTime()) ? d.toISOString() : null);
 
 // Two server filter sets that differ at most in the search text
 const sameExceptSearch = (a, b) =>
@@ -138,28 +106,17 @@ export default function GatePassListPage() {
   // Every filter runs on the server, so only matching passes come down — a
   // page at a time. The same filters also run on screen below, so typing
   // narrows the rows instantly while the server's answer is on its way.
-  const serverFilters = useMemo(() => {
-    const { start, end } = rangeToBounds(fromDate, toDate);
-    return {
-      status: statusFilter,
-      movement: movementFilter,
-      overdue: overdueOnly ? 'true' : null,
-      q: debouncedSearch,
-      from: isoOrNull(start),
-      to: isoOrNull(end),
-      limit: PAGE_SIZE,
-    };
-  }, [statusFilter, movementFilter, overdueOnly, debouncedSearch, fromDate, toDate]);
+  // Same builder the background prefetch uses (queries.js), so the default
+  // view is already cached when you first open this page
+  const serverFilters = useMemo(() => passListFilters({
+    status: statusFilter, movement: movementFilter, overdue: overdueOnly, q: debouncedSearch, fromDate, toDate,
+  }), [statusFilter, movementFilter, overdueOnly, debouncedSearch, fromDate, toDate]);
 
   // Pages of passes for these filters, cached per filter set (queryClient.js):
   // a tab or search visited before shows instantly. Each page continues after
   // the previous one's last pass (`next`).
   const listQ = useInfiniteQuery({
-    queryKey: ['passes', 'list', serverFilters],
-    queryFn: ({ pageParam }) => api.getPasses({ ...serverFilters, before: pageParam }),
-    initialPageParam: null,
-    // (a backend from before paging existed answers with the whole list)
-    getNextPageParam: last => (Array.isArray(last) ? undefined : (last.next ?? undefined)),
+    ...passListQuery(serverFilters),
     // While a changed SEARCH is on its way, keep the rows (they are filtered on
     // screen meanwhile); a new tab, filter or range starts from its own data
     placeholderData: (previous, previousQuery) =>
