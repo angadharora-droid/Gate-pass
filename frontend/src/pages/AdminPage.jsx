@@ -22,9 +22,9 @@ const roleColor = {
 
 const roleDesc = {
   admin:        'Full access — manage users, departments, and branches. Sees all passes across all branches.',
-  supermanager: 'Branch-level approver — no department. Staff can route any gate pass of the branch to a supermanager. Sees passes routed to or decided by them, the branch’s unrouted pending pool, and incoming branch transfers. Creates passes (auto-approved); can approve send-backs of transfers held at the branch.',
-  manager:      'Approves passes their department’s staff route to them. Sees their own department’s passes, anything routed to or decided by them, and incoming branch transfers. Creates passes (auto-approved); can approve send-backs.',
-  staff:        'Creates gate pass requests and chooses who approves each one: their department manager or a branch supermanager. Sees only their own passes and transfer items in their custody.',
+  supermanager: 'Branch-level approver — no department. Staff can route any gate pass of the branch to a supermanager. Sees passes routed to or decided by them, the branch’s unrouted pending pool, and incoming branch transfers. Creates passes (auto-approved); approves or rejects send-back requests for ANY department of the branch (the only approver when a department has no manager), and can write off or lower quantities going back.',
+  manager:      'Approves passes their department’s staff route to them. Sees their own department’s passes, anything routed to or decided by them, and incoming branch transfers. Creates passes (auto-approved); approves or rejects send-back requests for items their department received from another branch.',
+  staff:        'Creates gate pass requests and chooses who approves each one: their department manager or a branch supermanager. Sees only their own passes and transfer items in their custody, and requests the send-back when done with them.',
   time_office:  'Security at the gate of THEIR branch only: sees every pass crossing that gate, marks everything leaving out (dispatches and send-backs) and everything arriving in (direct inward entries, incoming transfers, returns).',
 };
 

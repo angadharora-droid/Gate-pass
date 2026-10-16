@@ -45,8 +45,14 @@ import { hashPassword } from '../lib/security.js';
 //   receivedLog      → internal transfer ARRIVED at the destination branch
 //                      (destination TO, recording the receiving department +
 //                      receiver — completes a non-returnable transfer)
-//   returnRequest    → the RECEIVER approved the items going back (returnable
-//                      transfers only; puts the pass in the destination TO's queue)
+//   sendBackRequest  → the RECEIVER asked for the items to go back (returnable
+//                      transfers only); waits for the receiving department's
+//                      manager — or any supermanager of the destination branch —
+//                      to approve or reject it. Rejections are kept in
+//                      sendBackRejections (who asked, who rejected, why).
+//   returnRequest    → the send-back is APPROVED (by that manager/supermanager,
+//                      carrying the receiver's request as `staffRequest`); puts
+//                      the pass in the destination TO's queue
 //   returnOutwardLog → return physically LEFT the destination branch (destination TO)
 //   inwardLog        → item ARRIVED back at the source branch (return leg of a
 //                      returnable outward pass, or a direct inward gate entry)
@@ -60,7 +66,8 @@ import { hashPassword } from '../lib/security.js';
 // DISPLAY STAGE: the stored status stays coarse; enrichPass adds a derived
 // `displayStatus` (see displayStatusOf in routes/gatePasses.js) so the UI can
 // show exactly where the items are: items_out (external), in_transit (between
-// branches), at_destination (with the receiver), return_approved, returning.
+// branches), at_destination (with the receiver), return_requested,
+// return_approved, returning.
 //
 // GATE REGISTERS (Time Office UI): everything is gate-centric — the Outward
 // register lists movements LEAVING a branch's gate (dispatches + send-backs),

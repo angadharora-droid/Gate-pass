@@ -15,6 +15,7 @@ import {
   ShieldCheck,
   PackagePlus,
   Stamp,
+  RefreshCw,
 } from 'lucide-react';
 
 const NAV_ICON_SIZE = 16;
@@ -63,6 +64,13 @@ export default function Layout() {
       to: '/passes?status=pending', Icon: Stamp, color: 'var(--amber)',
       label: `${stats.myPendingApprovals} To Approve`, title: 'Passes waiting for your decision',
     },
+    // Receivers' send-back requests this user can decide — listed by pass on
+    // the dashboard
+    stats.sendBacksToApprove > 0 && {
+      to: '/', end: true, Icon: RefreshCw, color: 'var(--amber)',
+      label: `${stats.sendBacksToApprove} Send-Back${stats.sendBacksToApprove === 1 ? '' : 's'}`,
+      title: 'Send-back requests waiting for your approval',
+    },
   ].filter(Boolean);
 
   return (
@@ -95,8 +103,8 @@ export default function Layout() {
           {alerts.length > 0 && (
             <>
               <div className="nav-section-label" style={{ marginTop: 14 }}>Alerts</div>
-              {alerts.map(({ to, Icon, label, title, color }) => (
-                <NavLink key={to} to={to} className="nav-item" title={title} style={{ color }}>
+              {alerts.map(({ to, end, Icon, label, title, color }) => (
+                <NavLink key={to} to={to} end={end} className="nav-item" title={title} style={{ color }}>
                   <span className="nav-icon"><Icon size={NAV_ICON_SIZE} /></span>
                   <span className="nav-label">{label}</span>
                 </NavLink>
