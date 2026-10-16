@@ -4,10 +4,25 @@ import crypto from 'crypto';
 // In production the secret MUST come from the environment. A stable dev default
 // keeps the demo working across restarts without leaking a real secret.
 const TOKEN_SECRET = process.env.JWT_SECRET || 'gatepass-dev-secret-change-me';
-if (!process.env.JWT_SECRET) {
-  console.warn('⚠  JWT_SECRET not set — using insecure dev default. Set JWT_SECRET in production.');
-}
 const TOKEN_TTL_SECONDS = 60 * 60 * 12; // 12 hours
+
+// Railway sets RAILWAY_ENVIRONMENT_* on every deployment.
+const IS_PRODUCTION = process.env.NODE_ENV === 'production' ||
+  !!(process.env.RAILWAY_ENVIRONMENT_NAME || process.env.RAILWAY_ENVIRONMENT_ID || process.env.RAILWAY_ENVIRONMENT);
+
+// Called once at startup (server.js). The dev default above is public — it is
+// in the repository — so a deployment running on it would accept login tokens
+// forged by anyone. In production a missing secret stops the server instead.
+export function assertTokenSecret() {
+  if (!process.env.JWT_SECRET) {
+    if (IS_PRODUCTION) {
+      throw new Error('JWT_SECRET is not set — refusing to start with the public dev default. Set JWT_SECRET in the deployment variables.');
+    }
+    console.warn('⚠  JWT_SECRET not set — using insecure dev default. Set JWT_SECRET in production.');
+  } else if (IS_PRODUCTION && process.env.JWT_SECRET.length < 32) {
+    console.warn('⚠  JWT_SECRET is shorter than 32 characters — use a long random value.');
+  }
+}
 
 // ─── PASSWORD HASHING (scrypt) ──────────────────────────────────────────────
 // Stored format: scrypt$<saltHex>$<hashHex>

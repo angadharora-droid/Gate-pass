@@ -41,7 +41,10 @@ export const api = {
   login: (identifier, password) => request('/auth/login', { method: 'POST', body: JSON.stringify({ identifier, password }) }),
   me: () => request('/auth/me'),
 
-  // Gate passes
+  // Gate passes. Filters run on the server (see GET / in routes/gatePasses.js):
+  // status, movement, q, open, overdue, from/to (created), activeFrom/activeTo
+  // (any gate log), includeOpen, passNumber, branch… Passing `limit` changes
+  // the response to { passes, hasMore }; without it, an array as before.
   getPasses: (filters = {}) => {
     // Drop empty values so `{status: null}` doesn't become ?status=null
     const clean = Object.fromEntries(

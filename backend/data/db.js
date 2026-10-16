@@ -103,6 +103,13 @@ export async function connectDb() {
   return handle;
 }
 
+// Graceful shutdown (server.js): release the connection pool.
+export async function closeDb() {
+  if (client) await client.close();
+  client = null;
+  handle = null;
+}
+
 export async function pingDb() {
   try {
     await handle.command({ ping: 1 });
@@ -132,6 +139,8 @@ async function ensureIndexes() {
     handle.collection('departments').createIndex({ id: 1 }, { unique: true }),
     handle.collection('gatePasses').createIndex({ id: 1 }, { unique: true }),
     handle.collection('gatePasses').createIndex({ createdAt: -1 }),
+    // Badge counts and the open-pass queues filter on status constantly
+    handle.collection('gatePasses').createIndex({ status: 1, createdAt: -1 }),
     handle.collection('auditLog').createIndex({ timestamp: -1 }),
     // Items master: searched constantly from the pass forms
     handle.collection('items').createIndex({ id: 1 }, { unique: true }),

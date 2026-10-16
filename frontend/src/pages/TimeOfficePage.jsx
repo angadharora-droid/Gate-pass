@@ -42,8 +42,7 @@ export function LogOutwardModal({ pass, onClose, onDone }) {
     setError(''); setLoading(true);
     try {
       if (!guardName.trim()) { setError('Gate host name is required'); setLoading(false); return; }
-      await api.logOutward(pass.id, { guardName: guardName.trim(), remarks });
-      onDone();
+      onDone(await api.logOutward(pass.id, { guardName: guardName.trim(), remarks }));
     } catch (e) { setError(e.message); } finally { setLoading(false); }
   };
 
@@ -153,8 +152,7 @@ export function ReceiveTransferModal({ pass, onClose, onDone }) {
     if (!receiverId)        { setError('Select who is receiving the items'); return; }
     setLoading(true);
     try {
-      await api.receivePass(pass.id, { guardName: guardName.trim(), remarks, departmentId, receiverId });
-      onDone();
+      onDone(await api.receivePass(pass.id, { guardName: guardName.trim(), remarks, departmentId, receiverId }));
     } catch (e) { setError(e.message); } finally { setLoading(false); }
   };
 
@@ -319,8 +317,7 @@ export function ReturnOutModal({ pass, onClose, onDone }) {
     if (!sends.length && !closures.length) { setError('Enter how many of at least one item are going out'); return; }
     setLoading(true);
     try {
-      await api.returnOutward(pass.id, { guardName: guardName.trim(), remarks, sends, closures });
-      onDone();
+      onDone(await api.returnOutward(pass.id, { guardName: guardName.trim(), remarks, sends, closures }));
     } catch (e) { setError(e.message); } finally { setLoading(false); }
   };
 
@@ -497,8 +494,7 @@ export function LogInwardModal({ pass, onClose, onDone }) {
     if (!isReturnLeg) {
       setLoading(true);
       try {
-        await api.logInward(pass.id, { remarks, guardName: guardName.trim() });
-        onDone();
+        onDone(await api.logInward(pass.id, { remarks, guardName: guardName.trim() }));
       } catch (e) { setError(e.message); } finally { setLoading(false); }
       return;
     }
@@ -526,8 +522,7 @@ export function LogInwardModal({ pass, onClose, onDone }) {
     }
     setLoading(true);
     try {
-      await api.logInward(pass.id, { returns, closures, remarks, guardName: guardName.trim() });
-      onDone();
+      onDone(await api.logInward(pass.id, { returns, closures, remarks, guardName: guardName.trim() }));
     } catch (e) { setError(e.message); } finally { setLoading(false); }
   };
 
@@ -703,8 +698,7 @@ export function GateUnlockModal({ pass, onClose, onDone }) {
   const handleConfirm = async () => {
     setError(''); setLoading(true);
     try {
-      await api.gateLock(pass.id, 'unlock', remarks);
-      onDone();
+      onDone(await api.gateLock(pass.id, 'unlock', remarks));
     } catch (e) { setError(e.message); } finally { setLoading(false); }
   };
 
@@ -765,8 +759,7 @@ export function GateRejectModal({ pass, onClose, onDone }) {
     if (!reason) { setError('Please give a reason for rejecting this pass.'); return; }
     setError(''); setLoading(true);
     try {
-      await api.gateReject(pass.id, reason);
-      onDone();
+      onDone(await api.gateReject(pass.id, reason));
     } catch (e) { setError(e.message); } finally { setLoading(false); }
   };
 
@@ -857,6 +850,16 @@ function PassCard({ pass, actionLabel, ActionIcon, onAction, isDone, logInfo }) 
 }
 
 /* ── Main Time Office Page ──────────────────────────────────────────────────── */
+// How far back the registers reach. Every OPEN pass is always included (a
+// queue item never drops out because it is old); this only limits how much
+// finished history comes down. Full history also lives in Reports.
+const REGISTER_PERIODS = [
+  { days: 7,    label: 'Last 7 days' },
+  { days: 30,   label: 'Last 30 days' },
+  { days: 90,   label: 'Last 90 days' },
+  { days: null, label: 'All time' },
+];
+
 export default function TimeOfficePage() {
   const { user } = useAuth();
   const [passes, setPasses] = useState([]);
@@ -866,15 +869,20 @@ export default function TimeOfficePage() {
   const [tab, setTab] = useState('outward');
   const [search, setSearch] = useState('');
   const [searchActive, setSearchActive] = useState(false);
+  const [periodDays, setPeriodDays] = useState(7);
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  // `quiet` refreshes in the background, without blanking the registers
+  const load = useCallback(async (quiet = false) => {
+    if (!quiet) setLoading(true);
     try {
-      const [all, st] = await Promise.all([api.getPasses(), api.getStats()]);
+      const filters = periodDays
+        ? { activeFrom: new Date(Date.now() - periodDays * 864e5).toISOString(), includeOpen: 'true' }
+        : {};
+      const [all, st] = await Promise.all([api.getPasses(filters), api.getStats()]);
       setPasses(all);
       setStats(st);
     } finally { setLoading(false); }
-  }, []);
+  }, [periodDays]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -938,7 +946,13 @@ export default function TimeOfficePage() {
   const receiveQueue = passes.filter(canReceivePass);
   const returnLogQueue = passes.filter(canLogReturnPass);
 
-  const handleDone = () => { setModal(null); load(); };
+  // Every gate action returns the updated pass: show it straight away, then
+  // refresh quietly so other guards' work since the last load shows up too
+  const handleDone = (updated) => {
+    setModal(null);
+    if (updated?.id) setPasses(ps => ps.map(p => (p.id === updated.id ? updated : p)));
+    load(true);
+  };
 
   // Lock is a one-click freeze; unlocking (send back to manager) goes through
   // GateUnlockModal so the gate can say what needs fixing, and rejecting goes
@@ -946,14 +960,27 @@ export default function TimeOfficePage() {
   const [lockError, setLockError] = useState('');
   const handleLock = async (p) => {
     setLockError('');
-    try { await api.gateLock(p.id, 'lock'); load(); }
+    try { handleDone(await api.gateLock(p.id, 'lock')); }
     catch (e) { setLockError(e.message); }
   };
 
   const searchTerm = search.trim().toLowerCase();
-  const searchMatches = searchActive && searchTerm
-    ? passes.filter(p => String(p.passNumber).toLowerCase().includes(searchTerm)).slice(0, 5)
-    : [];
+  const [searchMatches, setSearchMatches] = useState([]);
+  const [searching, setSearching] = useState(false);
+  // Pass-number search asks the server, so it also finds passes older than the
+  // register period. Re-runs after every reload, so a match's action button
+  // reflects what was just logged.
+  useEffect(() => {
+    if (!searchActive || !searchTerm) { setSearchMatches([]); return undefined; }
+    let stale = false;
+    setSearching(true);
+    api.getPasses({ passNumber: searchTerm, limit: 5 })
+      // (a backend from before `limit` existed answers with a plain array)
+      .then(res => { if (!stale) setSearchMatches(Array.isArray(res) ? res.slice(0, 5) : res.passes); })
+      .catch(() => { if (!stale) setSearchMatches([]); })
+      .finally(() => { if (!stale) setSearching(false); });
+    return () => { stale = true; };
+  }, [searchActive, searchTerm, passes]);
 
   // Two registers, like a physical gate ledger: Outward (leaving my gate) and
   // Inward (arriving at my gate). Tab counts = rows needing an action NOW.
@@ -1025,7 +1052,7 @@ export default function TimeOfficePage() {
         {searchActive && searchTerm && (
           <div style={{ marginTop: 14 }}>
             {searchMatches.length === 0 ? (
-              <div style={{ fontSize: 13, color: 'var(--text3)' }}>No matches found.</div>
+              <div style={{ fontSize: 13, color: 'var(--text3)' }}>{searching ? 'Searching…' : 'No matches found.'}</div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                 {searchMatches.map(p => {
@@ -1076,6 +1103,17 @@ export default function TimeOfficePage() {
             {t.label}
             {t.count > 0 && <span className="tab-count">{t.count}</span>}
           </button>
+        ))}
+      </div>
+
+      {/* Register period — open passes always show, whatever their age */}
+      <div className="filters-bar" style={{ marginBottom: 16 }}>
+        {REGISTER_PERIODS.map(p => (
+          <button
+            key={p.label}
+            className={`filter-chip${periodDays === p.days ? ' active' : ''}`}
+            onClick={() => setPeriodDays(p.days)}
+          >{p.label}</button>
         ))}
       </div>
 

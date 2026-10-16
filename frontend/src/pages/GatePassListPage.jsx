@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { api } from '../utils/api';
 import { useAuth } from '../context/AuthContext';
@@ -16,6 +16,10 @@ const STATUS_TABS = [
   { key: 'completed',      label: 'Completed' },   // server matches legacy 'closed' rows too
   { key: 'rejected',       label: 'Rejected' },
 ];
+
+// The server returns at most this many (newest first) unless the user asks
+// for everything — narrowing by date or search reaches older passes.
+const PAGE_SIZE = 200;
 
 // Viewer-relative: "Coming In" = anything arriving at MY branch (direct inward
 // entries + transfers sent to us); "Going Out" = anything leaving my branch.
@@ -58,6 +62,9 @@ function rangeToBounds(fromDate, toDate) {
   return { start, end };
 }
 
+// A bound for the server (ISO instant), or null when open-ended / incomplete
+const isoOrNull = d => (d && !isNaN(d.getTime()) ? d.toISOString() : null);
+
 function TabBar({ tabs, active, onChange }) {
   return (
     <div className="tab-bar" role="tablist">
@@ -94,17 +101,48 @@ export default function GatePassListPage() {
   const [search, setSearch] = useState('');
   const [fromDate, setFromDate] = useState('');
   const [toDate, setToDate] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [hasMore, setHasMore] = useState(false);
+  const [showAll, setShowAll] = useState(false);
+  const latestRequest = useRef(0);
+  const lastFilterKey = useRef(null);
 
-  const load = () => {
-    setLoading(true);
-    const q = {};
-    if (statusFilter) q.status = statusFilter;
-    api.getPasses(q).then(setPasses).finally(() => setLoading(false));
-  };
+  // Ask the server once typing pauses, not on every keystroke
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search.trim()), 300);
+    return () => clearTimeout(t);
+  }, [search]);
 
-  useEffect(() => { load(); }, [statusFilter]);
+  // Every filter runs on the server, so only matching passes come down. The
+  // same filters also run on screen below — typing narrows the rows instantly
+  // while the server's answer is on its way.
+  useEffect(() => {
+    const requestId = ++latestRequest.current;
+    // Spinner for a new tab/filter/range; a search refresh keeps rows visible
+    const filterKey = JSON.stringify([statusFilter, movementFilter, overdueOnly, fromDate, toDate, showAll]);
+    if (filterKey !== lastFilterKey.current) {
+      lastFilterKey.current = filterKey;
+      setLoading(true);
+    }
+    const { start, end } = rangeToBounds(fromDate, toDate);
+    api.getPasses({
+      status: statusFilter,
+      movement: movementFilter,
+      overdue: overdueOnly ? 'true' : null,
+      q: debouncedSearch,
+      from: isoOrNull(start),
+      to: isoOrNull(end),
+      limit: showAll ? null : PAGE_SIZE,
+    })
+      .then(res => {
+        if (requestId !== latestRequest.current) return;   // a newer request superseded this one
+        setPasses(Array.isArray(res) ? res : res.passes);
+        setHasMore(!Array.isArray(res) && res.hasMore);
+      })
+      .finally(() => { if (requestId === latestRequest.current) setLoading(false); });
+  }, [statusFilter, movementFilter, overdueOnly, debouncedSearch, fromDate, toDate, showAll]);
 
-  // Movement is relative to the viewer's branch, so it filters client-side
+  // Movement is relative to the viewer's branch
   let shown = movementFilter ? passes.filter(p => movementFor(p, user) === movementFilter) : passes;
   if (overdueOnly) shown = shown.filter(p => p.isOverdue);
   const searchTerm = search.trim().toLowerCase();
@@ -140,7 +178,7 @@ export default function GatePassListPage() {
         <div>
           <div className="page-title">Gate Passes</div>
           <div className="page-subtitle">
-            {shown.length} pass{shown.length !== 1 ? 'es' : ''}
+            {shown.length}{hasMore ? '+' : ''} pass{shown.length !== 1 ? 'es' : ''}
             {pendingCount > 0  && ` · ${pendingCount} waiting approval`}
             {overdueCount > 0  && ` · ${overdueCount} late`}
           </div>
@@ -208,6 +246,13 @@ export default function GatePassListPage() {
           title="Only returnable passes that are past their return date"
         >Late only</button>
       </div>
+
+      {hasMore && !loading && (
+        <div className="alert alert-info" style={{ marginBottom: 16, alignItems: 'center', flexWrap: 'wrap' }}>
+          Showing the newest {PAGE_SIZE} passes. Pick a date range or search to find older ones.
+          <button className="btn btn-ghost btn-sm" onClick={() => setShowAll(true)}>Show all</button>
+        </div>
+      )}
 
       {loading ? (
         <div className="loading-page"><div className="spinner" /><span>Loading…</span></div>

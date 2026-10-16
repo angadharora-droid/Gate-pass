@@ -52,13 +52,16 @@ export default function DashboardPage() {
   const { user } = useAuth();
 
   useEffect(() => {
-    Promise.all([api.getStats(), api.getPasses()])
-      .then(([s, passes]) => {
+    // Only what the dashboard shows: the 6 newest passes, plus open passes for
+    // the alerts (late, sent back and send-back requests are all still open)
+    Promise.all([api.getStats(), api.getPasses({ limit: 6 }), api.getPasses({ open: true })])
+      .then(([s, recent, open]) => {
         setStats(s);
-        setRecentPasses(passes.slice(0, 6));
-        setOverduePasses(passes.filter(p => p.isOverdue));
-        setSentBackPasses(passes.filter(p => p.sentBack));
-        setSendBackRequests(passes.filter(p => p.sendBackRequest && !p.returnRequest &&
+        // A backend from before `limit` existed answers with a plain array
+        setRecentPasses(Array.isArray(recent) ? recent.slice(0, 6) : recent.passes);
+        setOverduePasses(open.filter(p => p.isOverdue));
+        setSentBackPasses(open.filter(p => p.sentBack));
+        setSendBackRequests(open.filter(p => p.sendBackRequest && !p.returnRequest &&
           ['in_transit', 'partial_return'].includes(p.status)));
       })
       .finally(() => setLoading(false));
