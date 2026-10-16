@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../utils/api';
-import { REFERENCE_STALE_MS } from '../queryClient';
+import { reportsOverviewQuery, defaultReportRange, branchesQuery, departmentsQuery } from '../queries';
 import { useAuth } from '../context/AuthContext';
 import { hasRole } from '../utils/roles';
 import { StatusBadge, MovementBadge, movementFor, DirectionBadge, ReturnableBadge, STATUS_LABELS } from '../components/Badges';
@@ -12,37 +12,8 @@ import {
   REPORT_KINDS, buildReport, describeSpec, dateBasisNote, fmtInputDay,
 } from '../utils/registerReports';
 import { buildReportWorkbook, downloadWorkbook } from '../utils/registerExcel';
-
-function pad2(n) {
-  return String(n).padStart(2, '0');
-}
-
-// All range math is LOCAL time, so the buckets match the dates the table
-// displays (UTC boundaries would put the first local hours of a day in the
-// previous day's report for IST users).
-const toDateInput = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
-
-function firstOfMonth() {
-  const d = new Date();
-  return toDateInput(new Date(d.getFullYear(), d.getMonth(), 1));
-}
-
-// From/To are inclusive calendar days; either side may be left empty for an
-// open-ended range.
-function rangeToBounds(fromDate, toDate) {
-  const parse = (s) => {
-    if (!s) return null;
-    const [y, m, d] = s.split('-').map(Number);
-    return new Date(y, m - 1, d);
-  };
-  const start = parse(fromDate);
-  const endDay = parse(toDate);
-  const end = endDay ? new Date(endDay.getFullYear(), endDay.getMonth(), endDay.getDate() + 1) : null;
-  return { start, end };
-}
-
-// A bound for the server (ISO instant), or null when open-ended / incomplete
-const isoOrNull = d => (d && !isNaN(d.getTime()) ? d.toISOString() : null);
+// Local-time range math (see utils/dateRange.js)
+import { toDateInput, firstOfMonth, rangeToBounds, isoOrNull } from '../utils/dateRange';
 
 function fmtDate(dateStr) {
   if (!dateStr) return '—';
@@ -109,8 +80,9 @@ function ReportsOverview() {
   const queryClient = useQueryClient();
   const [actionError, setError] = useState('');
 
-  const [fromDate, setFromDate] = useState(firstOfMonth());
-  const [toDate, setToDate] = useState(toDateInput(new Date()));
+  // This month by default — the range the background prefetch loads too
+  const [fromDate, setFromDate] = useState(() => defaultReportRange().fromDate);
+  const [toDate, setToDate] = useState(() => defaultReportRange().toDate);
   const [branch, setBranch] = useState('');
   const [departmentId, setDepartmentId] = useState('');
   const [type, setType] = useState('');
@@ -125,22 +97,11 @@ function ReportsOverview() {
   // Only the passes created in the chosen range come down; the other filters
   // (branch, department, type, status) run on screen against them. Cached per
   // range (queryClient.js), so coming back to Reports shows it at once.
-  const passesKey = ['passes', 'created', fromDate, toDate];
-  const passesQ = useQuery({
-    queryKey: passesKey,
-    queryFn: () => {
-      const { start, end } = rangeToBounds(fromDate, toDate);
-      return api.getPasses({ from: isoOrNull(start), to: isoOrNull(end) });
-    },
-  });
-  const branchesQ = useQuery({
-    queryKey: ['branches', 'all'], queryFn: () => api.getBranches(true), staleTime: REFERENCE_STALE_MS,
-  });
-  const departmentsQ = useQuery({
-    queryKey: ['departments', branch || 'any'],
-    queryFn: () => api.getDepartments(branch ? { branch } : {}),
-    staleTime: REFERENCE_STALE_MS,
-  });
+  const overview = reportsOverviewQuery(fromDate, toDate);
+  const passesKey = overview.queryKey;
+  const passesQ = useQuery(overview);
+  const branchesQ = useQuery(branchesQuery(true));
+  const departmentsQ = useQuery(departmentsQuery(branch));
   const passes = passesQ.data ?? [];
   const branches = branchesQ.data ?? [];
   const departments = departmentsQ.data ?? [];
@@ -742,9 +703,7 @@ function RegisterReports() {
   const [exporting, setExporting] = useState(false);
 
   // Same cached branch list as the overview tab
-  const branches = useQuery({
-    queryKey: ['branches', 'all'], queryFn: () => api.getBranches(true), staleTime: REFERENCE_STALE_MS,
-  }).data ?? [];
+  const branches = useQuery(branchesQuery(true)).data ?? [];
 
   // Fresh data for every report, so a register is never stale
   const generate = async (next) => {

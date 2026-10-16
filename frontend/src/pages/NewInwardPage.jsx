@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../utils/api';
-import { REFERENCE_STALE_MS } from '../queryClient';
+import { branchesQuery, departmentsQuery, usersQuery } from '../queries';
 import { useAuth } from '../context/AuthContext';
 import { hasRole } from '../utils/roles';
 import { AlertTriangle, ArrowDownLeft, Plus, ScanLine, ShieldCheck, X } from 'lucide-react';
@@ -21,9 +21,9 @@ export default function NewInwardPage() {
   const navigate = useNavigate();
 
   // Reference lists, cached (queryClient.js) — the form opens instantly next time
-  const branchesQ = useQuery({ queryKey: ['branches', 'active'], queryFn: () => api.getBranches(), staleTime: REFERENCE_STALE_MS });
-  const departmentsQ = useQuery({ queryKey: ['departments', 'any'], queryFn: () => api.getDepartments(), staleTime: REFERENCE_STALE_MS });
-  const usersQ = useQuery({ queryKey: ['users'], queryFn: () => api.getUsers(), staleTime: REFERENCE_STALE_MS });
+  const branchesQ = useQuery(branchesQuery());
+  const departmentsQ = useQuery(departmentsQuery());
+  const usersQ = useQuery(usersQuery());
   const branches = branchesQ.data ?? [];
   const departments = departmentsQ.data ?? [];
   const users = usersQ.data ?? [];
