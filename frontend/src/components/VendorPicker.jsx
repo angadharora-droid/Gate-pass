@@ -6,6 +6,12 @@ import { suggestKeyNav, keepActiveVisible } from '../utils/suggestMenu';
 // Same identity rule as the server's normalizeItemName: case/space-insensitive
 export const vendorNameKey = (s) => String(s || '').trim().toUpperCase().replace(/\s+/g, ' ');
 
+// Same match as the server's vendor search: case-insensitive substring
+const matching = (list, q) => {
+  const term = q.trim().toLowerCase();
+  return term ? list.filter(v => v.name.toLowerCase().includes(term)) : list;
+};
+
 // Pick-a-vendor field shared by every form that names an outside party — the
 // inward "Received From" and the outward "To". The vendor list is FIXED and
 // maintained by admins, so the box only filters that list; it never creates
@@ -32,12 +38,14 @@ export default function VendorPicker({
   const latest = useRef({ value, vendorId, onChange });
   latest.current = { value, vendorId, onChange };
 
+  // Filters the cached vendor list (api.allVendors) — only the first use, or
+  // one after the cache expires, waits on the server
   const search = (q, rect) => {
     clearTimeout(timer.current);
     timer.current = setTimeout(async () => {
       const mySeq = ++seq.current;
       try {
-        const list = await api.searchVendors(q.trim());
+        const list = matching(await api.allVendors(), q);
         if (mySeq !== seq.current) return;
         setSuggest({ list, rect, q: q.trim(), active: -1 });
         // Typed the full name of a known vendor → treat it as picked
@@ -46,7 +54,7 @@ export default function VendorPicker({
         if (exact && !cur.vendorId && vendorNameKey(cur.value) === vendorNameKey(exact.name))
           cur.onChange({ name: cur.value, vendorId: exact.id });
       } catch { /* vendor search is best-effort; typing still works */ }
-    }, q.trim() ? 200 : 0);
+    }, 0);
   };
 
   // A pre-filled name with no id (an older pass being edited) is resolved
@@ -55,7 +63,7 @@ export default function VendorPicker({
   useEffect(() => {
     if (!value?.trim() || vendorId) return;
     let cancelled = false;
-    api.searchVendors(value.trim()).then(list => {
+    api.allVendors().then(list => {
       if (cancelled) return;
       const exact = list.find(v => vendorNameKey(v.name) === vendorNameKey(value));
       const cur = latest.current;

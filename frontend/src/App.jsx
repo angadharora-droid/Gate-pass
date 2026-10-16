@@ -1,4 +1,5 @@
-import { Routes, Route, Navigate } from 'react-router-dom';
+import { Route, Navigate } from 'react-router-dom';
+import { SentryRoutes as Routes } from './sentry';
 import { useAuth } from './context/AuthContext';
 import { hasRole } from './utils/roles';
 import Layout from './components/Layout';

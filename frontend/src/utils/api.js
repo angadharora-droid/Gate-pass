@@ -35,6 +35,21 @@ async function request(path, options = {}) {
   return data;
 }
 
+// The vendor pick list is short and fixed (admins maintain it), so the
+// pickers fetch it once and filter it in the browser instead of asking the
+// server on every focus and keystroke. Reused for a few minutes so a vendor
+// added by another admin still shows up soon; changes made here clear it.
+const VENDOR_CACHE_MS = 5 * 60 * 1000;
+let vendorCache = null;   // { at, promise }
+function cachedVendors() {
+  if (!vendorCache || Date.now() - vendorCache.at > VENDOR_CACHE_MS) {
+    const promise = request('/vendors?limit=1000').catch(e => { vendorCache = null; throw e; });
+    vendorCache = { at: Date.now(), promise };
+  }
+  return vendorCache.promise;
+}
+const clearVendorCache = (result) => { vendorCache = null; return result; };
+
 export const api = {
   // Auth
   // `identifier` is a login ID or an email — the server matches either
@@ -125,11 +140,13 @@ export const api = {
   // From" and the outward "To" party must both be picked from it
   // Every vendor that matches — the list is short, so the pick list shows it whole
   searchVendors: (q, limit = 1000) => request(`/vendors?q=${encodeURIComponent(q)}&limit=${limit}`),
+  // Every active vendor, cached (see cachedVendors) — what the pickers use
+  allVendors: () => cachedVendors(),
   // Admin: full list including removed vendors
   getVendors: (q = '', limit = 1000) => request(`/vendors?all=true&q=${encodeURIComponent(q)}&limit=${limit}`),
-  createVendor: (data) => request('/vendors', { method: 'POST', body: JSON.stringify(data) }),
-  updateVendor: (id, data) => request(`/vendors/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
-  deleteVendor: (id) => request(`/vendors/${id}`, { method: 'DELETE' }),
+  createVendor: (data) => request('/vendors', { method: 'POST', body: JSON.stringify(data) }).then(clearVendorCache),
+  updateVendor: (id, data) => request(`/vendors/${id}`, { method: 'PATCH', body: JSON.stringify(data) }).then(clearVendorCache),
+  deleteVendor: (id) => request(`/vendors/${id}`, { method: 'DELETE' }).then(clearVendorCache),
 
   // Meta
   getMeta: () => Promise.all([

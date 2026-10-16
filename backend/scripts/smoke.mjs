@@ -23,6 +23,7 @@ await client.db(SMOKE_DB).dropDatabase();
 
 process.env.MONGODB_DB = SMOKE_DB;
 process.env.JWT_SECRET = 'smoke-test-secret';
+process.env.SENTRY_DSN = '';   // never report test traffic (dotenv won't override this)
 process.env.PORT = String(PORT);
 
 await import('../server.js');
@@ -1103,6 +1104,12 @@ check('a malformed page cursor is a 400', badCursor.status === 400);
 
 const gz = await fetch(`${BASE}/gate-passes`, { headers: { Authorization: `Bearer ${admin}`, 'Accept-Encoding': 'gzip' } });
 check('pass lists are sent compressed', gz.headers.get('content-encoding') === 'gzip', gz.headers.get('content-encoding'));
+const preflight = await fetch(`${BASE}/vendors`, { method: 'OPTIONS', headers: {
+  Origin: 'http://localhost:5173', 'Access-Control-Request-Method': 'GET', 'Access-Control-Request-Headers': 'authorization,content-type',
+} });
+check('browsers may cache the CORS permission check (no OPTIONS before every call)',
+  preflight.status === 204 && preflight.headers.get('access-control-max-age') === '7200',
+  `${preflight.status} max-age=${preflight.headers.get('access-control-max-age')}`);
 
 // ─── Concurrent updates: no silent overwrites ────────────────────────────────
 // Two guards mark the same pass out at the same moment. Without the versioned
