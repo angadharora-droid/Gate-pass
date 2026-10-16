@@ -58,7 +58,7 @@ const LIFECYCLE_BUCKETS = [
   { key: 'pending',  label: 'Waiting Approval', filter: 'pending',  stages: ['pending'] },
   { key: 'approved', label: 'Ready to Go Out',  filter: 'approved', stages: ['approved'] },
   { key: 'open',     label: 'In Progress',      filter: 'out_any',
-    stages: ['items_out', 'in_transit', 'at_destination', 'return_approved', 'returning', 'partial_return'] },
+    stages: ['items_out', 'in_transit', 'at_destination', 'return_requested', 'return_approved', 'returning', 'partial_return'] },
   // 'closed' was merged into 'completed' — legacy rows arrive normalized as
   // displayStatus 'completed', so one stage covers both
   { key: 'finished', label: 'Completed',        filter: 'completed', stages: ['completed'] },
@@ -85,6 +85,7 @@ function lastMovement(p) {
   const legs = [
     p.outwardLog       && { label: 'Dispatched',         at: p.outwardLog.loggedAt },
     p.receivedLog      && { label: 'Received',           at: p.receivedLog.loggedAt },
+    p.sendBackRequest  && { label: 'Send-back requested', at: p.sendBackRequest.requestedAt },
     p.returnRequest    && { label: 'Send-back approved', at: p.returnRequest.requestedAt },
     p.returnOutwardLog && { label: 'Return dispatched',  at: p.returnOutwardLog.loggedAt },
     p.inwardLog        && { label: 'Returned',           at: p.inwardLog.loggedAt },
@@ -465,6 +466,7 @@ function ReportsOverview() {
                 <option value="items_out">Items Out (external)</option>
                 <option value="in_transit">In Transit (between branches)</option>
                 <option value="at_destination">At Destination</option>
+                <option value="return_requested">Send-Back Requested</option>
                 <option value="return_approved">Send-Back Approved</option>
                 <option value="returning">Returning</option>
                 <option value="partial_return">Partly Back</option>

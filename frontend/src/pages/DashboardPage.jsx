@@ -3,7 +3,7 @@ import { api } from '../utils/api';
 import { Link } from 'react-router-dom';
 import { StatusBadge, MovementBadge } from '../components/Badges';
 import { useAuth } from '../context/AuthContext';
-import { hasRole } from '../utils/roles';
+import { hasRole, canApproveSendBack } from '../utils/roles';
 import {
   Package,
   Clock,
@@ -47,6 +47,7 @@ export default function DashboardPage() {
   const [recentPasses, setRecentPasses] = useState([]);
   const [overduePasses, setOverduePasses] = useState([]);
   const [sentBackPasses, setSentBackPasses] = useState([]);
+  const [sendBackRequests, setSendBackRequests] = useState([]);
   const [loading, setLoading] = useState(true);
   const { user } = useAuth();
 
@@ -57,6 +58,8 @@ export default function DashboardPage() {
         setRecentPasses(passes.slice(0, 6));
         setOverduePasses(passes.filter(p => p.isOverdue));
         setSentBackPasses(passes.filter(p => p.sentBack));
+        setSendBackRequests(passes.filter(p => p.sendBackRequest && !p.returnRequest &&
+          ['in_transit', 'partial_return'].includes(p.status)));
       })
       .finally(() => setLoading(false));
   }, []);
@@ -78,8 +81,12 @@ export default function DashboardPage() {
     hasRole(user, 'admin') ||
     (hasRole(user, 'manager', 'supermanager') && p.sourceBranch === user?.branch &&
       (!p.approverId || p.approverId === user?.id)));
+  // Receivers' send-back requests this user can approve or reject — the
+  // receiving department's manager, or a supermanager of that branch
+  const mySendBacksToApprove = sendBackRequests.filter(p => canApproveSendBack(user, p));
   const anyAlert =
     mySentBack.length > 0 ||
+    mySendBacksToApprove.length > 0 ||
     (isApprover && stats?.myPendingApprovals > 0) ||
     stats?.itemsWithMe > 0 ||
     (isGate && (stats?.awaitingOutward > 0 || stats?.awaitingReturnOut > 0)) ||
@@ -174,10 +181,35 @@ export default function DashboardPage() {
           </AlertBanner>
         )}
 
+        {mySendBacksToApprove.length > 0 && (
+          <AlertBanner
+            tone="warning"
+            Icon={RefreshCw}
+            detail={
+              <div className="alert-detail" style={{ width: '100%' }}>
+                {mySendBacksToApprove.slice(0, 4).map(p => (
+                  <Link key={p.id} to={`/passes/${p.id}`} className="alert-detail-chip">
+                    <span className="mono">{p.passNumber}</span>
+                    {p.sendBackRequest?.requestedByUser && <span>{p.sendBackRequest.requestedByUser.name}</span>}
+                  </Link>
+                ))}
+                {mySendBacksToApprove.length > 4 && (
+                  <span style={{ fontSize: 'var(--fs-xs)', alignSelf: 'center', opacity: 0.8 }}>
+                    +{mySendBacksToApprove.length - 4} more
+                  </span>
+                )}
+              </div>
+            }
+          >
+            <strong>{plural(mySendBacksToApprove.length, 'send-back is', 'send-backs are')} waiting for your approval.</strong>{' '}
+            The items can&rsquo;t go back until you approve or reject.
+          </AlertBanner>
+        )}
+
         {stats?.itemsWithMe > 0 && (
           <AlertBanner tone="info" Icon={PackageCheck} to="/passes">
             <strong>{plural(stats.itemsWithMe, 'transfer pass is', 'transfer passes are')} with you.</strong>{' '}
-            When you're done with the items, open the pass and approve the send-back.
+            When you're done with the items, open the pass and request the send-back.
           </AlertBanner>
         )}
 

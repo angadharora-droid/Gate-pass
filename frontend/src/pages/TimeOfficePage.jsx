@@ -1267,6 +1267,7 @@ export default function TimeOfficePage() {
                             ) : transferIn && p.receivedLog && p.returnable && !p.returnRequest && isOpen(p) ? (
                               <span style={{ fontSize: 12, color: 'var(--text3)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                                 <Clock size={13} /> With {p.receivedLog.receiverUser?.name || 'receiver'}
+                                {p.sendBackRequest ? ' · send-back awaiting manager' : ''}
                               </span>
                             ) : transferIn && p.receivedLog && !isOpen(p) ? (
                               <span style={{ fontSize: 12, color: 'var(--green)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>

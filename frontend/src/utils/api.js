@@ -68,8 +68,12 @@ export const api = {
   logInward: (id, payload) => request(`/gate-passes/${id}/log-inward`, { method: 'PATCH', body: JSON.stringify(payload) }),
   // Destination branch marks an internal transfer's items in (with dept + receiver)
   receivePass: (id, payload) => request(`/gate-passes/${id}/receive`, { method: 'PATCH', body: JSON.stringify(payload) }),
-  // Receiver approves the items going back to the source branch
+  // Send-back: the receiver's call files the request; the department manager's
+  // / a supermanager's call approves it (optionally writing off `closures`
+  // first, to lower what goes back)
   requestReturn: (id, payload = {}) => request(`/gate-passes/${id}/return-request`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  // Manager/supermanager turns the receiver's send-back request down
+  rejectReturnRequest: (id, reason) => request(`/gate-passes/${id}/return-request/reject`, { method: 'PATCH', body: JSON.stringify({ reason }) }),
   // Receiver / destination manager writes off quantities that won't return
   // (closes them with a reason — same mechanics as Time Office closures)
   closeItems: (id, closures) => request(`/gate-passes/${id}/close-items`, { method: 'PATCH', body: JSON.stringify({ closures }) }),

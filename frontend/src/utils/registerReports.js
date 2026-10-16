@@ -69,6 +69,7 @@ export function whereIs(pass, i) {
     ].filter(Boolean);
   }
   if (pass.returnRequest) return [{ qty: bal, where: `With ${dest} security — send-back approved` }];
+  if (pass.sendBackRequest) return [{ qty: bal, where: `${withReceiver} — send-back requested` }];
   return [{ qty: bal, where: withReceiver }];
 }
 

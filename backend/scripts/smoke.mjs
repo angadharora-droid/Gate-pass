@@ -458,8 +458,42 @@ check('source cannot log return before destination marks it out', earlyBack.stat
 const wrongApprover = await api('PATCH', `/gate-passes/${rId}/return-request`, { token: manager });
 check('source-branch manager cannot approve the send-back', wrongApprover.status === 403);
 
-const sendBack = await api('PATCH', `/gate-passes/${rId}/return-request`, { token: staff2 });
-check('receiver approves send-back', sendBack.status === 200 && !!sendBack.json?.returnRequest);
+const sendBackAsk = await api('PATCH', `/gate-passes/${rId}/return-request`, { token: staff2, body: { remarks: 'Done with it' } });
+check('receiver requests the send-back (not yet approved)',
+  sendBackAsk.status === 200 && !!sendBackAsk.json?.sendBackRequest && !sendBackAsk.json?.returnRequest &&
+  sendBackAsk.json?.displayStatus === 'return_requested', JSON.stringify(sendBackAsk.json?.sendBackRequest));
+const askAgain = await api('PATCH', `/gate-passes/${rId}/return-request`, { token: staff2 });
+check('double send-back request refused', askAgain.status === 400);
+const outBeforeApproval = await api('PATCH', `/gate-passes/${rId}/return-outward`, { token: timeOffice2, body: { guardName: 'Binu' } });
+check('gate cannot mark the return out before a manager approves', outBeforeApproval.status === 400);
+
+// Housekeeping at the second branch has no manager yet → its supermanager decides
+const super2User = await api('POST', '/users', {
+  token: admin,
+  body: { name: 'Super Two', email: 'super2@test.com', password: 'secret1', role: 'supermanager', branch: b2 },
+});
+check('admin creates supermanager at second branch', super2User.status === 201);
+const super2 = await login('super2@test.com', 'secret1');
+const askedView = await api('GET', `/gate-passes/${rId}`, { token: staff2 });
+check('dept without a manager → the branch supermanager is named as approver',
+  askedView.json?.sendBackApprovers?.map(a => a.name).join() === 'Super Two', JSON.stringify(askedView.json?.sendBackApprovers));
+const super2Stats = await api('GET', '/gate-passes/meta/stats', { token: super2 });
+check('supermanager sees the request in their to-do', super2Stats.json?.sendBacksToApprove === 1, JSON.stringify(super2Stats.json));
+const staffReject = await api('PATCH', `/gate-passes/${rId}/return-request/reject`, { token: staff2, body: { reason: 'x' } });
+check('receiver cannot reject the request', staffReject.status === 403);
+const noReasonReject = await api('PATCH', `/gate-passes/${rId}/return-request/reject`, { token: super2 });
+check('reject without a reason refused', noReasonReject.status === 400);
+const rejectedAsk = await api('PATCH', `/gate-passes/${rId}/return-request/reject`, { token: super2, body: { reason: 'Still needed' } });
+check('supermanager rejects the request → items stay with the receiver',
+  rejectedAsk.status === 200 && !rejectedAsk.json?.sendBackRequest && !rejectedAsk.json?.returnRequest &&
+  rejectedAsk.json?.sendBackRejections?.[0]?.rejectedByUser?.name === 'Super Two' &&
+  rejectedAsk.json?.displayStatus === 'at_destination');
+
+await api('PATCH', `/gate-passes/${rId}/return-request`, { token: staff2 });
+const sendBack = await api('PATCH', `/gate-passes/${rId}/return-request`, { token: super2 });
+check('supermanager approves the new request',
+  sendBack.status === 200 && !!sendBack.json?.returnRequest && !sendBack.json?.sendBackRequest &&
+  sendBack.json?.returnRequest?.staffRequest?.requestedByUser?.name === 'Staff Two');
 
 const wrongReturnOut = await api('PATCH', `/gate-passes/${rId}/return-outward`, { token: timeOffice, body: { guardName: 'Ajay' } });
 check('source gate cannot mark the return out', wrongReturnOut.status === 403);
@@ -502,6 +536,8 @@ const preApprovalOff = await api('PATCH', `/gate-passes/${pId}/close-items`, { t
 check('destination manager writes off before send-back approval', preApprovalOff.status === 200 && preApprovalOff.json?.status === 'partial_return');
 
 await api('PATCH', `/gate-passes/${pId}/return-request`, { token: staff2 });
+const deptMgrApprove = await api('PATCH', `/gate-passes/${pId}/return-request`, { token: manager2 });
+check('receiving department manager approves the send-back', deptMgrApprove.status === 200 && !!deptMgrApprove.json?.returnRequest);
 const postApprovalOff = await api('PATCH', `/gate-passes/${pId}/close-items`, { token: manager2, body: { closures: [{ index: 1, quantity: 1, reason: 'Lost' }] } });
 check('no write-off at the destination once send-back is approved', postApprovalOff.status === 400);
 
@@ -545,12 +581,62 @@ check('partial arrival → partial_return, fresh send-back cycle opens',
 
 const reOff = await api('PATCH', `/gate-passes/${pId}/close-items`, { token: manager2, body: { closures: [{ index: 1, quantity: 1, reason: 'Consumed / Used up' }] } });
 check('destination manager can write off again on the new cycle', reOff.status === 200);
-await api('PATCH', `/gate-passes/${pId}/return-request`, { token: staff2 });
+const directApprove = await api('PATCH', `/gate-passes/${pId}/return-request`, { token: manager2 });
+check('manager can approve directly, with no request first',
+  directApprove.status === 200 && !!directApprove.json?.returnRequest && !directApprove.json?.returnRequest?.staffRequest);
 const restOut = await api('PATCH', `/gate-passes/${pId}/return-outward`, { token: timeOffice2, body: { guardName: 'Binu' } });
 check('return out without counts sends everything left',
   restOut.status === 200 && restOut.json?.returnOutwardLog?.items?.length === 1 && restOut.json?.returnOutwardLog?.items?.[0]?.quantity === 2);
 const pFinal = await api('PATCH', `/gate-passes/${pId}/log-inward`, { token: timeOffice, body: { guardName: 'Ajay', returns: [{ index: 0, quantity: 2 }] } });
 check('last items arrive → completed', pFinal.status === 200 && pFinal.json?.status === 'completed');
+
+// ─── Send-back approval rules: department, lowering quantities ───────────────
+const dept3 = await api('POST', '/departments', { token: admin, body: { name: 'Kitchen', branchId: b2 } });
+const mgr3User = await api('POST', '/users', {
+  token: admin,
+  body: { name: 'Manager Three', email: 'manager3@test.com', password: 'secret1', role: 'manager', branch: b2, departmentId: dept3.json?.id },
+});
+check('admin creates a manager of another department at the second branch', dept3.status === 201 && mgr3User.status === 201);
+const manager3 = await login('manager3@test.com', 'secret1');
+
+const mkReturnableTransfer = async (purpose, items) => {
+  const t = await api('POST', '/gate-passes', {
+    token: manager,
+    body: { type: 'outward', direction: 'internal', destinationBranch: b2, returnable: true, purpose, expectedReturnDate: '2099-01-01T00:00:00Z', items },
+  });
+  await api('PATCH', `/gate-passes/${t.json?.id}/log-outward`, { token: timeOffice, body: { guardName: 'Ajay' } });
+  await api('PATCH', `/gate-passes/${t.json?.id}/receive`, { token: timeOffice2, body: { guardName: 'Binu', departmentId: d2, receiverId: r2 } });
+  await api('PATCH', `/gate-passes/${t.json?.id}/return-request`, { token: staff2 });
+  return t.json?.id;
+};
+
+const lId = await mkReturnableTransfer('Bar stock for event', [
+  { itemName: 'Candles', quantity: 4, unit: 'pcs' },
+  { itemName: 'Water Bottles', quantity: 4, unit: 'pcs' },
+]);
+const lView = await api('GET', `/gate-passes/${lId}`, { token: staff2 });
+check('dept with a manager → that manager is named as approver',
+  lView.json?.sendBackApprovers?.map(a => a.name).join() === 'Manager Two', JSON.stringify(lView.json?.sendBackApprovers));
+const otherDept = await api('PATCH', `/gate-passes/${lId}/return-request`, { token: manager3 });
+check("another department's manager cannot approve the send-back", otherDept.status === 403);
+const otherDeptReject = await api('PATCH', `/gate-passes/${lId}/return-request/reject`, { token: manager3, body: { reason: 'x' } });
+check("another department's manager cannot reject it either", otherDeptReject.status === 403);
+const noReasonLower = await api('PATCH', `/gate-passes/${lId}/return-request`, { token: super2, body: { closures: [{ index: 1, quantity: 2 }] } });
+check('lowering a quantity at approval needs a reason', noReasonLower.status === 400);
+const lowered = await api('PATCH', `/gate-passes/${lId}/return-request`, {
+  token: super2, body: { closures: [{ index: 1, quantity: 2, reason: 'Consumed / Used up' }] },
+});
+check('supermanager approves as backup, lowering what goes back (original qty kept)',
+  lowered.status === 200 && !!lowered.json?.returnRequest && lowered.json?.status === 'partial_return' &&
+  lowered.json?.items?.[1]?.closedQuantity === 2 && lowered.json?.items?.[1]?.quantity === 4 &&
+  lowered.json?.closures?.some(c => c.at === 'destination'), JSON.stringify(lowered.json?.items));
+
+const aId = await mkReturnableTransfer('Napkins for event', [{ itemName: 'Napkins', quantity: 3, unit: 'pcs' }]);
+const allOff = await api('PATCH', `/gate-passes/${aId}/return-request`, {
+  token: manager2, body: { closures: [{ index: 0, quantity: 3, reason: 'Consumed / Used up' }] },
+});
+check('writing everything off at approval completes the pass, nothing to send',
+  allOff.status === 200 && allOff.json?.status === 'completed' && !allOff.json?.returnRequest && !allOff.json?.sendBackRequest);
 
 const dupUser = await api('POST', '/users', {
   token: admin,

@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { api } from '../utils/api';
 import { useAuth } from '../context/AuthContext';
-import { hasRole } from '../utils/roles';
+import { hasRole, canApproveSendBack } from '../utils/roles';
 import { StatusBadge, MovementBadge, ReturnableBadge, DirectionBadge, STATUS_LABELS } from '../components/Badges';
 import { LogOutwardModal, LogInwardModal, ReceiveTransferModal, ReturnOutModal, GateUnlockModal, GateRejectModal, CLOSE_REASONS } from './TimeOfficePage';
 import {
@@ -50,6 +50,14 @@ const docLabel = d => `${d.type && d.type !== 'None' ? d.type + ' ' : ''}${d.num
 
 const fmtMoney = (n) => n == null ? null : `₹ ${Number(n).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
+// The latest send-back rejection of the CURRENT cycle — after a partial
+// return a fresh cycle opens, and earlier cycles' rejections are history.
+function currentCycleRejection(pass) {
+  const last = (pass.sendBackRejections || []).slice(-1)[0];
+  const cycleStart = (pass.returnCycles || []).slice(-1)[0]?.arrivedAt;
+  return last && (!cycleStart || new Date(last.rejectedAt) > new Date(cycleStart)) ? last : null;
+}
+
 export default function GatePassDetailPage() {
   const { id } = useParams();
   const { user } = useAuth();
@@ -91,9 +99,10 @@ export default function GatePassDetailPage() {
 
   const handleLogDone = () => { setLogModal(null); load(); };
 
-  // Receiver approving the items going back to the source branch
-  const handleSendBack = async () => {
-    if (!confirm('Approve sending these items back?\n\nAfter this the items are with the gate: security records what leaves and writes off anything not going back.')) return;
+  // Receiver asking for the items to go back — the department manager (or a
+  // supermanager) approves it before the gate can send anything
+  const handleRequestSendBack = async () => {
+    if (!confirm('Request sending these items back?\n\nThe department manager (or a super manager) must approve it before the gate can send the items.')) return;
     setError('');
     setActionLoading(true);
     try {
@@ -170,12 +179,17 @@ export default function GatePassDetailPage() {
   // Receiving leg of an internal branch transfer, done by the destination gate
   const canReceive      = canLog && atDest && isTransferAway && pass.destinationBranch &&
     pass.outwardLog && !pass.receivedLog;
-  // The receiver holding the items (or a manager/supermanager of their branch)
-  // approves the send-back
-  const canApproveSendBack = isTransferAway && pass.returnable && pass.receivedLog && !pass.returnRequest &&
-    (isAdmin ||
-      user?.id === pass.receivedLog.receiverId ||
-      (hasRole(user, 'manager', 'supermanager') && user?.branch === pass.destinationBranch));
+  // Send-back: the receiver holding the items requests it; the receiving
+  // department's manager — or any supermanager of the branch — approves it
+  // (lowering quantities that aren't going back) or rejects the request.
+  // Mirrors /return-request.
+  const sendBackOpen = isTransferAway && pass.returnable && !!pass.receivedLog && !pass.returnRequest;
+  const canDecideSendBack = sendBackOpen && canApproveSendBack(user, pass);
+  const canRequestSendBack = sendBackOpen && !pass.sendBackRequest && !canDecideSendBack &&
+    user?.id === pass.receivedLog.receiverId;
+  const canRejectSendBack = canDecideSendBack && !!pass.sendBackRequest;
+  const sendBackApproverNames = (pass.sendBackApprovers || []).map(a => a.name).join(' / ') || 'a manager';
+  const lastSendBackRejection = sendBackOpen && !pass.sendBackRequest ? currentCycleRejection(pass) : null;
   // Managers/supermanagers of the destination branch only — the receiver can
   // approve the send-back but not write items off. Open from the moment items
   // are received until the send-back is approved; after that the items are
@@ -294,9 +308,19 @@ export default function GatePassDetailPage() {
               <PackageX size={14} /> Write Off Items
             </button>
           )}
-          {canApproveSendBack && (
-            <button className="btn btn-success" onClick={handleSendBack} disabled={actionLoading}>
+          {canRequestSendBack && (
+            <button className="btn btn-success" onClick={handleRequestSendBack} disabled={actionLoading}>
+              <RotateCcw size={14} /> Request Send-Back
+            </button>
+          )}
+          {canDecideSendBack && (
+            <button className="btn btn-success" onClick={() => setLogModal('approveSendBack')} disabled={actionLoading}>
               <Check size={14} /> Approve Send-Back
+            </button>
+          )}
+          {canRejectSendBack && (
+            <button className="btn btn-danger" onClick={() => setLogModal('rejectSendBack')} disabled={actionLoading}>
+              <X size={14} /> Reject Send-Back
             </button>
           )}
           {canReturnOut && (
@@ -320,6 +344,34 @@ export default function GatePassDetailPage() {
       {error && (
         <div className="alert alert-danger" style={{ marginBottom: 20 }}>
           <AlertTriangle size={15} /> {error}
+        </div>
+      )}
+
+      {sendBackOpen && pass.sendBackRequest && (
+        <div className={`alert ${canDecideSendBack ? 'alert-warning' : 'alert-info'}`} style={{ marginBottom: 20 }}>
+          <RotateCcw size={15} />
+          <span>
+            <strong>Send-back requested</strong>
+            {pass.sendBackRequest.requestedByUser ? ` by ${pass.sendBackRequest.requestedByUser.name}` : ''}
+            {` (${fmt(pass.sendBackRequest.requestedAt)})`}
+            {pass.sendBackRequest.remarks ? <> — “{pass.sendBackRequest.remarks}”</> : null}.{' '}
+            {canDecideSendBack
+              ? 'Approve it — lowering any quantity that isn’t going back — or reject it.'
+              : <>Waiting for <strong>{sendBackApproverNames}</strong> to approve.</>}
+          </span>
+        </div>
+      )}
+
+      {lastSendBackRejection && (
+        <div className="alert alert-warning" style={{ marginBottom: 20 }}>
+          <X size={15} />
+          <span>
+            <strong>Send-back request rejected</strong>
+            {lastSendBackRejection.rejectedByUser ? ` by ${lastSendBackRejection.rejectedByUser.name}` : ''}
+            {` (${fmt(lastSendBackRejection.rejectedAt)})`}
+            {lastSendBackRejection.reason ? <> — “{lastSendBackRejection.reason}”</> : null}.
+            The items stay with {pass.receivedLog?.receiverUser?.name || 'the receiver'}, who can request again.
+          </span>
         </div>
       )}
 
@@ -738,6 +790,12 @@ export default function GatePassDetailPage() {
       {logModal === 'extend' && (
         <ExtendDueDateModal pass={pass} onClose={() => setLogModal(null)} onDone={handleLogDone} />
       )}
+      {logModal === 'approveSendBack' && (
+        <ApproveSendBackModal pass={pass} onClose={() => setLogModal(null)} onDone={handleLogDone} />
+      )}
+      {logModal === 'rejectSendBack' && (
+        <RejectSendBackModal pass={pass} onClose={() => setLogModal(null)} onDone={handleLogDone} />
+      )}
       {writeOffModalOpen && (
         <WriteOffItemsModal pass={pass} onClose={() => setWriteOffModalOpen(false)} onDone={() => { setWriteOffModalOpen(false); load(); }} />
       )}
@@ -872,6 +930,206 @@ function WriteOffItemsModal({ pass, onClose, onDone }) {
   );
 }
 
+/* ── Approve Send-Back Modal ────────────────────────────────────────────────── */
+// The department manager / a supermanager approves the items going back. Each
+// item starts at everything still outstanding; lowering a quantity writes the
+// difference off with a reason (the original quantity stays on record). If
+// nothing is left to go back, the write-offs settle the pass instead.
+function ApproveSendBackModal({ pass, onClose, onDone }) {
+  const outstandingOf = li => li.quantity - (li.returnedQuantity || 0) - (li.closedQuantity || 0);
+  const [sending, setSending] = useState(() =>
+    Object.fromEntries((pass.items || []).map((li, i) => [i, outstandingOf(li)])));
+  const [reasons, setReasons] = useState({});
+  const [notes, setNotes] = useState({});
+  const [remarks, setRemarks] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const request = pass.sendBackRequest;
+  const open = (pass.items || []).map((li, i) => ({ li, i, outstanding: outstandingOf(li) })).filter(x => x.outstanding > 0);
+  const nothingGoes = open.every(({ i }) => Number(sending[i] || 0) === 0);
+
+  const handleConfirm = async () => {
+    setError('');
+    const closures = [];
+    for (const { li, i, outstanding } of open) {
+      const qty = Number(sending[i] ?? outstanding);
+      if (!Number.isFinite(qty) || qty < 0 || qty > outstanding) {
+        setError(`Going back for ${li.itemName} must be between 0 and ${outstanding}`); return;
+      }
+      if (qty === outstanding) continue;
+      if (!reasons[i]) { setError(`Pick a reason for the ${outstanding - qty} ${li.itemName} not going back`); return; }
+      const note = (notes[i] || '').trim();
+      closures.push({ index: i, quantity: outstanding - qty, reason: note ? `${reasons[i]} — ${note}` : reasons[i] });
+    }
+    if (nothingGoes && !confirm('Nothing is going back — every remaining item will be written off and the pass completes. Continue?')) return;
+    setLoading(true);
+    try {
+      await api.requestReturn(pass.id, { remarks: remarks.trim(), closures });
+      onDone();
+    } catch (e) { setError(e.message); } finally { setLoading(false); }
+  };
+
+  return (
+    <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="modal">
+        <div className="modal-header">
+          <div>
+            <div className="modal-title">Approve Send-Back</div>
+            <div style={{ fontSize: 12, color: 'var(--text3)', marginTop: 3 }}>{pass.passNumber}</div>
+          </div>
+          <button className="modal-close" onClick={onClose}><X size={16} /></button>
+        </div>
+        <div className="modal-body">
+          <div className="alert alert-info" style={{ marginBottom: 20 }}>
+            <Info size={15} />
+            <span>
+              {request
+                ? <><strong>{request.requestedByUser?.name || 'The receiver'}</strong> asked to send these items back
+                    to {pass.sourceBranchName || 'the source branch'}{request.remarks ? <> — “{request.remarks}”</> : null}. </>
+                : <>You are approving these items going back to {pass.sourceBranchName || 'the source branch'}. </>}
+              Lower a quantity if some of it isn&rsquo;t going back — the difference is written off with
+              the reason you pick. After approval the items are with the gate.
+            </span>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column' }}>
+            {open.map(({ li, i, outstanding }) => {
+              const qty = Number(sending[i] ?? outstanding);
+              const short = outstanding - qty;
+              return (
+                <div key={i} style={{ padding: '12px 0', borderBottom: '1px solid var(--border)' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+                    <div style={{ flex: 1 }}>
+                      <div className="item-name">{li.itemName}</div>
+                      <div style={{ fontSize: 11, color: 'var(--text3)', fontFamily: 'var(--font-mono)' }}>
+                        Outstanding: {outstanding} {li.unit}
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span style={{ fontSize: 12, color: 'var(--text3)' }}>Going back:</span>
+                      <input
+                        className="return-qty-input"
+                        type="number" min="0" max={outstanding}
+                        value={sending[i] ?? outstanding}
+                        onChange={e => setSending(s => ({ ...s, [i]: Math.max(0, Math.min(Number(e.target.value), outstanding)) }))}
+                      />
+                      <span style={{ fontSize: 11, color: 'var(--text3)' }}>{li.unit}</span>
+                    </div>
+                  </div>
+                  {short > 0 && (
+                    <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                      <select
+                        className="form-input"
+                        style={{ maxWidth: 200 }}
+                        value={reasons[i] || ''}
+                        onChange={e => setReasons(r => ({ ...r, [i]: e.target.value }))}
+                      >
+                        <option value="">Select reason…</option>
+                        {CLOSE_REASONS.map(r => <option key={r} value={r}>{r}</option>)}
+                      </select>
+                      <input
+                        className="form-input"
+                        style={{ flex: 1, minWidth: 160 }}
+                        placeholder="Optional note"
+                        value={notes[i] || ''}
+                        onChange={e => setNotes(n => ({ ...n, [i]: e.target.value }))}
+                      />
+                      <span style={{ fontSize: 11, color: 'var(--orange)', fontFamily: 'var(--font-mono)', whiteSpace: 'nowrap' }}>
+                        Write off: {short} {li.unit}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          <div className="form-group" style={{ marginTop: 16, marginBottom: 0 }}>
+            <label className="form-label">Remarks (optional)</label>
+            <textarea className="form-textarea" rows={2} value={remarks}
+              onChange={e => setRemarks(e.target.value)} />
+          </div>
+          {error && (
+            <div className="alert alert-danger" style={{ marginTop: 16 }}>
+              <AlertTriangle size={15} /> {error}
+            </div>
+          )}
+        </div>
+        <div className="modal-footer">
+          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+          <button className="btn btn-success" onClick={handleConfirm} disabled={loading}>
+            {loading
+              ? <><div className="spinner" style={{ width: 15, height: 15 }} /> Saving…</>
+              : nothingGoes
+                ? <><PackageX size={14} /> Write Off All</>
+                : <><Check size={14} /> Approve Send-Back</>}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── Reject Send-Back Modal ─────────────────────────────────────────────────── */
+// Turns the receiver's send-back request down. The items stay with the
+// receiver; the reason is shown on the pass and they can request again.
+function RejectSendBackModal({ pass, onClose, onDone }) {
+  const [reason, setReason] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const handleConfirm = async () => {
+    const text = reason.trim();
+    if (!text) { setError('Please give a reason for rejecting the send-back.'); return; }
+    setError(''); setLoading(true);
+    try {
+      await api.rejectReturnRequest(pass.id, text);
+      onDone();
+    } catch (e) { setError(e.message); } finally { setLoading(false); }
+  };
+
+  return (
+    <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="modal">
+        <div className="modal-header">
+          <div>
+            <div className="modal-title">Reject Send-Back</div>
+            <div style={{ fontSize: 12, color: 'var(--text3)', marginTop: 3 }}>{pass.passNumber}</div>
+          </div>
+          <button className="modal-close" onClick={onClose}><X size={16} /></button>
+        </div>
+        <div className="modal-body">
+          <div className="alert alert-warning" style={{ marginBottom: 20 }}>
+            <AlertTriangle size={15} />
+            <span>
+              The items stay with <strong>{pass.receivedLog?.receiverUser?.name || 'the receiver'}</strong>.
+              They see your reason on the pass and can request the send-back again.
+            </span>
+          </div>
+          <div className="form-group" style={{ marginBottom: 0 }}>
+            <label className="form-label">Reason <span style={{ color: 'var(--red)' }}>*</span></label>
+            <textarea className="form-textarea" rows={3} value={reason}
+              onChange={e => setReason(e.target.value)}
+              placeholder="e.g. Items are still needed for the event on Saturday…" autoFocus />
+          </div>
+          {error && (
+            <div className="alert alert-danger" style={{ marginTop: 12 }}>
+              <AlertTriangle size={15} /> {error}
+            </div>
+          )}
+        </div>
+        <div className="modal-footer">
+          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+          <button className="btn btn-danger" onClick={handleConfirm} disabled={loading || !reason.trim()}>
+            {loading
+              ? <><div className="spinner" style={{ width: 15, height: 15 }} /> Saving…</>
+              : <><X size={14} /> Reject Send-Back</>}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ── Extend Due Date Modal ──────────────────────────────────────────────────── */
 // The approving manager pushes the Return By date out while items are still
 // out. The previous date is never lost — each change is listed on the pass and
@@ -967,6 +1225,10 @@ function LifecycleTimeline({ pass }) {
   const sentBackQty = pass.returnOutwardLog?.items
     ? pass.returnOutwardLog.items.reduce((s, x) => s + x.quantity, 0)
     : null;
+  // The receiver's send-back request in this cycle — still waiting, or the
+  // one the approval answered — and the last rejection while none is open
+  const requestOfCycle = pass.sendBackRequest || pass.returnRequest?.staffRequest || null;
+  const lastRejection = !requestOfCycle && !pass.returnRequest ? currentCycleRejection(pass) : null;
   const outstandingQty = (pass.items || []).reduce((s, li) => s + li.quantity - (li.returnedQuantity || 0) - (li.closedQuantity || 0), 0);
   const stillAtDestQty = sentBackQty != null ? Math.max(0, outstandingQty - sentBackQty) : 0;
 
@@ -1085,21 +1347,39 @@ function LifecycleTimeline({ pass }) {
       Icon: ArrowDownLeft,
       color: 'var(--blue)',
     }] : []),
-    // Send-back cycle — returnable transfers only: receiver approves, then the
-    // destination gate marks the items out, headed back to the source branch
-    ...(pass.type === 'outward' && pass.direction === 'internal' && pass.destinationBranch && pass.returnable ? [{
-      key: 'return_approved',
-      label: 'Send-Back Approved',
-      sub: pass.returnRequest
-        ? `${pass.returnRequest.requestedByUser?.name || '—'}${pass.returnRequest.remarks ? ' · ' + pass.returnRequest.remarks : ''}`
-        : (pass.receivedLog
-          ? `Waiting for ${pass.receivedLog.receiverUser?.name || 'the receiver'} to approve`
-          : undefined),
-      time: pass.returnRequest?.requestedAt,
-      done: !!pass.returnRequest,
-      Icon: CheckCircle2,
-      color: 'var(--blue)',
-    }, {
+    // Send-back cycle — returnable transfers only: the receiver requests, the
+    // department manager (or a supermanager) approves, then the destination
+    // gate marks the items out, headed back to the source branch. A manager
+    // approving directly, with no request, skips the request step.
+    ...(pass.type === 'outward' && pass.direction === 'internal' && pass.destinationBranch && pass.returnable ? [
+      (!pass.returnRequest || pass.returnRequest.staffRequest) && {
+        key: 'return_requested',
+        label: 'Send-Back Requested',
+        sub: requestOfCycle
+          ? `${requestOfCycle.requestedByUser?.name || '—'}${requestOfCycle.remarks ? ' · ' + requestOfCycle.remarks : ''}`
+          : pass.receivedLog
+            ? (lastRejection
+              ? `Rejected by ${lastRejection.rejectedByUser?.name || '—'} · ${lastRejection.reason} — waiting for ${pass.receivedLog.receiverUser?.name || 'the receiver'} to request again`
+              : `Waiting for ${pass.receivedLog.receiverUser?.name || 'the receiver'} to request`)
+            : undefined,
+        time: requestOfCycle?.requestedAt,
+        done: !!requestOfCycle,
+        Icon: RotateCcw,
+        color: 'var(--amber)',
+      },
+      {
+        key: 'return_approved',
+        label: 'Send-Back Approved',
+        sub: pass.returnRequest
+          ? `${pass.returnRequest.requestedByUser?.name || '—'}${pass.returnRequest.remarks ? ' · ' + pass.returnRequest.remarks : ''}`
+          : (pass.sendBackRequest
+            ? `Waiting for ${(pass.sendBackApprovers || []).map(a => a.name).join(' / ') || 'a manager'} to approve`
+            : undefined),
+        time: pass.returnRequest?.requestedAt,
+        done: !!pass.returnRequest,
+        Icon: CheckCircle2,
+        color: 'var(--blue)',
+      }, {
       key: 'return_out',
       label: `Left ${pass.destinationBranchName || 'Destination Branch'}`,
       sub: pass.returnOutwardLog

@@ -40,6 +40,7 @@ function scopePasses(passes, user) {
     if (p.approverId === user.id || p.approvedBy === user.id) return true;
     if (p.receivedLog?.receiverId === user.id) return true;
     if (p.returnRequest?.requestedBy === user.id) return true;
+    if (p.sendBackRequest?.requestedBy === user.id) return true;
 
     const isApproverRole = roles.includes('manager') || roles.includes('supermanager');
     if (isApproverRole) {
@@ -234,7 +235,8 @@ router.post('/', requireRole('admin', 'supermanager', 'manager', 'staff'), async
     outwardLog:  null,  // set by source-branch Time Office when item physically leaves
     inwardLog:   null,  // set by source-branch Time Office when item returns
     receivedLog: null,  // set by DESTINATION-branch Time Office on internal transfers (with dept + receiver)
-    returnRequest:    null,  // receiver's send-back approval on a returnable transfer
+    sendBackRequest:  null,  // receiver asking for the send-back, awaiting a manager
+    returnRequest:    null,  // the approved send-back on a returnable transfer
     returnOutwardLog: null,  // destination gate marking the return out
     items: items.map(li => {
       const quantity = Number(li.quantity);
@@ -809,18 +811,21 @@ router.patch('/:id/receive', requireRole('time_office', 'admin'), asyncHandler(a
   res.json(enrichPass(pass, await getRefs()));
 }));
 
-// Who speaks for the destination side of a branch transfer once it's arrived:
-// the specific person who took custody, or any manager/supermanager of the
-// destination branch (their backup when the receiver is unavailable). Used by
-// the send-back approval below.
-function canActForDestination(pass, user) {
+// Who approves a send-back: the manager of the department that received the
+// items, at the destination branch. A supermanager of that branch can always
+// approve too — it's the only approver when the department has no manager,
+// and the backup when the manager is away. Admin can always approve.
+// Mirrors canApproveSendBack in frontend/src/utils/roles.js.
+function canApproveSendBack(pass, user) {
   if (hasRole(user, 'admin')) return true;
-  if (user.id === pass.receivedLog?.receiverId) return true;
-  return canWriteOffAtDestination(pass, user);
+  if (user.branch !== pass.destinationBranch) return false;
+  if (hasRole(user, 'supermanager')) return true;
+  return hasRole(user, 'manager') && !!user.departmentId &&
+    user.departmentId === pass.receivedLog?.departmentId;
 }
 
 // Writing items off is a manager's call: the receiver who took custody can
-// approve the send-back, but only a manager/supermanager of the destination
+// request the send-back, but only a manager/supermanager of the destination
 // branch can declare items gone.
 function canWriteOffAtDestination(pass, user) {
   if (hasRole(user, 'admin')) return true;
@@ -839,8 +844,9 @@ function canWriteOffAtDestination(pass, user) {
 // Status follows the gate's closure rule: everything accounted for →
 // 'completed'; otherwise → 'partial_return'. (Write-offs used to end in a
 // separate 'closed' status; the closure records keep that story now.)
-// Allowed from the moment items are marked in until the receiver approves the
-// send-back (returnRequest). After that the items are in the destination
+// Allowed from the moment items are marked in until the send-back is
+// APPROVED (returnRequest) — a request still waiting for the manager doesn't
+// block it. After approval the items are in the destination
 // gate's hands, so nobody at the branch can make items vanish from the
 // gate's queue. The gate writes off anything not going back
 // when it marks the return out (/return-outward closures). Admin keeps an
@@ -868,55 +874,91 @@ router.patch('/:id/close-items', asyncHandler(async (req, res) => {
   if (!Array.isArray(closures) || !closures.length)
     return res.status(400).json({ error: 'Provide at least one item to write off' });
 
-  const outstanding = li => li.quantity - (li.returnedQuantity || 0) - (li.closedQuantity || 0);
-
-  // Validate everything first — aggregate duplicate indexes so a repeated
-  // index can never slip past the outstanding cap.
-  const planned = new Map();
-  for (const cl of closures) {
-    const li = pass.items[cl.index];
-    if (!li) return res.status(400).json({ error: `No item at index ${cl.index}` });
-    if (!cl.reason?.trim()) return res.status(400).json({ error: `A reason is required to write off ${li.itemName}` });
-    const qty = Number(cl.quantity);
-    if (!Number.isFinite(qty) || qty <= 0)
-      return res.status(400).json({ error: `Write-off quantity must be > 0 for "${li.itemName}"` });
-    const remain = outstanding(li) - (planned.get(cl.index) || 0);
-    if (qty > remain)
-      return res.status(400).json({ error: `Cannot write off ${qty} of ${li.itemName}; only ${remain} outstanding` });
-    planned.set(cl.index, (planned.get(cl.index) || 0) + qty);
-  }
-
-  const closedAt = new Date().toISOString();
-  const closureRecords = [];
-  for (const cl of closures) {
-    const li = pass.items[cl.index];
-    const qty = Number(cl.quantity);
-    li.closedQuantity = (li.closedQuantity || 0) + qty;
-    closureRecords.push({ index: cl.index, itemName: li.itemName, quantity: qty, reason: cl.reason.trim() });
-  }
-  // `at: 'destination'` distinguishes these from the source gate's return-leg
-  // closures when the pass history is displayed and printed.
-  pass.closures = pass.closures || [];
-  pass.closures.push({ closedAt, closedBy: req.user.id, at: 'destination', items: closureRecords });
-
-  const fullyAccounted = pass.items.every(li => ((li.returnedQuantity || 0) + (li.closedQuantity || 0)) >= li.quantity);
-  // Fully accounted = completed, write-offs included — the closure records
-  // (and the "Items Not Coming Back" card) carry the write-off story.
-  pass.status = fullyAccounted ? 'completed' : 'partial_return';
+  const writeOff = applyDestinationWriteOffs(pass, closures, req.user.id);
+  if (writeOff.error) return res.status(400).json({ error: writeOff.error });
 
   await dbc('gatePasses').replaceOne({ id: pass.id }, pass);
   await logAudit('CLOSE_ITEMS_DESTINATION', req.user.id, pass.id, {
     passNumber: pass.passNumber,
     status: pass.status,
-    closures: closureRecords,
+    closures: writeOff.records,
   });
   res.json(enrichPass(pass, await getRefs()));
 }));
 
-// ─── RECEIVER: APPROVE THE SEND-BACK ─────────────────────────────────────────
+// Writes quantities off at the destination branch: validates everything first
+// (returning { error } without touching the pass), then applies the
+// write-offs, records them, and moves the status by the closure rule. Shared
+// by /close-items and the manager's send-back approval (which can lower what
+// goes back). Returns { records, fullyAccounted }.
+function applyDestinationWriteOffs(pass, closures, userId) {
+  const outstanding = li => li.quantity - (li.returnedQuantity || 0) - (li.closedQuantity || 0);
+
+  // Aggregate duplicate indexes so a repeated index can never slip past the
+  // outstanding cap.
+  const planned = new Map();
+  for (const cl of closures) {
+    const li = pass.items[cl?.index];
+    if (!li) return { error: `No item at index ${cl?.index}` };
+    if (!cl.reason?.trim()) return { error: `A reason is required to write off ${li.itemName}` };
+    const qty = Number(cl.quantity);
+    if (!Number.isFinite(qty) || qty <= 0)
+      return { error: `Write-off quantity must be > 0 for "${li.itemName}"` };
+    const remain = outstanding(li) - (planned.get(cl.index) || 0);
+    if (qty > remain)
+      return { error: `Cannot write off ${qty} of ${li.itemName}; only ${remain} outstanding` };
+    planned.set(cl.index, (planned.get(cl.index) || 0) + qty);
+  }
+
+  const closedAt = new Date().toISOString();
+  const records = [];
+  for (const cl of closures) {
+    const li = pass.items[cl.index];
+    const qty = Number(cl.quantity);
+    li.closedQuantity = (li.closedQuantity || 0) + qty;
+    records.push({ index: cl.index, itemName: li.itemName, quantity: qty, reason: cl.reason.trim() });
+  }
+  // `at: 'destination'` distinguishes these from the source gate's return-leg
+  // closures when the pass history is displayed and printed.
+  pass.closures = pass.closures || [];
+  pass.closures.push({ closedAt, closedBy: userId, at: 'destination', items: records });
+
+  const fullyAccounted = pass.items.every(li => ((li.returnedQuantity || 0) + (li.closedQuantity || 0)) >= li.quantity);
+  // Fully accounted = completed, write-offs included — the closure records
+  // (and the "Items Not Coming Back" card) carry the write-off story.
+  pass.status = fullyAccounted ? 'completed' : 'partial_return';
+  // Nothing left to send back — a request still waiting for approval is moot
+  if (fullyAccounted) pass.sendBackRequest = null;
+  return { records, fullyAccounted };
+}
+
+// Shared guards for the send-back steps: a returnable transfer that has been
+// marked in at the destination, still open, not yet approved for return.
+// Returns an error message, or null when the pass is in that state.
+function sendBackStateError(pass) {
+  if (!(pass.type === 'outward' && pass.direction === 'internal' && pass.returnable && pass.destinationBranch))
+    return 'Only returnable branch transfers have a send-back approval';
+  if (!pass.receivedLog)
+    return 'Items have not been marked in at the destination branch yet';
+  if (pass.returnRequest)
+    return 'Send-back already approved';
+  if (!['in_transit', 'partial_return'].includes(pass.status))
+    return `Cannot send items back in ${pass.status} status`;
+  return null;
+}
+
+// ─── SEND-BACK: RECEIVER REQUESTS, MANAGER APPROVES ──────────────────────────
 // A returnable transfer sits "with" the receiver at the destination branch.
-// When they are done with the items, they approve them going back out — that
-// puts the pass in the destination Time Office's outgoing queue.
+// When they are done with the items they REQUEST the send-back; the manager of
+// the receiving department (or any supermanager of the branch — the only
+// approver when the department has no manager) then APPROVES it, which puts
+// the pass in the destination Time Office's outgoing queue. One endpoint for
+// both: an approver's call approves (with or without a request first), the
+// receiver's call files the request.
+// The approver can LOWER what goes back while approving: `closures` =
+// [{ index, quantity, reason }] are written off first (same rules as
+// /close-items — the original quantity stays on record). If that settles
+// every item there is nothing left to send and the pass completes.
 router.patch('/:id/return-request', asyncHandler(async (req, res) => {
   const pass = await dbc('gatePasses').findOne({ id: req.params.id }, NO_ID);
   if (!pass) return res.status(404).json({ error: 'Gate pass not found' });
@@ -924,31 +966,87 @@ router.patch('/:id/return-request', asyncHandler(async (req, res) => {
   if (!scopePasses([pass], req.user).length)
     return res.status(404).json({ error: 'Gate pass not found' });
 
-  if (!(pass.type === 'outward' && pass.direction === 'internal' && pass.returnable && pass.destinationBranch))
-    return res.status(400).json({ error: 'Only returnable branch transfers have a send-back approval' });
-  if (!pass.receivedLog)
-    return res.status(400).json({ error: 'Items have not been marked in at the destination branch yet' });
-  if (pass.returnRequest)
-    return res.status(400).json({ error: 'Send-back already approved' });
-  if (!['in_transit', 'partial_return'].includes(pass.status))
-    return res.status(400).json({ error: `Cannot approve a send-back in ${pass.status} status` });
+  const stateError = sendBackStateError(pass);
+  if (stateError) return res.status(400).json({ error: stateError });
 
-  if (!canActForDestination(pass, req.user))
-    return res.status(403).json({ error: 'Only the receiver (or a manager/supermanager of their branch) can approve the send-back' });
+  const now = new Date().toISOString();
+  const remarks = req.body?.remarks?.trim() || '';
 
-  pass.returnRequest = {
-    requestedAt: new Date().toISOString(),
-    requestedBy: req.user.id,
-    remarks: req.body?.remarks?.trim() || '',
-  };
+  if (canApproveSendBack(pass, req.user)) {
+    const closures = req.body?.closures;
+    if (closures != null && !Array.isArray(closures))
+      return res.status(400).json({ error: 'closures must be an array' });
+    const writeOff = closures?.length ? applyDestinationWriteOffs(pass, closures, req.user.id) : null;
+    if (writeOff?.error) return res.status(400).json({ error: writeOff.error });
+    const auditWriteOff = () => writeOff && logAudit('CLOSE_ITEMS_DESTINATION', req.user.id, pass.id, {
+      passNumber: pass.passNumber,
+      status: pass.status,
+      closures: writeOff.records,
+    });
+    // Everything written off — nothing physically goes back
+    if (writeOff?.fullyAccounted) {
+      await dbc('gatePasses').replaceOne({ id: pass.id }, pass);
+      await auditWriteOff();
+      return res.json(enrichPass(pass, await getRefs()));
+    }
+    pass.returnRequest = {
+      requestedAt: now,
+      requestedBy: req.user.id,
+      remarks,
+      // The receiver's request this approval answers (null = approved directly)
+      staffRequest: pass.sendBackRequest || null,
+    };
+    pass.sendBackRequest = null;
+    await dbc('gatePasses').replaceOne({ id: pass.id }, pass);
+    await auditWriteOff();
+    await logAudit('APPROVE_RETURN', req.user.id, pass.id, { passNumber: pass.passNumber });
+    return res.json(enrichPass(pass, await getRefs()));
+  }
+
+  if (req.user.id !== pass.receivedLog.receiverId)
+    return res.status(403).json({ error: 'Only the receiver can request the send-back; the department manager or a supermanager of the branch approves it' });
+  if (pass.sendBackRequest)
+    return res.status(400).json({ error: 'Send-back already requested — waiting for the manager to approve' });
+
+  pass.sendBackRequest = { requestedAt: now, requestedBy: req.user.id, remarks };
+  await dbc('gatePasses').replaceOne({ id: pass.id }, pass);
+  await logAudit('REQUEST_RETURN', req.user.id, pass.id, { passNumber: pass.passNumber });
+  res.json(enrichPass(pass, await getRefs()));
+}));
+
+// ─── SEND-BACK: MANAGER REJECTS THE REQUEST ──────────────────────────────────
+// The items stay with the receiver; the rejection (with its reason) is kept on
+// the pass and the receiver can request again later.
+router.patch('/:id/return-request/reject', asyncHandler(async (req, res) => {
+  const pass = await dbc('gatePasses').findOne({ id: req.params.id }, NO_ID);
+  if (!pass) return res.status(404).json({ error: 'Gate pass not found' });
+  if (!scopePasses([pass], req.user).length)
+    return res.status(404).json({ error: 'Gate pass not found' });
+
+  const stateError = sendBackStateError(pass);
+  if (stateError) return res.status(400).json({ error: stateError });
+  if (!pass.sendBackRequest)
+    return res.status(400).json({ error: 'There is no send-back request to reject' });
+  if (!canApproveSendBack(pass, req.user))
+    return res.status(403).json({ error: 'Only the department manager or a supermanager of the branch can reject the send-back' });
+  const reason = req.body?.reason?.trim();
+  if (!reason) return res.status(400).json({ error: 'A reason is required to reject the send-back' });
+
+  pass.sendBackRejections = [...(pass.sendBackRejections || []), {
+    ...pass.sendBackRequest,
+    rejectedAt: new Date().toISOString(),
+    rejectedBy: req.user.id,
+    reason,
+  }];
+  pass.sendBackRequest = null;
 
   await dbc('gatePasses').replaceOne({ id: pass.id }, pass);
-  await logAudit('APPROVE_RETURN', req.user.id, pass.id, { passNumber: pass.passNumber });
+  await logAudit('REJECT_RETURN_REQUEST', req.user.id, pass.id, { passNumber: pass.passNumber, reason });
   res.json(enrichPass(pass, await getRefs()));
 }));
 
 // ─── TIME OFFICE (DESTINATION BRANCH): MARK THE RETURN OUT ───────────────────
-// After the receiver approves the send-back, the destination branch's gate
+// After the send-back is approved, the destination branch's gate
 // marks the items physically leaving. The pass then heads back to the source
 // branch, whose gate logs the arrival via /log-inward as usual.
 // From the approval on the items are in the gate's custody, so the gate
@@ -969,7 +1067,7 @@ router.patch('/:id/return-outward', requireRole('time_office', 'admin'), asyncHa
   if (!hasRole(req.user, 'admin') && pass.destinationBranch !== req.user.branch)
     return res.status(403).json({ error: 'Only the destination branch gate can mark this return out' });
   if (!pass.returnRequest)
-    return res.status(400).json({ error: 'The receiver has not approved the send-back yet' });
+    return res.status(400).json({ error: 'The send-back has not been approved yet' });
   if (pass.returnOutwardLog)
     return res.status(400).json({ error: 'Return already marked out at the destination branch' });
   if (!['in_transit', 'partial_return'].includes(pass.status))
@@ -1322,17 +1420,24 @@ router.get('/meta/stats', asyncHandler(async (req, res) => {
     p.outwardLog && !p.receivedLog &&
     ['in_transit', 'partial_return'].includes(p.status) && atMyDest(p)
   );
-  // Send-backs approved by the receiver, waiting for the destination gate to mark out
+  // Approved send-backs, waiting for the destination gate to mark out
   const awaitingReturnOut = passes.filter(p =>
     p.type === 'outward' && p.direction === 'internal' && p.returnable &&
     p.returnRequest && !p.returnOutwardLog &&
     ['in_transit', 'partial_return'].includes(p.status) && atMyDest(p)
   );
-  // Returnable transfers currently in THIS user's custody, send-back not yet approved
+  // Returnable transfers currently in THIS user's custody, send-back not yet
+  // requested (once requested, the next move is the manager's)
   const itemsWithMe = passes.filter(p =>
     p.type === 'outward' && p.direction === 'internal' && p.returnable &&
-    p.receivedLog?.receiverId === req.user.id && !p.returnRequest &&
+    p.receivedLog?.receiverId === req.user.id && !p.returnRequest && !p.sendBackRequest &&
     ['in_transit', 'partial_return'].includes(p.status)
+  );
+  // Receivers' send-back requests THIS user can approve or reject
+  const sendBacksToApprove = passes.filter(p =>
+    p.sendBackRequest && !p.returnRequest &&
+    ['in_transit', 'partial_return'].includes(p.status) &&
+    canApproveSendBack(p, req.user)
   );
 
   res.json({
@@ -1350,6 +1455,7 @@ router.get('/meta/stats', asyncHandler(async (req, res) => {
     incomingTransfers: incomingTransfers.length,
     awaitingReturnOut: awaitingReturnOut.length,
     itemsWithMe:       itemsWithMe.length,
+    sendBacksToApprove: sendBacksToApprove.length,
     myPendingApprovals: myPendingApprovals.length,
     outward:         passes.filter(p => p.type === 'outward').length,
     inward:          passes.filter(p => p.type === 'inward').length,
@@ -1364,7 +1470,8 @@ router.get('/meta/stats', asyncHandler(async (req, res) => {
 //   pending/approved/rejected/completed → as stored ('closed' → completed)
 //   in_transit, external                       → items_out        (out with a person/vendor)
 //   in_transit, transfer, not received         → in_transit       (between branches)
-//   in_transit, transfer, received, no approval→ at_destination   (with the receiver)
+//   in_transit, transfer, received, no request → at_destination   (with the receiver)
+//   in_transit, transfer, send-back requested  → return_requested (waiting for the manager)
 //   in_transit, transfer, send-back approved   → return_approved  (waiting for dest gate)
 //   in_transit, transfer, return dispatched    → returning        (heading back to source)
 //   partial_return                             → partial_return   (some items back at source)
@@ -1378,6 +1485,7 @@ export function displayStatusOf(pass) {
   if (!pass.receivedLog) return 'in_transit';
   if (pass.returnOutwardLog) return 'returning';
   if (pass.returnRequest) return 'return_approved';
+  if (pass.sendBackRequest) return 'return_requested';
   return 'at_destination';
 }
 
@@ -1399,6 +1507,8 @@ function enrichPass(pass, refs) {
   const transferReceiver   = u(pass.receivedLog?.receiverId);
   const transferDept       = d(pass.receivedLog?.departmentId);
   const returnRequestUser  = u(pass.returnRequest?.requestedBy);
+  const staffRequestUser   = u(pass.returnRequest?.staffRequest?.requestedBy);
+  const sendBackReqUser    = u(pass.sendBackRequest?.requestedBy);
   const returnOutwardUser  = u(pass.returnOutwardLog?.loggedBy);
   const gateLockedUser     = u(pass.gateLock?.lockedBy);
   const gateUnlockedUser   = u(pass.gateLock?.unlockedBy);
@@ -1428,6 +1538,20 @@ function enrichPass(pass, refs) {
     pass.status === 'approved' && !pass.outwardLog &&
     (!pass.editedAt || new Date(pass.editedAt) < new Date(pass.gateLock.unlockedAt)));
 
+  // Who a send-back waits on, by name: the receiving department's manager(s)
+  // at the destination branch, or — when that department has none — the
+  // branch's supermanagers (who can always approve as a backup anyway).
+  let sendBackApprovers = [];
+  if (pass.returnable && pass.direction === 'internal' && pass.destinationBranch &&
+      pass.receivedLog && !pass.returnRequest) {
+    const atDest = refs.users.filter(x => x.active !== false && x.branch === pass.destinationBranch);
+    const deptManagers = pass.receivedLog.departmentId
+      ? atDest.filter(x => hasRole(x, 'manager') && x.departmentId === pass.receivedLog.departmentId)
+      : [];
+    sendBackApprovers = (deptManagers.length ? deptManagers : atDest.filter(x => hasRole(x, 'supermanager')))
+      .map(x => ({ id: x.id, name: x.name }));
+  }
+
   return {
     ...pass,
     createdByUser:        createdByUser  ? { id: createdByUser.id,  name: createdByUser.name,  role: createdByUser.role  } : null,
@@ -1446,7 +1570,26 @@ function enrichPass(pass, refs) {
     returnRequest: pass.returnRequest ? {
       ...pass.returnRequest,
       requestedByUser: returnRequestUser ? { id: returnRequestUser.id, name: returnRequestUser.name } : null,
+      staffRequest: pass.returnRequest.staffRequest ? {
+        ...pass.returnRequest.staffRequest,
+        requestedByUser: staffRequestUser ? { id: staffRequestUser.id, name: staffRequestUser.name } : null,
+      } : null,
     } : null,
+    sendBackRequest: pass.sendBackRequest ? {
+      ...pass.sendBackRequest,
+      requestedByUser: sendBackReqUser ? { id: sendBackReqUser.id, name: sendBackReqUser.name } : null,
+    } : null,
+    sendBackRejections: Array.isArray(pass.sendBackRejections)
+      ? pass.sendBackRejections.map(r => {
+          const ru = u(r.requestedBy), xu = u(r.rejectedBy);
+          return {
+            ...r,
+            requestedByUser: ru ? { id: ru.id, name: ru.name } : null,
+            rejectedByUser:  xu ? { id: xu.id, name: xu.name } : null,
+          };
+        })
+      : [],
+    sendBackApprovers,
     returnOutwardLog: pass.returnOutwardLog ? {
       ...pass.returnOutwardLog,
       loggedByUser: returnOutwardUser ? { id: returnOutwardUser.id, name: returnOutwardUser.name } : null,
