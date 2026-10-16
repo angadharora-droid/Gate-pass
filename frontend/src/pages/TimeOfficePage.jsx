@@ -1,5 +1,6 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../utils/api';
 import { useAuth } from '../context/AuthContext';
 import { hasRole } from '../utils/roles';
@@ -862,29 +863,27 @@ const REGISTER_PERIODS = [
 
 export default function TimeOfficePage() {
   const { user } = useAuth();
-  const [passes, setPasses] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [stats, setStats] = useState({});
+  const queryClient = useQueryClient();
   const [modal, setModal] = useState(null);
   const [tab, setTab] = useState('outward');
   const [search, setSearch] = useState('');
   const [searchActive, setSearchActive] = useState(false);
   const [periodDays, setPeriodDays] = useState(7);
 
-  // `quiet` refreshes in the background, without blanking the registers
-  const load = useCallback(async (quiet = false) => {
-    if (!quiet) setLoading(true);
-    try {
-      const filters = periodDays
-        ? { activeFrom: new Date(Date.now() - periodDays * 864e5).toISOString(), includeOpen: 'true' }
-        : {};
-      const [all, st] = await Promise.all([api.getPasses(filters), api.getStats()]);
-      setPasses(all);
-      setStats(st);
-    } finally { setLoading(false); }
-  }, [periodDays]);
-
-  useEffect(() => { load(); }, [load]);
+  // Cached per period (queryClient.js): coming back to the Time Office shows
+  // the registers at once and refreshes them quietly. Every gate action
+  // refreshes them too (api.js), so other guards' work shows up as well.
+  const registerKey = ['passes', 'register', periodDays];
+  const registerQ = useQuery({
+    queryKey: registerKey,
+    queryFn: () => api.getPasses(periodDays
+      ? { activeFrom: new Date(Date.now() - periodDays * 864e5).toISOString(), includeOpen: 'true' }
+      : {}),
+  });
+  const statsQ = useQuery({ queryKey: ['stats'], queryFn: api.getStats });
+  const passes = registerQ.data ?? [];
+  const stats = statsQ.data ?? {};
+  const loading = registerQ.isPending;
 
   // time_office is branch-bound: departures/returns happen at the SOURCE gate,
   // receiving a branch transfer happens at the DESTINATION gate. Admin sees all.
@@ -946,12 +945,13 @@ export default function TimeOfficePage() {
   const receiveQueue = passes.filter(canReceivePass);
   const returnLogQueue = passes.filter(canLogReturnPass);
 
-  // Every gate action returns the updated pass: show it straight away, then
-  // refresh quietly so other guards' work since the last load shows up too
+  // Every gate action returns the updated pass: show it straight away — the
+  // action itself already started a quiet refresh of everything (api.js)
   const handleDone = (updated) => {
     setModal(null);
-    if (updated?.id) setPasses(ps => ps.map(p => (p.id === updated.id ? updated : p)));
-    load(true);
+    if (updated?.id) {
+      queryClient.setQueryData(registerKey, ps => ps?.map(p => (p.id === updated.id ? updated : p)));
+    }
   };
 
   // Lock is a one-click freeze; unlocking (send back to manager) goes through
@@ -965,22 +965,18 @@ export default function TimeOfficePage() {
   };
 
   const searchTerm = search.trim().toLowerCase();
-  const [searchMatches, setSearchMatches] = useState([]);
-  const [searching, setSearching] = useState(false);
   // Pass-number search asks the server, so it also finds passes older than the
-  // register period. Re-runs after every reload, so a match's action button
-  // reflects what was just logged.
-  useEffect(() => {
-    if (!searchActive || !searchTerm) { setSearchMatches([]); return undefined; }
-    let stale = false;
-    setSearching(true);
-    api.getPasses({ passNumber: searchTerm, limit: 5 })
-      // (a backend from before `limit` existed answers with a plain array)
-      .then(res => { if (!stale) setSearchMatches(Array.isArray(res) ? res.slice(0, 5) : res.passes); })
-      .catch(() => { if (!stale) setSearchMatches([]); })
-      .finally(() => { if (!stale) setSearching(false); });
-    return () => { stale = true; };
-  }, [searchActive, searchTerm, passes]);
+  // register period. Refreshed after every gate action (api.js), so a match's
+  // action button reflects what was just logged.
+  const searchQ = useQuery({
+    queryKey: ['passes', 'search', searchTerm],
+    queryFn: () => api.getPasses({ passNumber: searchTerm, limit: 5 }),
+    enabled: searchActive && !!searchTerm,
+  });
+  const searchResult = searchActive && searchTerm ? searchQ.data : null;
+  // (a backend from before `limit` existed answers with a plain array)
+  const searchMatches = !searchResult ? [] : Array.isArray(searchResult) ? searchResult.slice(0, 5) : searchResult.passes;
+  const searching = searchQ.isFetching;
 
   // Two registers, like a physical gate ledger: Outward (leaving my gate) and
   // Inward (arriving at my gate). Tab counts = rows needing an action NOW.

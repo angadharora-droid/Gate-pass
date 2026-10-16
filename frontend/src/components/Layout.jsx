@@ -1,6 +1,7 @@
 import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../utils/api';
 import { hasRole, rolesOf } from '../utils/roles';
 import {
@@ -24,12 +25,15 @@ export default function Layout() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
-  const [stats, setStats] = useState({});
+  const queryClient = useQueryClient();
+  // Shared with the Dashboard and Time Office — one request serves all three
+  const { data: stats = {} } = useQuery({ queryKey: ['stats'], queryFn: api.getStats });
 
-  // Refetch on navigation so badges reflect actions just taken on other pages
+  // Refresh on navigation so badges also catch what OTHER people just did
+  // (your own actions already refresh them — see api.js)
   useEffect(() => {
-    api.getStats().then(setStats).catch(() => {});
-  }, [location.pathname]);
+    queryClient.invalidateQueries({ queryKey: ['stats'] });
+  }, [location.pathname, queryClient]);
 
   const handleLogout = () => { logout(); navigate('/login'); };
   const initials = user?.name?.split(' ').map(n => n[0]).join('').slice(0, 2) || '?';

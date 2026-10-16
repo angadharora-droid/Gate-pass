@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
 import { api } from '../utils/api';
+import { REFERENCE_STALE_MS } from '../queryClient';
 import { useAuth } from '../context/AuthContext';
 import { hasRole } from '../utils/roles';
 import { AlertTriangle, ArrowDownLeft, Plus, ScanLine, ShieldCheck, X } from 'lucide-react';
@@ -18,11 +20,17 @@ export default function NewInwardPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
 
-  const [branches, setBranches] = useState([]);
-  const [departments, setDepartments] = useState([]);
-  const [users, setUsers] = useState([]);
+  // Reference lists, cached (queryClient.js) — the form opens instantly next time
+  const branchesQ = useQuery({ queryKey: ['branches', 'active'], queryFn: () => api.getBranches(), staleTime: REFERENCE_STALE_MS });
+  const departmentsQ = useQuery({ queryKey: ['departments', 'any'], queryFn: () => api.getDepartments(), staleTime: REFERENCE_STALE_MS });
+  const usersQ = useQuery({ queryKey: ['users'], queryFn: () => api.getUsers(), staleTime: REFERENCE_STALE_MS });
+  const branches = branchesQ.data ?? [];
+  const departments = departmentsQ.data ?? [];
+  const users = usersQ.data ?? [];
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const loadError = branchesQ.error || departmentsQ.error || usersQ.error;
+  useEffect(() => { if (loadError) setError(loadError.message); }, [loadError]);
 
   const [form, setForm] = useState({
     inwardType: '', branchId: user?.branch || '',
@@ -38,12 +46,6 @@ export default function NewInwardPage() {
   // Goods often arrive with several papers at once (invoice + challan +
   // courier slip…) — each row is one { type, number } document.
   const [documents, setDocuments] = useState([{ type: 'None', number: '' }]);
-
-  useEffect(() => {
-    Promise.all([api.getBranches(), api.getDepartments(), api.getUsers()])
-      .then(([b, d, u]) => { setBranches(b); setDepartments(d); setUsers(u); })
-      .catch(e => setError(e.message));
-  }, []);
 
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
   const setBranch = (branchId) => setForm(f => ({ ...f, branchId, departmentId: '', receiverId: '' }));

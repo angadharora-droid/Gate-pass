@@ -2,6 +2,7 @@ import { createContext, useContext, useState, useEffect } from 'react';
 import { api } from '../utils/api';
 import { getToken, setToken, clearToken } from '../utils/api';
 import { identifyUser } from '../sentry';
+import { queryClient } from '../queryClient';
 
 const AuthCtx = createContext(null);
 export const useAuth = () => useContext(AuthCtx);
@@ -27,6 +28,7 @@ export function AuthProvider({ children }) {
 
   const login = async (email, password) => {
     const data = await api.login(email, password);
+    queryClient.clear();   // nothing cached for whoever was signed in before
     setToken(data.token);
     setUser(data.user);
     return data.user;
@@ -34,6 +36,8 @@ export function AuthProvider({ children }) {
 
   const logout = () => {
     clearToken();
+    // Gate PCs are shared — the next person must never see this user's data
+    queryClient.clear();
     setUser(null);
   };
 
