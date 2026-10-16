@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../utils/api';
+import { REFERENCE_STALE_MS } from '../queryClient';
 import { useAuth } from '../context/AuthContext';
 import { hasRole } from '../utils/roles';
 import { StatusBadge, MovementBadge, movementFor, DirectionBadge, ReturnableBadge, STATUS_LABELS } from '../components/Badges';
@@ -104,11 +106,8 @@ function ReportsOverview() {
   const { user } = useAuth();
   const canEdit = hasRole(user, 'admin');
 
-  const [passes, setPasses] = useState([]);
-  const [branches, setBranches] = useState([]);
-  const [departments, setDepartments] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
+  const queryClient = useQueryClient();
+  const [actionError, setError] = useState('');
 
   const [fromDate, setFromDate] = useState(firstOfMonth());
   const [toDate, setToDate] = useState(toDateInput(new Date()));
@@ -123,26 +122,30 @@ function ReportsOverview() {
   const [saveLoading, setSaveLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
 
-  useEffect(() => { api.getBranches(true).then(setBranches).catch(() => setBranches([])); }, []);
-
   // Only the passes created in the chosen range come down; the other filters
-  // (branch, department, type, status) run on screen against them
-  useEffect(() => {
-    let stale = false;
-    setLoading(true);
-    setError('');
-    const { start, end } = rangeToBounds(fromDate, toDate);
-    api.getPasses({ from: isoOrNull(start), to: isoOrNull(end) })
-      .then(p => { if (!stale) setPasses(p); })
-      .catch(e => { if (!stale) setError(e.message); })
-      .finally(() => { if (!stale) setLoading(false); });
-    return () => { stale = true; };
-  }, [fromDate, toDate]);
-
-  useEffect(() => {
-    const params = branch ? { branch } : {};
-    api.getDepartments(params).then(setDepartments).catch(() => setDepartments([]));
-  }, [branch]);
+  // (branch, department, type, status) run on screen against them. Cached per
+  // range (queryClient.js), so coming back to Reports shows it at once.
+  const passesKey = ['passes', 'created', fromDate, toDate];
+  const passesQ = useQuery({
+    queryKey: passesKey,
+    queryFn: () => {
+      const { start, end } = rangeToBounds(fromDate, toDate);
+      return api.getPasses({ from: isoOrNull(start), to: isoOrNull(end) });
+    },
+  });
+  const branchesQ = useQuery({
+    queryKey: ['branches', 'all'], queryFn: () => api.getBranches(true), staleTime: REFERENCE_STALE_MS,
+  });
+  const departmentsQ = useQuery({
+    queryKey: ['departments', branch || 'any'],
+    queryFn: () => api.getDepartments(branch ? { branch } : {}),
+    staleTime: REFERENCE_STALE_MS,
+  });
+  const passes = passesQ.data ?? [];
+  const branches = branchesQ.data ?? [];
+  const departments = departmentsQ.data ?? [];
+  const loading = passesQ.isPending;
+  const error = actionError || passesQ.error?.message || '';
 
   // Everything EXCEPT the status facet — the lifecycle strip counts against
   // this, so clicking a stage tile never zeroes out the other tiles.
@@ -301,7 +304,7 @@ function ReportsOverview() {
     setError('');
     try {
       const updated = await api.updatePass(editingId, { purpose: editPurpose, remarks: editRemarks });
-      setPasses(ps => ps.map(p => (p.id === updated.id ? updated : p)));
+      queryClient.setQueryData(passesKey, ps => ps?.map(p => (p.id === updated.id ? updated : p)));
       cancelEdit();
     } catch (e) {
       setError(e.message);
@@ -732,14 +735,16 @@ function RegisterReports() {
   const isAdmin = hasRole(user, 'admin');
 
   const [passes, setPasses] = useState([]);
-  const [branches, setBranches] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [spec, setSpec] = useState(null);             // the report on screen
   const [dialogOpen, setDialogOpen] = useState(true); // ask straight away
   const [exporting, setExporting] = useState(false);
 
-  useEffect(() => { api.getBranches(true).then(setBranches).catch(() => setBranches([])); }, []);
+  // Same cached branch list as the overview tab
+  const branches = useQuery({
+    queryKey: ['branches', 'all'], queryFn: () => api.getBranches(true), staleTime: REFERENCE_STALE_MS,
+  }).data ?? [];
 
   // Fresh data for every report, so a register is never stale
   const generate = async (next) => {

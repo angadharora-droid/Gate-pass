@@ -1,3 +1,5 @@
+import { queryClient } from '../queryClient';
+
 // In production, VITE_API_URL is the backend origin (e.g. the Railway URL) —
 // baked in at build time. When unset (local dev), the relative /api path is
 // proxied to localhost:4000 by Vite (see vite.config.js).
@@ -32,6 +34,14 @@ async function request(path, options = {}) {
   let data = {};
   try { data = await res.json(); } catch { /* non-JSON / empty body */ }
   if (!res.ok) throw new Error(data.error || 'Request failed');
+  if (options.method && options.method !== 'GET') {
+    // Actions answer with the pass they created or changed — keep that pass's
+    // page current, so opening it next never flashes the old copy
+    if (data?.id && data?.passNumber) queryClient.setQueryData(['pass', data.id], data);
+    // Something changed on the server: every cached page is now possibly out
+    // of date. Pages on screen refresh right away; the rest when next opened.
+    queryClient.invalidateQueries();
+  }
   return data;
 }
 

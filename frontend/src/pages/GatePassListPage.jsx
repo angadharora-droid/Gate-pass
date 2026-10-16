@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, useLocation, useSearchParams } from 'react-router-dom';
+import { useInfiniteQuery } from '@tanstack/react-query';
 import { api } from '../utils/api';
 import { useAuth } from '../context/AuthContext';
 import { hasRole } from '../utils/roles';
@@ -64,6 +65,10 @@ function rangeToBounds(fromDate, toDate) {
 // A bound for the server (ISO instant), or null when open-ended / incomplete
 const isoOrNull = d => (d && !isNaN(d.getTime()) ? d.toISOString() : null);
 
+// Two server filter sets that differ at most in the search text
+const sameExceptSearch = (a, b) =>
+  !!a && !!b && JSON.stringify({ ...a, q: null }) === JSON.stringify({ ...b, q: null });
+
 function TabBar({ tabs, active, onChange }) {
   return (
     <div className="tab-bar" role="tablist">
@@ -83,36 +88,52 @@ function TabBar({ tabs, active, onChange }) {
 export default function GatePassListPage() {
   const { user } = useAuth();
   const canCreate = hasRole(user, 'admin', 'supermanager', 'manager', 'staff');
-  // Deep links work: /passes?status=in_transit, /passes?movement=in, /passes?overdue=true
-  const [searchParams] = useSearchParams();
-  const [passes, setPasses]     = useState([]);
-  const [loading, setLoading]   = useState(true);
-  const [statusFilter, setStatusFilter] = useState(() => {
-    const s = searchParams.get('status');
-    return STATUS_TABS.some(t => t.key === s) ? s : null;
-  });
-  const [movementFilter, setMovementFilter] = useState(() => {
-    // `type=inward|outward` deep links from older bookmarks still map sensibly
-    const m = searchParams.get('movement') || { inward: 'in', outward: 'out' }[searchParams.get('type')];
-    return ['in', 'out'].includes(m) ? m : null;
-  });
-  const [overdueOnly, setOverdueOnly] = useState(() => searchParams.get('overdue') === 'true');
-  const [search, setSearch] = useState('');
-  const [fromDate, setFromDate] = useState('');
-  const [toDate, setToDate] = useState('');
-  const [debouncedSearch, setDebouncedSearch] = useState('');
-  const [nextCursor, setNextCursor] = useState(null);   // null = nothing more to load
-  const [loadingMore, setLoadingMore] = useState(false);
-  const [loadMoreFailed, setLoadMoreFailed] = useState(false);
-  const generation = useRef(0);       // bumped by every fresh load — older pages are dropped
-  const lastFilterKey = useRef(null);
+  const location = useLocation();
+  // The filters live in the URL (/passes?status=in_transit&q=drill…): going
+  // back to this page returns to exactly the same view — shown at once from
+  // the cache — and deep links like /passes?overdue=true always apply, even
+  // when clicked while already on this page.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const param = k => searchParams.get(k) || '';
+  const statusFilter = STATUS_TABS.some(t => t.key === param('status')) ? param('status') : null;
+  // `type=inward|outward` deep links from older bookmarks still map sensibly
+  const movementParam = param('movement') || { inward: 'in', outward: 'out' }[param('type')];
+  const movementFilter = ['in', 'out'].includes(movementParam) ? movementParam : null;
+  const overdueOnly = param('overdue') === 'true';
+  const fromDate = param('from');
+  const toDate = param('to');
+  const debouncedSearch = param('q');
+  // One URL update per change (several setSearchParams in one tick would
+  // overwrite each other); replace, so the filters don't flood browser history.
+  // Built on the LATEST params, so the delayed search update below can't undo
+  // a tab clicked in the meantime.
+  const latestParams = useRef(searchParams);
+  latestParams.current = searchParams;
+  const setParams = (changes) => {
+    const current = latestParams.current;
+    const next = new URLSearchParams(current);
+    for (const [k, v] of Object.entries(changes)) { if (v) next.set(k, v); else next.delete(k); }
+    next.delete('type');
+    if (next.toString() !== current.toString()) setSearchParams(next, { replace: true });
+  };
+  const setStatusFilter   = s => setParams({ status: s });
+  const setMovementFilter = m => setParams({ movement: m });
+  const setOverdueOnly    = v => setParams({ overdue: (typeof v === 'function' ? v(overdueOnly) : v) ? 'true' : null });
+  const setFromDate       = d => setParams({ from: d });
+  const setToDate         = d => setParams({ to: d });
+  const [search, setSearch] = useState(() => param('q'));
   const sentinel = useRef(null);
 
   // Ask the server once typing pauses, not on every keystroke
   useEffect(() => {
-    const t = setTimeout(() => setDebouncedSearch(search.trim()), 300);
+    const t = setTimeout(() => setParams({ q: search.trim() }), 300);
     return () => clearTimeout(t);
-  }, [search]);
+  }, [search]); // eslint-disable-line react-hooks/exhaustive-deps
+  // …and follow the URL when it changes from outside (the sidebar link clears
+  // the filters, browser back/forward restores them)
+  useEffect(() => {
+    if (debouncedSearch !== search.trim()) setSearch(debouncedSearch);
+  }, [debouncedSearch]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Every filter runs on the server, so only matching passes come down — a
   // page at a time. The same filters also run on screen below, so typing
@@ -130,59 +151,51 @@ export default function GatePassListPage() {
     };
   }, [statusFilter, movementFilter, overdueOnly, debouncedSearch, fromDate, toDate]);
 
-  // First page, whenever the filters change
-  useEffect(() => {
-    const gen = ++generation.current;
-    // Spinner for a new tab/filter/range; a search refresh keeps rows visible
-    const filterKey = JSON.stringify([statusFilter, movementFilter, overdueOnly, fromDate, toDate]);
-    if (filterKey !== lastFilterKey.current) {
-      lastFilterKey.current = filterKey;
-      setLoading(true);
-    }
-    // The old cursor belongs to the old filters — no next page until this one lands
-    setNextCursor(null);
-    setLoadingMore(false);
-    setLoadMoreFailed(false);
-    api.getPasses(serverFilters)
-      .then(res => {
-        if (gen !== generation.current) return;   // the filters changed again meanwhile
-        // (a backend from before paging existed answers with the whole list)
-        setPasses(Array.isArray(res) ? res : res.passes);
-        setNextCursor(Array.isArray(res) ? null : res.next);
-      })
-      .finally(() => { if (gen === generation.current) setLoading(false); });
-  }, [serverFilters]);
+  // Pages of passes for these filters, cached per filter set (queryClient.js):
+  // a tab or search visited before shows instantly. Each page continues after
+  // the previous one's last pass (`next`).
+  const listQ = useInfiniteQuery({
+    queryKey: ['passes', 'list', serverFilters],
+    queryFn: ({ pageParam }) => api.getPasses({ ...serverFilters, before: pageParam }),
+    initialPageParam: null,
+    // (a backend from before paging existed answers with the whole list)
+    getNextPageParam: last => (Array.isArray(last) ? undefined : (last.next ?? undefined)),
+    // While a changed SEARCH is on its way, keep the rows (they are filtered on
+    // screen meanwhile); a new tab, filter or range starts from its own data
+    placeholderData: (previous, previousQuery) =>
+      sameExceptSearch(previousQuery?.queryKey?.[2], serverFilters) ? previous : undefined,
+  });
+  const passes = useMemo(() => {
+    const seen = new Set();
+    return (listQ.data?.pages || [])
+      .flatMap(page => (Array.isArray(page) ? page : page.passes))
+      .filter(p => !seen.has(p.id) && seen.add(p.id));
+  }, [listQ.data]);
+  const loading = listQ.isPending;
+  const hasMore = !!listQ.hasNextPage;
+  const loadingMore = listQ.isFetchingNextPage;
+  const loadMoreFailed = listQ.isFetchNextPageError;
 
   // Next page, continuing after the last pass already on screen
+  const { fetchNextPage, isFetching, isPlaceholderData } = listQ;
   const loadMore = useCallback(() => {
-    // Mid-typing the next page would belong to the previous search — wait
-    if (!nextCursor || loadingMore || loadMoreFailed || search.trim() !== debouncedSearch) return;
-    const gen = generation.current;
-    setLoadingMore(true);
-    api.getPasses({ ...serverFilters, before: nextCursor })
-      .then(res => {
-        if (gen !== generation.current) return;
-        setPasses(ps => {
-          const seen = new Set(ps.map(p => p.id));
-          return [...ps, ...res.passes.filter(p => !seen.has(p.id))];
-        });
-        setNextCursor(res.next);
-      })
-      .catch(() => { if (gen === generation.current) setLoadMoreFailed(true); })
-      .finally(() => { if (gen === generation.current) setLoadingMore(false); });
-  }, [nextCursor, loadingMore, loadMoreFailed, search, debouncedSearch, serverFilters]);
+    // Not while the rows on screen belong to a previous search, or mid-typing
+    if (!hasMore || isFetching || loadMoreFailed || isPlaceholderData ||
+        search.trim() !== debouncedSearch) return;
+    fetchNextPage();
+  }, [hasMore, isFetching, loadMoreFailed, isPlaceholderData, search, debouncedSearch, fetchNextPage]);
 
   // Fetch the next page shortly before the bottom of the list scrolls into view
   useEffect(() => {
     const el = sentinel.current;
-    if (!el || !nextCursor) return undefined;
+    if (!el || !hasMore) return undefined;
     const observer = new IntersectionObserver(
       entries => { if (entries[0].isIntersecting) loadMore(); },
       { rootMargin: '600px 0px' },
     );
     observer.observe(el);
     return () => observer.disconnect();
-  }, [loadMore, nextCursor, loading]);
+  }, [loadMore, hasMore, loading]);
 
   // Movement is relative to the viewer's branch
   let shown = movementFilter ? passes.filter(p => movementFor(p, user) === movementFilter) : passes;
@@ -204,7 +217,9 @@ export default function GatePassListPage() {
   const pendingCount  = shown.filter(p => p.status === 'pending').length;
   const overdueCount  = passes.filter(p => p.isOverdue).length;
 
-  const setRange = (from, to) => { setFromDate(from); setToDate(to); };
+  const setRange = (from, to) => setParams({ from, to });
+  // A pass opened from here gets "back" to this exact filtered view
+  const backTo = location.pathname + location.search;
   const today = new Date();
   const lastMonthDate = new Date(today.getFullYear(), today.getMonth() - 1, 1);
   const datePresets = [
@@ -220,7 +235,7 @@ export default function GatePassListPage() {
         <div>
           <div className="page-title">Gate Passes</div>
           <div className="page-subtitle">
-            {shown.length}{nextCursor ? '+' : ''} pass{shown.length !== 1 ? 'es' : ''}
+            {shown.length}{hasMore ? '+' : ''} pass{shown.length !== 1 ? 'es' : ''}
             {pendingCount > 0  && ` · ${pendingCount} waiting approval`}
             {overdueCount > 0  && ` · ${overdueCount} late`}
           </div>
@@ -316,7 +331,7 @@ export default function GatePassListPage() {
               {shown.map(p => (
                 <tr key={p.id}>
                   <td>
-                    <Link to={`/passes/${p.id}`} className="pass-number">{p.passNumber}</Link>
+                    <Link to={`/passes/${p.id}`} state={{ backTo }} className="pass-number">{p.passNumber}</Link>
                     {p.purpose && (
                       <div style={{ fontSize: 12, color: 'var(--text3)', marginTop: 2 }}>
                         {p.purpose.slice(0, 48)}
@@ -340,7 +355,7 @@ export default function GatePassListPage() {
                   <td><StatusBadge pass={p} /></td>
                   <td style={{ fontSize: 12, color: 'var(--text3)', whiteSpace: 'nowrap' }}>{fmt(p.createdAt)}</td>
                   <td>
-                    <Link to={`/passes/${p.id}`} className="btn btn-ghost btn-sm">View</Link>
+                    <Link to={`/passes/${p.id}`} state={{ backTo }} className="btn btn-ghost btn-sm">View</Link>
                   </td>
                 </tr>
               ))}
@@ -350,7 +365,7 @@ export default function GatePassListPage() {
       )}
 
       {/* Scroll marker: reaching it loads the next page */}
-      {!loading && nextCursor && (
+      {!loading && hasMore && (
         <div ref={sentinel} style={{
           display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 8,
           padding: 16, fontSize: 13, color: 'var(--text3)',
@@ -358,7 +373,7 @@ export default function GatePassListPage() {
           {loadMoreFailed ? (
             <>
               Couldn't load more passes.
-              <button className="btn btn-ghost btn-sm" onClick={() => setLoadMoreFailed(false)}>Try again</button>
+              <button className="btn btn-ghost btn-sm" onClick={() => listQ.fetchNextPage()}>Try again</button>
             </>
           ) : loadingMore ? (
             <><div className="spinner" style={{ width: 16, height: 16 }} /> Loading more…</>

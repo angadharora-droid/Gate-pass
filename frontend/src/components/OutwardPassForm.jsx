@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { api } from '../utils/api';
+import { REFERENCE_STALE_MS } from '../queryClient';
 import { useAuth } from '../context/AuthContext';
 import { hasRole } from '../utils/roles';
 import { AlertTriangle, FileSpreadsheet, FileEdit } from 'lucide-react';
@@ -42,7 +44,6 @@ export default function OutwardPassForm({
   onSaveDraft,
 }) {
   const { user } = useAuth();
-  const [branches, setBranches] = useState([]);
   // Which action is in flight — null, 'submit', or 'draft' — so each button
   // shows its own spinner while the other stays put.
   const [submitting, setSubmitting] = useState(null);
@@ -57,20 +58,20 @@ export default function OutwardPassForm({
   // role (manager/supermanager/admin) skips routing — even if they also
   // hold the staff role.
   const isStaff = !hasRole(user, 'manager', 'supermanager', 'admin');
-  const [approvers, setApprovers] = useState([]);
-  const [approversLoaded, setApproversLoaded] = useState(false);
   const [approverId, setApproverId] = useState('');
 
+  // Reference lists, cached (queryClient.js) — the form opens instantly next time
+  const branchesQ = useQuery({ queryKey: ['branches', 'active'], queryFn: () => api.getBranches(), staleTime: REFERENCE_STALE_MS });
+  const approversQ = useQuery({
+    queryKey: ['approvers'], queryFn: api.getApprovers, enabled: isStaff, staleTime: REFERENCE_STALE_MS,
+  });
+  const branches = branchesQ.data ?? [];
+  const approvers = approversQ.data ?? [];
+  const approversLoaded = approversQ.isSuccess;
   useEffect(() => {
-    api.getBranches()
-      .then(setBranches)
-      .catch(() => setError('Could not load the branch list — internal transfers need it. Reload the page to retry.'));
-    if (isStaff) {
-      api.getApprovers()
-        .then(a => { setApprovers(a); setApproversLoaded(true); })
-        .catch(() => setError('Could not load the approver list. Reload the page to retry.'));
-    }
-  }, [isStaff]);
+    if (branchesQ.error) setError('Could not load the branch list — internal transfers need it. Reload the page to retry.');
+    else if (approversQ.error) setError('Could not load the approver list. Reload the page to retry.');
+  }, [branchesQ.error, approversQ.error]);
 
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
   const isReturnable = form.outwardType === 'returnable';

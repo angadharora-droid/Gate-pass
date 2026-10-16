@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { api } from '../utils/api';
 import { Link } from 'react-router-dom';
 import { StatusBadge, MovementBadge } from '../components/Badges';
@@ -43,31 +43,26 @@ function AlertBanner({ tone = 'info', Icon, children, to, actionLabel = 'View', 
 }
 
 export default function DashboardPage() {
-  const [stats, setStats] = useState(null);
-  const [recentPasses, setRecentPasses] = useState([]);
-  const [overduePasses, setOverduePasses] = useState([]);
-  const [sentBackPasses, setSentBackPasses] = useState([]);
-  const [sendBackRequests, setSendBackRequests] = useState([]);
-  const [loading, setLoading] = useState(true);
   const { user } = useAuth();
 
-  useEffect(() => {
-    // Only what the dashboard shows: the 6 newest passes, plus open passes for
-    // the alerts (late, sent back and send-back requests are all still open)
-    Promise.all([api.getStats(), api.getPasses({ limit: 6 }), api.getPasses({ open: true })])
-      .then(([s, recent, open]) => {
-        setStats(s);
-        // A backend from before `limit` existed answers with a plain array
-        setRecentPasses(Array.isArray(recent) ? recent.slice(0, 6) : recent.passes);
-        setOverduePasses(open.filter(p => p.isOverdue));
-        setSentBackPasses(open.filter(p => p.sentBack));
-        setSendBackRequests(open.filter(p => p.sendBackRequest && !p.returnRequest &&
-          ['in_transit', 'partial_return'].includes(p.status)));
-      })
-      .finally(() => setLoading(false));
-  }, []);
+  // Only what the dashboard shows: the 6 newest passes, plus open passes for
+  // the alerts (late, sent back and send-back requests are all still open).
+  // Cached (queryClient.js): coming back to the dashboard shows it at once.
+  const statsQ  = useQuery({ queryKey: ['stats'], queryFn: api.getStats });
+  const recentQ = useQuery({ queryKey: ['passes', 'recent'], queryFn: () => api.getPasses({ limit: 6 }) });
+  const openQ   = useQuery({ queryKey: ['passes', 'open'], queryFn: () => api.getPasses({ open: true }) });
 
-  if (loading) return (
+  const stats = statsQ.data ?? null;
+  // A backend from before `limit` existed answers with a plain array
+  const recent = recentQ.data;
+  const recentPasses = Array.isArray(recent) ? recent.slice(0, 6) : (recent?.passes ?? []);
+  const open = openQ.data ?? [];
+  const overduePasses = open.filter(p => p.isOverdue);
+  const sentBackPasses = open.filter(p => p.sentBack);
+  const sendBackRequests = open.filter(p => p.sendBackRequest && !p.returnRequest &&
+    ['in_transit', 'partial_return'].includes(p.status));
+
+  if (statsQ.isPending || recentQ.isPending || openQ.isPending) return (
     <div className="loading-page">
       <div className="spinner" />
       <span>Loading dashboard…</span>

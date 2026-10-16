@@ -1,7 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { createPortal } from 'react-dom';
-import { useParams, Link, useNavigate } from 'react-router-dom';
+import { useParams, Link, useNavigate, useLocation } from 'react-router-dom';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../utils/api';
+import { findCachedPass } from '../queryClient';
 import { useAuth } from '../context/AuthContext';
 import { hasRole, canApproveSendBack } from '../utils/roles';
 import { StatusBadge, MovementBadge, ReturnableBadge, DirectionBadge, STATUS_LABELS } from '../components/Badges';
@@ -62,19 +64,31 @@ export default function GatePassDetailPage() {
   const { id } = useParams();
   const { user } = useAuth();
 
-  const [pass, setPass] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const queryClient = useQueryClient();
+  const location = useLocation();
+  // "Back" returns to the exact list view the pass was opened from
+  const backTo = location.state?.backTo || '/passes';
+
+  // Cached (queryClient.js). Opened from a list, the list's copy of the pass
+  // shows at once while the full fetch runs; revisits show the last copy.
+  const passKey = ['pass', id];
+  const passQ = useQuery({
+    queryKey: passKey,
+    queryFn: () => api.getPass(id),
+    placeholderData: () => findCachedPass(id),
+    retry: false,   // a missing pass is final — show "not found" straight away
+  });
+  const pass = passQ.data ?? null;
+  const loading = passQ.isPending;
+  // Actions answer with the updated pass — show it at once
+  const setPass = (updated) => queryClient.setQueryData(passKey, updated);
+  const load = () => passQ.refetch();
+
   const [error, setError] = useState('');
   const [actionLoading, setActionLoading] = useState(false);
   // Which Time Office logging modal is open: 'outward' (departure) or 'inward' (arrival/return)
   const [logModal, setLogModal] = useState(null);
   const [writeOffModalOpen, setWriteOffModalOpen] = useState(false);
-
-  const load = () => {
-    api.getPass(id).then(p => { setPass(p); setLoading(false); }).catch(() => setLoading(false));
-  };
-
-  useEffect(() => { load(); }, [id]);
 
   // A routed pass may only be decided by its chosen approver (or an admin).
   // Legacy passes without an approver fall back to any manager/supermanager
@@ -131,7 +145,7 @@ export default function GatePassDetailPage() {
 
   if (!pass) return (
     <div>
-      <Link to="/passes" className="btn btn-ghost btn-sm" style={{ marginBottom: 24 }}>
+      <Link to={backTo} className="btn btn-ghost btn-sm" style={{ marginBottom: 24 }}>
         <ArrowLeft size={14} /> Back
       </Link>
       <div className="empty-state">
@@ -220,7 +234,7 @@ export default function GatePassDetailPage() {
     <div>
       {/* Back breadcrumb */}
       <div style={{ marginBottom: 20 }}>
-        <Link to="/passes" className="back-link">
+        <Link to={backTo} className="back-link">
           <ArrowLeft size={13} /> All Passes
         </Link>
       </div>
