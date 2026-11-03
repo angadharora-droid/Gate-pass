@@ -799,14 +799,17 @@ router.patch('/:id', requireRole('admin'), asyncHandler(async (req, res) => {
 // ─── TIME OFFICE: LOG OUTWARD (item leaves premises) ─────────────────────────
 // Allowed on: type=outward passes in status=approved, by the gate of the
 // SOURCE branch (time_office is branch-bound; admin can log anywhere).
-// The gate counts what actually leaves and can change any line, up or down:
+// The gate counts what actually leaves and can change any line, up or down,
+// or add items that turned up but aren't on the pass:
 //   quantities = [{ index, quantity }] — how many of that item go out now
 //                (0 = it stays behind). Lines not listed go as approved;
 //                omitted entirely → everything as approved (older clients).
-// A changed count needs a reason (the remarks). Each line's `quantity` then
+//   added      = [{ itemName, quantity, unit, code, rate, serialNo, remarks }]
+//                — extra lines, appended to the pass like any other item.
+// Any change needs a reason (the remarks). Each line's `quantity` then
 // becomes what physically left — so receiving, send-back and returns all work
 // from the real count — and the approved figures stay on record in
-// quantityAdjustments (at: 'source_gate').
+// quantityAdjustments (at: 'source_gate'; added lines carry added: true).
 // Effect:
 //   internal (branch→branch) → 'in_transit' — the destination branch must
 //                              mark the items in via /receive
@@ -826,10 +829,10 @@ router.patch('/:id/log-outward', requireRole('time_office', 'admin'), asyncHandl
   if (pass.outwardLog)
     return res.status(400).json({ error: 'Outward movement already logged for this pass' });
 
-  const { remarks, guardName, quantities = [] } = req.body;
+  const { remarks, guardName, quantities = [], added = [] } = req.body;
   if (!guardName?.trim()) return res.status(400).json({ error: 'Gate host name is required' });
-  if (!Array.isArray(quantities))
-    return res.status(400).json({ error: 'quantities must be an array' });
+  if (!Array.isArray(quantities) || !Array.isArray(added))
+    return res.status(400).json({ error: 'quantities and added must be arrays' });
 
   // Validate everything first; a line may be listed only once
   const going = new Map();
@@ -842,19 +845,43 @@ router.patch('/:id/log-outward', requireRole('time_office', 'admin'), asyncHandl
       return res.status(400).json({ error: `Quantity going out must be 0 or more for "${li.itemName}"` });
     going.set(q.index, qty);
   }
-  if (pass.items.every((li, i) => (going.get(i) ?? li.quantity) <= 0))
+  for (const li of added) {
+    if (!li?.itemName?.trim()) return res.status(400).json({ error: 'Each added item needs a description' });
+    if (!(Number(li.quantity) > 0)) return res.status(400).json({ error: `Quantity must be > 0 for "${li.itemName}"` });
+    if (li.rate != null && li.rate !== '' && Number(li.rate) < 0)
+      return res.status(400).json({ error: `Rate cannot be negative for "${li.itemName}"` });
+  }
+  if (!added.length && pass.items.every((li, i) => (going.get(i) ?? li.quantity) <= 0))
     return res.status(400).json({ error: 'At least one item must go out — if nothing is going, reject the pass at the gate instead' });
   const changes = [...going]
     .filter(([index, qty]) => qty !== pass.items[index].quantity)
     .map(([index, qty]) => ({ index, itemName: pass.items[index].itemName, from: pass.items[index].quantity, to: qty }));
-  if (changes.length && !remarks?.trim())
-    return res.status(400).json({ error: 'Add a remark saying why the quantities going out differ from the approved pass' });
+  if ((changes.length || added.length) && !remarks?.trim())
+    return res.status(400).json({ error: 'Add a remark saying why the items going out differ from the approved pass' });
 
   const loggedAt = new Date().toISOString();
   for (const c of changes) {
     const li = pass.items[c.index];
     li.quantity = c.to;
     li.amount = li.rate != null ? Math.round(li.rate * c.to * 100) / 100 : null;
+  }
+  for (const li of added) {
+    const quantity = Number(li.quantity);
+    const rate = (li.rate != null && li.rate !== '') ? Number(li.rate) : null;
+    pass.items.push({
+      itemId:   li.itemId   || null,
+      itemName: li.itemName.trim(),
+      code:     li.code?.trim() || '',
+      unit:     UNITS.includes(li.unit) ? li.unit : 'pcs',
+      quantity,
+      rate,
+      amount:   rate != null ? Math.round(rate * quantity * 100) / 100 : null,
+      serialNo: li.serialNo?.trim() || '',
+      remarks:  li.remarks?.trim()  || '',
+      returnedQuantity: 0,
+      closedQuantity: 0,
+    });
+    changes.push({ index: pass.items.length - 1, itemName: li.itemName.trim(), from: 0, to: quantity, added: true });
   }
   if (changes.length) {
     pass.quantityAdjustments = [...(pass.quantityAdjustments || []), {
@@ -871,6 +898,10 @@ router.patch('/:id/log-outward', requireRole('time_office', 'admin'), asyncHandl
   pass.status = (pass.returnable || isBranchTransfer) ? 'in_transit' : 'completed';
 
   await savePass(pass);
+  // Grow the shared items master with any added names it doesn't know yet
+  if (added.length) {
+    try { await upsertMasterItems(pass.items.slice(-added.length), req.user.id); } catch { /* non-fatal */ }
+  }
   await logAudit('LOG_OUTWARD', req.user.id, pass.id, {
     passNumber: pass.passNumber,
     returnable: pass.returnable,

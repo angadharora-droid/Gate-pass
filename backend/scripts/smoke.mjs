@@ -382,25 +382,35 @@ const qtyTwice = await qtyOut({ remarks: 'x', quantities: [{ index: 0, quantity:
 check('a line listed twice is rejected', qtyTwice.status === 400);
 const qtyNone = await qtyOut({ remarks: 'Nothing ready', quantities: [0, 1, 2].map(index => ({ index, quantity: 0 })) });
 check('gate cannot mark out zero of everything', qtyNone.status === 400);
+const addNoReason = await qtyOut({ added: [{ itemName: 'Extension Cord', quantity: 2 }] });
+check('adding an item at the gate needs a reason', addNoReason.status === 400);
+const addNoQty = await qtyOut({ remarks: 'x', added: [{ itemName: 'Extension Cord', quantity: 0 }] });
+const addNoName = await qtyOut({ remarks: 'x', added: [{ itemName: ' ', quantity: 2 }] });
+check('an added item needs a name and a quantity', addNoQty.status === 400 && addNoName.status === 400);
 
 const qtyEdited = await qtyOut({
-  remarks: '2 chairs damaged, 2 spare covers, sashes not ready',
+  remarks: '2 chairs damaged, 2 spare covers, sashes not ready, cord for the PA sent along',
   quantities: [{ index: 0, quantity: 8 }, { index: 1, quantity: 12 }, { index: 2, quantity: 0 }],
+  added: [{ itemName: 'Extension Cord', quantity: 2, unit: 'pcs', rate: 50 }],
 });
 const gateQa = qtyEdited.json?.quantityAdjustments?.[0];
-check('gate lowers, raises and holds back quantities on marking out',
+check('gate lowers, raises, holds back and adds items on marking out',
   qtyEdited.status === 200 && qtyEdited.json?.status === 'in_transit' &&
-  JSON.stringify(qtyEdited.json.items.map(li => li.quantity)) === '[8,12,0]' && qtyEdited.json.items[0].amount === 800 &&
+  JSON.stringify(qtyEdited.json.items.map(li => li.quantity)) === '[8,12,0,2]' && qtyEdited.json.items[0].amount === 800 &&
+  qtyEdited.json.items[3].itemName === 'Extension Cord' && qtyEdited.json.items[3].amount === 100 &&
   gateQa?.at === 'source_gate' && gateQa?.reason && gateQa?.adjustedByUser?.name === 'Guard One' &&
-  JSON.stringify(gateQa?.changes?.map(c => [c.from, c.to])) === '[[10,8],[10,12],[5,0]]',
+  JSON.stringify(gateQa?.changes?.map(c => [c.index, c.from, c.to, !!c.added])) ===
+    '[[0,10,8,false],[1,10,12,false],[2,5,0,false],[3,0,2,true]]',
   JSON.stringify(qtyEdited.json));
+const cordInMaster = await api('GET', '/items?q=extension', { token: timeOffice });
+check('an item added at the gate joins the items master', cordInMaster.json?.some(i => i.name === 'Extension Cord'));
 
 const qtyOverReturn = await api('PATCH', `/gate-passes/${qtyId}/log-inward`, {
   token: timeOffice, body: { guardName: 'Ajay', returns: [{ index: 0, quantity: 9 }] },
 });
 check('returns cap at what actually went out', qtyOverReturn.status === 400);
 const qtyBack = await api('PATCH', `/gate-passes/${qtyId}/log-inward`, {
-  token: timeOffice, body: { guardName: 'Ajay', returns: [{ index: 0, quantity: 8 }, { index: 1, quantity: 12 }] },
+  token: timeOffice, body: { guardName: 'Ajay', returns: [{ index: 0, quantity: 8 }, { index: 1, quantity: 12 }, { index: 3, quantity: 2 }] },
 });
 check('everything that went out back → completed', qtyBack.status === 200 && qtyBack.json?.status === 'completed', qtyBack.json?.status);
 

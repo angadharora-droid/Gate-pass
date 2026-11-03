@@ -6,10 +6,11 @@ import { api } from '../utils/api';
 import { useAuth } from '../context/AuthContext';
 import { hasRole } from '../utils/roles';
 import { StatusBadge, TypeBadge, ReturnableBadge } from '../components/Badges';
+import ItemsGridEditor, { emptyRow, rowsToItems } from '../components/ItemsGridEditor';
 import {
   X, AlertTriangle, Info, ArrowUpRight, ArrowDownLeft, RotateCcw,
   Clock, TrendingUp, Package, CheckCircle2, PackagePlus, Truck,
-  Lock, LockOpen, Pencil, Ban, PackageX,
+  Lock, LockOpen, Pencil, Ban, PackageX, Plus,
 } from 'lucide-react';
 
 function fmt(d) {
@@ -35,33 +36,39 @@ function itemsSummary(p) {
 
 /* ── Log Outward Modal ──────────────────────────────────────────────────────── */
 // The gate counts what actually leaves: every line starts at the approved
-// quantity and can be raised or lowered (0 = that item stays behind). Any
-// change needs a reason, which goes in the remarks.
+// quantity and can be raised or lowered (0 = that item stays behind), and
+// items that turn up but aren't on the pass can be added. Any change needs a
+// reason, which goes in the remarks.
 export function LogOutwardModal({ pass, onClose, onDone }) {
   const [guardName, setGuardName] = useState('');
   const [remarks, setRemarks] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [qtys, setQtys] = useState(() => Object.fromEntries(pass.items.map((li, i) => [i, li.quantity])));
+  const [extraRows, setExtraRows] = useState([]);   // items added at the gate
 
   const qtyOf = i => Number(qtys[i] || 0);
   const changed = pass.items.flatMap((li, i) => qtyOf(i) !== li.quantity ? [i] : []);
+  const added = rowsToItems(extraRows);
+  const anyChange = changed.length > 0 || added.length > 0;
 
   const handleConfirm = async () => {
     setError('');
     if (!guardName.trim()) { setError('Gate host name is required'); return; }
-    if (pass.items.every((li, i) => qtyOf(i) <= 0)) { setError('At least one item must go out'); return; }
-    if (changed.length && !remarks.trim()) { setError('Add a remark saying why the quantities differ from the approved pass'); return; }
+    if (extraRows.some(r => r.itemName.trim() && !(Number(r.quantity) > 0))) { setError('Enter a quantity for every added item'); return; }
+    if (!added.length && pass.items.every((li, i) => qtyOf(i) <= 0)) { setError('At least one item must go out'); return; }
+    if (anyChange && !remarks.trim()) { setError('Add a remark saying why the items differ from the approved pass'); return; }
     setLoading(true);
     try {
       const quantities = changed.map(i => ({ index: i, quantity: qtyOf(i) }));
-      onDone(await api.logOutward(pass.id, { guardName: guardName.trim(), remarks, quantities }));
+      onDone(await api.logOutward(pass.id, { guardName: guardName.trim(), remarks, quantities, added }));
     } catch (e) { setError(e.message); } finally { setLoading(false); }
   };
 
   return (
     <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
-      <div className="modal">
+      {/* Widens while adding items so the items grid has room */}
+      <div className="modal" style={extraRows.length ? { maxWidth: 960 } : undefined}>
         <div className="modal-header">
           <div>
             <div className="modal-title">Mark Items Out</div>
@@ -74,7 +81,8 @@ export function LogOutwardModal({ pass, onClose, onDone }) {
             <Info size={15} />
             <span>
               Confirm these items have <strong>actually left the gate</strong>. If the count going out differs
-              from the pass, change the number and say why in the remarks. This cannot be undone.
+              from the pass, change the number; if something extra is going, add it below — and say why in
+              the remarks. This cannot be undone.
             </span>
           </div>
 
@@ -110,7 +118,28 @@ export function LogOutwardModal({ pass, onClose, onDone }) {
                 </div>
               );
             })}
+            {!extraRows.length && (
+              <button type="button" className="btn btn-ghost btn-sm" style={{ marginTop: 12 }}
+                onClick={() => setExtraRows([emptyRow()])}>
+                <Plus size={13} /> Add an item not on the pass
+              </button>
+            )}
           </div>
+
+          {extraRows.length > 0 && (
+            <div style={{ marginBottom: 20 }}>
+              <ItemsGridEditor
+                rows={extraRows}
+                onChange={setExtraRows}
+                title="Items added at the gate"
+                headerExtra={
+                  <button type="button" className="btn btn-ghost btn-sm" onClick={() => setExtraRows([])}>
+                    <X size={13} /> Remove all
+                  </button>
+                }
+              />
+            </div>
+          )}
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 20, padding: '12px 16px', background: 'var(--bg3)', borderRadius: 'var(--radius)', border: '1px solid var(--border)', fontSize: 13 }}>
             <div><span style={{ color: 'var(--text3)' }}>From: </span>{pass.sourceBranchName || '—'}</div>
@@ -133,10 +162,10 @@ export function LogOutwardModal({ pass, onClose, onDone }) {
           </div>
 
           <div className="form-group" style={{ marginBottom: 0 }}>
-            <label className="form-label">{changed.length ? 'Remarks — why the quantity changed *' : 'Remarks (optional)'}</label>
+            <label className="form-label">{anyChange ? 'Remarks — why the items changed *' : 'Remarks (optional)'}</label>
             <textarea className="form-textarea" rows={2} value={remarks}
               onChange={e => setRemarks(e.target.value)}
-              placeholder={changed.length ? 'e.g. 2 chairs damaged, kept back…' : 'e.g. Loaded on vehicle KA-01-1234…'} />
+              placeholder={anyChange ? 'e.g. 2 chairs damaged, kept back; extension cord sent along…' : 'e.g. Loaded on vehicle KA-01-1234…'} />
           </div>
           {error && (
             <div className="alert alert-danger" style={{ marginTop: 12 }}>

@@ -60,19 +60,24 @@ function currentCycleRejection(pass) {
   return last && (!cycleStart || new Date(last.rejectedAt) > new Date(cycleStart)) ? last : null;
 }
 
-// The source gate's change to the count when it marked the items out — each
-// line's `quantity` is then what actually left, and this keeps the approved
-// figures (approved → sent per line). Null when the gate sent as approved.
+// What the source gate changed when it marked the items out — each line's
+// `quantity` is then what actually left, and this keeps the approved figures
+// (approved → sent per line; lines added at the gate carry added: true).
+// Null when the gate sent everything as approved.
 function gateQtyChangeOf(pass) {
   return pass.quantityAdjustments?.find(qa => qa.at === 'source_gate') || null;
 }
-const approvedQtyOf = (pass, index) => gateQtyChangeOf(pass)?.changes?.find(c => c.index === index)?.from;
+const gateLineChangeOf = (pass, index) => gateQtyChangeOf(pass)?.changes?.find(c => c.index === index);
 
-// Where a quantity change was made — the source gate on marking out, or (on
-// older passes) the destination branch correcting a returnable transfer
+// Where a change was made — the source gate on marking out, or (on older
+// passes) the destination branch correcting a returnable transfer
 const qtyChangeWhere = (qa, pass) => qa.at === 'source_gate'
   ? `changed at the ${pass.sourceBranchName || 'source'} gate when marking out`
   : `corrected at ${pass.destinationBranchName || 'the destination branch'}`;
+// One changed line in words, for the detail card and the printout
+const lineChangeText = (c, qa) => c.added
+  ? `not on the approved pass — added, sent ${c.to}`
+  : qa.at === 'source_gate' ? `approved ${c.from}, sent ${c.to}` : `${c.from} → ${c.to}`;
 
 export default function GatePassDetailPage() {
   const { id } = useParams();
@@ -631,7 +636,7 @@ export default function GatePassDetailPage() {
                 const closed = li.closedQuantity || 0;
                 const remaining = li.quantity - (li.returnedQuantity || 0) - closed;
                 const isFullyAccounted = remaining === 0;
-                const approvedQty = approvedQtyOf(pass, idx);
+                const gateChange = gateLineChangeOf(pass, idx);
                 const itemMeta = [
                   li.unit,
                   li.code && `Code: ${li.code}`,
@@ -648,9 +653,11 @@ export default function GatePassDetailPage() {
                     </div>
                     <div style={{ textAlign: 'right' }}>
                       <div className="item-qty">Qty: {li.quantity}</div>
-                      {approvedQty != null && (
+                      {gateChange && (
                         <div style={{ fontSize: 11, color: 'var(--orange)', fontFamily: 'var(--font-mono)' }}>
-                          Approved: {approvedQty} · {li.quantity === 0 ? 'not sent' : 'changed at gate'}
+                          {gateChange.added
+                            ? 'Added at gate'
+                            : `Approved: ${gateChange.from} · ${li.quantity === 0 ? 'not sent' : 'changed at gate'}`}
                         </div>
                       )}
                       {li.amount != null && (
@@ -735,12 +742,12 @@ export default function GatePassDetailPage() {
             </div>
           )}
 
-          {/* Quantity changes — the gate's count on marking out (or, on older
-              passes, the destination branch's corrections) — for observability */}
+          {/* Item changes — the gate's count and additions on marking out (or,
+              on older passes, the destination branch's corrections) */}
           {pass.quantityAdjustments?.length > 0 && (
             <div className="card">
               <h3 style={{ fontWeight: 700, marginBottom: 16, fontSize: 15, display: 'flex', alignItems: 'center', gap: 8 }}>
-                <Pencil size={15} style={{ color: 'var(--blue)' }} /> Quantity Corrections
+                <Pencil size={15} style={{ color: 'var(--blue)' }} /> Item Changes
               </h3>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                 {pass.quantityAdjustments.map((qa, qi) => (
@@ -751,7 +758,7 @@ export default function GatePassDetailPage() {
                     {qa.changes?.map((c, ci) => (
                       <div key={ci} style={{ fontSize: 13, marginBottom: 2 }}>
                         <strong>{c.itemName}</strong>
-                        <span style={{ color: 'var(--text2)' }}> — {c.from} → {c.to}</span>
+                        <span style={{ color: 'var(--text2)' }}> — {lineChangeText(c, qa)}</span>
                       </div>
                     ))}
                     {qa.reason && (
@@ -1353,7 +1360,7 @@ function LifecycleTimeline({ pass }) {
       label: 'Items Went Out',
       sub: pass.outwardLog
         ? `${pass.outwardLog.loggedByUser?.name || '—'} · Host: ${pass.outwardLog.guardName || '—'}` +
-          (gateQtyChangeOf(pass) ? ' · Quantity changed at gate' : '')
+          (gateQtyChangeOf(pass) ? ' · Items changed at gate' : '')
         : 'Waiting for gate to log it',
       time: pass.outwardLog?.loggedAt,
       done: !!pass.outwardLog,
@@ -1667,16 +1674,16 @@ function PrintGatePass({ pass }) {
         </table>
       </div>
 
-      {/* Quantities changed from the approved pass — the Qty column above is
-          what actually left, so the paper record must show the approved count */}
+      {/* Items changed from the approved pass — the Qty column above is what
+          actually left, so the paper record must show what was approved */}
       {pass.quantityAdjustments?.length > 0 && (
         <div className="print-section">
-          <div className="print-section-title">Quantity Changed</div>
+          <div className="print-section-title">Changed from Approved Pass</div>
           {pass.quantityAdjustments.map((qa, qi) => (
             <div key={qi} style={{ marginBottom: 6 }}>
               {qa.changes?.map((c, ci) => (
                 <div key={ci} style={{ fontSize: '10pt', marginBottom: 1 }}>
-                  <strong>{c.itemName}</strong> — {qa.at === 'source_gate' ? `approved ${c.from}, sent ${c.to}` : `${c.from} → ${c.to}`}
+                  <strong>{c.itemName}</strong> — {lineChangeText(c, qa)}
                 </div>
               ))}
               <div style={{ fontSize: '8.5pt', color: '#555' }}>
