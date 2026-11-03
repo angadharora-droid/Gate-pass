@@ -799,6 +799,14 @@ router.patch('/:id', requireRole('admin'), asyncHandler(async (req, res) => {
 // ─── TIME OFFICE: LOG OUTWARD (item leaves premises) ─────────────────────────
 // Allowed on: type=outward passes in status=approved, by the gate of the
 // SOURCE branch (time_office is branch-bound; admin can log anywhere).
+// The gate counts what actually leaves and can change any line, up or down:
+//   quantities = [{ index, quantity }] — how many of that item go out now
+//                (0 = it stays behind). Lines not listed go as approved;
+//                omitted entirely → everything as approved (older clients).
+// A changed count needs a reason (the remarks). Each line's `quantity` then
+// becomes what physically left — so receiving, send-back and returns all work
+// from the real count — and the approved figures stay on record in
+// quantityAdjustments (at: 'source_gate').
 // Effect:
 //   internal (branch→branch) → 'in_transit' — the destination branch must
 //                              mark the items in via /receive
@@ -818,10 +826,43 @@ router.patch('/:id/log-outward', requireRole('time_office', 'admin'), asyncHandl
   if (pass.outwardLog)
     return res.status(400).json({ error: 'Outward movement already logged for this pass' });
 
-  const { remarks, guardName } = req.body;
+  const { remarks, guardName, quantities = [] } = req.body;
   if (!guardName?.trim()) return res.status(400).json({ error: 'Gate host name is required' });
+  if (!Array.isArray(quantities))
+    return res.status(400).json({ error: 'quantities must be an array' });
+
+  // Validate everything first; a line may be listed only once
+  const going = new Map();
+  for (const q of quantities) {
+    const li = Number.isInteger(q?.index) ? pass.items[q.index] : undefined;
+    if (!li) return res.status(400).json({ error: `No item at index ${q?.index}` });
+    if (going.has(q.index)) return res.status(400).json({ error: `${li.itemName} is listed twice` });
+    const qty = Number(q.quantity);
+    if (!Number.isFinite(qty) || qty < 0)
+      return res.status(400).json({ error: `Quantity going out must be 0 or more for "${li.itemName}"` });
+    going.set(q.index, qty);
+  }
+  if (pass.items.every((li, i) => (going.get(i) ?? li.quantity) <= 0))
+    return res.status(400).json({ error: 'At least one item must go out — if nothing is going, reject the pass at the gate instead' });
+  const changes = [...going]
+    .filter(([index, qty]) => qty !== pass.items[index].quantity)
+    .map(([index, qty]) => ({ index, itemName: pass.items[index].itemName, from: pass.items[index].quantity, to: qty }));
+  if (changes.length && !remarks?.trim())
+    return res.status(400).json({ error: 'Add a remark saying why the quantities going out differ from the approved pass' });
+
+  const loggedAt = new Date().toISOString();
+  for (const c of changes) {
+    const li = pass.items[c.index];
+    li.quantity = c.to;
+    li.amount = li.rate != null ? Math.round(li.rate * c.to * 100) / 100 : null;
+  }
+  if (changes.length) {
+    pass.quantityAdjustments = [...(pass.quantityAdjustments || []), {
+      adjustedAt: loggedAt, adjustedBy: req.user.id, at: 'source_gate', reason: remarks.trim(), changes,
+    }];
+  }
   pass.outwardLog = {
-    loggedAt: new Date().toISOString(),
+    loggedAt,
     loggedBy: req.user.id,
     guardName: guardName.trim(),
     remarks:  remarks?.trim() || '',
@@ -830,7 +871,11 @@ router.patch('/:id/log-outward', requireRole('time_office', 'admin'), asyncHandl
   pass.status = (pass.returnable || isBranchTransfer) ? 'in_transit' : 'completed';
 
   await savePass(pass);
-  await logAudit('LOG_OUTWARD', req.user.id, pass.id, { passNumber: pass.passNumber, returnable: pass.returnable });
+  await logAudit('LOG_OUTWARD', req.user.id, pass.id, {
+    passNumber: pass.passNumber,
+    returnable: pass.returnable,
+    ...(changes.length && { quantityChanges: changes }),
+  });
   res.json(enrichPass(pass, await getRefs()));
 }));
 

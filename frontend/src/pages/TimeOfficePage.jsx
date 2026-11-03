@@ -34,17 +34,28 @@ function itemsSummary(p) {
 }
 
 /* ── Log Outward Modal ──────────────────────────────────────────────────────── */
+// The gate counts what actually leaves: every line starts at the approved
+// quantity and can be raised or lowered (0 = that item stays behind). Any
+// change needs a reason, which goes in the remarks.
 export function LogOutwardModal({ pass, onClose, onDone }) {
   const [guardName, setGuardName] = useState('');
   const [remarks, setRemarks] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [qtys, setQtys] = useState(() => Object.fromEntries(pass.items.map((li, i) => [i, li.quantity])));
+
+  const qtyOf = i => Number(qtys[i] || 0);
+  const changed = pass.items.flatMap((li, i) => qtyOf(i) !== li.quantity ? [i] : []);
 
   const handleConfirm = async () => {
-    setError(''); setLoading(true);
+    setError('');
+    if (!guardName.trim()) { setError('Gate host name is required'); return; }
+    if (pass.items.every((li, i) => qtyOf(i) <= 0)) { setError('At least one item must go out'); return; }
+    if (changed.length && !remarks.trim()) { setError('Add a remark saying why the quantities differ from the approved pass'); return; }
+    setLoading(true);
     try {
-      if (!guardName.trim()) { setError('Gate host name is required'); setLoading(false); return; }
-      onDone(await api.logOutward(pass.id, { guardName: guardName.trim(), remarks }));
+      const quantities = changed.map(i => ({ index: i, quantity: qtyOf(i) }));
+      onDone(await api.logOutward(pass.id, { guardName: guardName.trim(), remarks, quantities }));
     } catch (e) { setError(e.message); } finally { setLoading(false); }
   };
 
@@ -61,20 +72,44 @@ export function LogOutwardModal({ pass, onClose, onDone }) {
         <div className="modal-body">
           <div className="alert alert-info" style={{ marginBottom: 20 }}>
             <Info size={15} />
-            Confirm these items have <strong>actually left the gate</strong>. This cannot be undone.
+            <span>
+              Confirm these items have <strong>actually left the gate</strong>. If the count going out differs
+              from the pass, change the number and say why in the remarks. This cannot be undone.
+            </span>
           </div>
 
           <div style={{ marginBottom: 20 }}>
             <div style={{ fontSize: 12, color: 'var(--text3)', marginBottom: 10 }}>Items going out</div>
-            {pass.items?.map((li, i) => (
-              <div key={i} className="item-row">
-                <div>
-                  <div className="item-name">{li.itemName}</div>
-                  <div style={{ fontSize: 11, color: 'var(--text3)', fontFamily: 'var(--font-mono)' }}>{li.unit}</div>
+            {pass.items?.map((li, i) => {
+              const diff = qtyOf(i) - li.quantity;
+              return (
+                <div key={i} style={{ padding: '12px 0', borderBottom: '1px solid var(--border)' }}>
+                  <div className="return-item-row" style={{ border: 'none', padding: 0 }}>
+                    <div style={{ flex: 1 }}>
+                      <div className="item-name">{li.itemName}</div>
+                      <div style={{ fontSize: 11, color: 'var(--text3)', fontFamily: 'var(--font-mono)' }}>Approved: {li.quantity} {li.unit}</div>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span style={{ fontSize: 12, color: 'var(--text3)' }}>Going out:</span>
+                      <input
+                        className="return-qty-input"
+                        type="number" min="0"
+                        value={qtys[i] ?? 0}
+                        onChange={e => setQtys(q => ({ ...q, [i]: Math.max(0, Number(e.target.value)) }))}
+                      />
+                      <span style={{ fontSize: 11, color: 'var(--text3)' }}>{li.unit}</span>
+                    </div>
+                  </div>
+                  {diff !== 0 && (
+                    <div style={{ fontSize: 11, color: 'var(--orange)', fontFamily: 'var(--font-mono)', marginTop: 6 }}>
+                      {qtyOf(i) === 0
+                        ? 'Not going out — stays here'
+                        : `${Math.abs(diff)} ${diff > 0 ? 'more' : 'fewer'} than approved`}
+                    </div>
+                  )}
                 </div>
-                <div className="item-qty">× {li.quantity}</div>
-              </div>
-            ))}
+              );
+            })}
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 20, padding: '12px 16px', background: 'var(--bg3)', borderRadius: 'var(--radius)', border: '1px solid var(--border)', fontSize: 13 }}>
@@ -98,10 +133,10 @@ export function LogOutwardModal({ pass, onClose, onDone }) {
           </div>
 
           <div className="form-group" style={{ marginBottom: 0 }}>
-            <label className="form-label">Remarks (optional)</label>
+            <label className="form-label">{changed.length ? 'Remarks — why the quantity changed *' : 'Remarks (optional)'}</label>
             <textarea className="form-textarea" rows={2} value={remarks}
               onChange={e => setRemarks(e.target.value)}
-              placeholder="e.g. Loaded on vehicle KA-01-1234…" />
+              placeholder={changed.length ? 'e.g. 2 chairs damaged, kept back…' : 'e.g. Loaded on vehicle KA-01-1234…'} />
           </div>
           {error && (
             <div className="alert alert-danger" style={{ marginTop: 12 }}>

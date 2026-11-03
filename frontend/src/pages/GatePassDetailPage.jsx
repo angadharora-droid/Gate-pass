@@ -60,6 +60,20 @@ function currentCycleRejection(pass) {
   return last && (!cycleStart || new Date(last.rejectedAt) > new Date(cycleStart)) ? last : null;
 }
 
+// The source gate's change to the count when it marked the items out — each
+// line's `quantity` is then what actually left, and this keeps the approved
+// figures (approved → sent per line). Null when the gate sent as approved.
+function gateQtyChangeOf(pass) {
+  return pass.quantityAdjustments?.find(qa => qa.at === 'source_gate') || null;
+}
+const approvedQtyOf = (pass, index) => gateQtyChangeOf(pass)?.changes?.find(c => c.index === index)?.from;
+
+// Where a quantity change was made — the source gate on marking out, or (on
+// older passes) the destination branch correcting a returnable transfer
+const qtyChangeWhere = (qa, pass) => qa.at === 'source_gate'
+  ? `changed at the ${pass.sourceBranchName || 'source'} gate when marking out`
+  : `corrected at ${pass.destinationBranchName || 'the destination branch'}`;
+
 export default function GatePassDetailPage() {
   const { id } = useParams();
   const { user } = useAuth();
@@ -617,6 +631,7 @@ export default function GatePassDetailPage() {
                 const closed = li.closedQuantity || 0;
                 const remaining = li.quantity - (li.returnedQuantity || 0) - closed;
                 const isFullyAccounted = remaining === 0;
+                const approvedQty = approvedQtyOf(pass, idx);
                 const itemMeta = [
                   li.unit,
                   li.code && `Code: ${li.code}`,
@@ -633,12 +648,17 @@ export default function GatePassDetailPage() {
                     </div>
                     <div style={{ textAlign: 'right' }}>
                       <div className="item-qty">Qty: {li.quantity}</div>
+                      {approvedQty != null && (
+                        <div style={{ fontSize: 11, color: 'var(--orange)', fontFamily: 'var(--font-mono)' }}>
+                          Approved: {approvedQty} · {li.quantity === 0 ? 'not sent' : 'changed at gate'}
+                        </div>
+                      )}
                       {li.amount != null && (
                         <div style={{ fontSize: 11.5, color: 'var(--text2)', fontFamily: 'var(--font-mono)', marginTop: 2 }}>
                           {fmtMoney(li.rate)} × {li.quantity} = <strong>{fmtMoney(li.amount)}</strong>
                         </div>
                       )}
-                      {pass.returnable && pass.type === 'outward' && (
+                      {pass.returnable && pass.type === 'outward' && li.quantity > 0 && (
                         <>
                           <div className="item-returned">Returned: {li.returnedQuantity}</div>
                           {closed > 0 && (
@@ -715,7 +735,8 @@ export default function GatePassDetailPage() {
             </div>
           )}
 
-          {/* Quantity corrections made by the destination branch, for observability */}
+          {/* Quantity changes — the gate's count on marking out (or, on older
+              passes, the destination branch's corrections) — for observability */}
           {pass.quantityAdjustments?.length > 0 && (
             <div className="card">
               <h3 style={{ fontWeight: 700, marginBottom: 16, fontSize: 15, display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -725,7 +746,7 @@ export default function GatePassDetailPage() {
                 {pass.quantityAdjustments.map((qa, qi) => (
                   <div key={qi} style={{ borderLeft: '2px solid var(--blue)', paddingLeft: 12 }}>
                     <div style={{ fontSize: 11, color: 'var(--text3)', fontFamily: 'var(--font-mono)', marginBottom: 6 }}>
-                      {fmt(qa.adjustedAt)}{qa.adjustedByUser ? ` · by ${qa.adjustedByUser.name}` : ''}
+                      {fmt(qa.adjustedAt)}{qa.adjustedByUser ? ` · by ${qa.adjustedByUser.name}` : ''} · {qtyChangeWhere(qa, pass)}
                     </div>
                     {qa.changes?.map((c, ci) => (
                       <div key={ci} style={{ fontSize: 13, marginBottom: 2 }}>
@@ -733,6 +754,9 @@ export default function GatePassDetailPage() {
                         <span style={{ color: 'var(--text2)' }}> — {c.from} → {c.to}</span>
                       </div>
                     ))}
+                    {qa.reason && (
+                      <div style={{ fontSize: 12.5, color: 'var(--text2)', marginTop: 2 }}>{qa.reason}</div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -1328,7 +1352,8 @@ function LifecycleTimeline({ pass }) {
       key: 'outward_log',
       label: 'Items Went Out',
       sub: pass.outwardLog
-        ? `${pass.outwardLog.loggedByUser?.name || '—'} · Host: ${pass.outwardLog.guardName || '—'}`
+        ? `${pass.outwardLog.loggedByUser?.name || '—'} · Host: ${pass.outwardLog.guardName || '—'}` +
+          (gateQtyChangeOf(pass) ? ' · Quantity changed at gate' : '')
         : 'Waiting for gate to log it',
       time: pass.outwardLog?.loggedAt,
       done: !!pass.outwardLog,
@@ -1641,6 +1666,27 @@ function PrintGatePass({ pass }) {
           </tbody>
         </table>
       </div>
+
+      {/* Quantities changed from the approved pass — the Qty column above is
+          what actually left, so the paper record must show the approved count */}
+      {pass.quantityAdjustments?.length > 0 && (
+        <div className="print-section">
+          <div className="print-section-title">Quantity Changed</div>
+          {pass.quantityAdjustments.map((qa, qi) => (
+            <div key={qi} style={{ marginBottom: 6 }}>
+              {qa.changes?.map((c, ci) => (
+                <div key={ci} style={{ fontSize: '10pt', marginBottom: 1 }}>
+                  <strong>{c.itemName}</strong> — {qa.at === 'source_gate' ? `approved ${c.from}, sent ${c.to}` : `${c.from} → ${c.to}`}
+                </div>
+              ))}
+              <div style={{ fontSize: '8.5pt', color: '#555' }}>
+                {qa.reason ? `${qa.reason} · ` : ''}{qtyChangeWhere(qa, pass)}
+                {qa.adjustedByUser ? ` by ${qa.adjustedByUser.name}` : ''} · {fmt(qa.adjustedAt)}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Return date if applicable */}
       {isReturnableOutward && pass.expectedReturnDate && (

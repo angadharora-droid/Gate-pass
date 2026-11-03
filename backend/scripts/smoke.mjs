@@ -358,6 +358,52 @@ check('completed late pass leaves the alerts', lateDone.json?.status === 'comple
   lateDone.json?.isOverdue === false && lateStats2.json?.overdueReturns === 0,
   JSON.stringify({ status: lateDone.json?.status, isOverdue: lateDone.json?.isOverdue, overdueReturns: lateStats2.json?.overdueReturns }));
 
+// ─── Gate edits the quantities going out — up, down, or 0 (stays behind) ─────
+const qtyPass = await api('POST', '/gate-passes', {
+  token: manager,
+  body: {
+    type: 'outward', direction: 'external', destinationPerson: 'Repair Shop',
+    returnable: true, purpose: 'Banquet chairs', expectedReturnDate: '2099-01-01T00:00:00Z',
+    items: [
+      { itemName: 'Banquet Chair', quantity: 10, unit: 'pcs', rate: 100 },
+      { itemName: 'Chair Cover', quantity: 10, unit: 'pcs' },
+      { itemName: 'Chair Sash', quantity: 5, unit: 'pcs' },
+    ],
+  },
+});
+const qtyId = qtyPass.json?.id;
+const qtyOut = body => api('PATCH', `/gate-passes/${qtyId}/log-outward`, { token: timeOffice, body: { guardName: 'Ajay', ...body } });
+
+const qtyNoReason = await qtyOut({ quantities: [{ index: 0, quantity: 8 }] });
+check('changing a quantity at the gate needs a reason', qtyNoReason.status === 400, JSON.stringify(qtyNoReason.json));
+const qtyNegative = await qtyOut({ remarks: 'x', quantities: [{ index: 0, quantity: -1 }] });
+check('negative gate quantity rejected', qtyNegative.status === 400);
+const qtyTwice = await qtyOut({ remarks: 'x', quantities: [{ index: 0, quantity: 8 }, { index: 0, quantity: 9 }] });
+check('a line listed twice is rejected', qtyTwice.status === 400);
+const qtyNone = await qtyOut({ remarks: 'Nothing ready', quantities: [0, 1, 2].map(index => ({ index, quantity: 0 })) });
+check('gate cannot mark out zero of everything', qtyNone.status === 400);
+
+const qtyEdited = await qtyOut({
+  remarks: '2 chairs damaged, 2 spare covers, sashes not ready',
+  quantities: [{ index: 0, quantity: 8 }, { index: 1, quantity: 12 }, { index: 2, quantity: 0 }],
+});
+const gateQa = qtyEdited.json?.quantityAdjustments?.[0];
+check('gate lowers, raises and holds back quantities on marking out',
+  qtyEdited.status === 200 && qtyEdited.json?.status === 'in_transit' &&
+  JSON.stringify(qtyEdited.json.items.map(li => li.quantity)) === '[8,12,0]' && qtyEdited.json.items[0].amount === 800 &&
+  gateQa?.at === 'source_gate' && gateQa?.reason && gateQa?.adjustedByUser?.name === 'Guard One' &&
+  JSON.stringify(gateQa?.changes?.map(c => [c.from, c.to])) === '[[10,8],[10,12],[5,0]]',
+  JSON.stringify(qtyEdited.json));
+
+const qtyOverReturn = await api('PATCH', `/gate-passes/${qtyId}/log-inward`, {
+  token: timeOffice, body: { guardName: 'Ajay', returns: [{ index: 0, quantity: 9 }] },
+});
+check('returns cap at what actually went out', qtyOverReturn.status === 400);
+const qtyBack = await api('PATCH', `/gate-passes/${qtyId}/log-inward`, {
+  token: timeOffice, body: { guardName: 'Ajay', returns: [{ index: 0, quantity: 8 }, { index: 1, quantity: 12 }] },
+});
+check('everything that went out back → completed', qtyBack.status === 200 && qtyBack.json?.status === 'completed', qtyBack.json?.status);
+
 const audit = await api('GET', '/audit', { token: admin });
 check('audit log recorded with user names', audit.status === 200 && audit.json?.length >= 6 && audit.json?.every(l => l.userName));
 const auditDenied = await api('GET', '/audit', { token: manager });
