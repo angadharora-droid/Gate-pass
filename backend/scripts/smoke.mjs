@@ -231,7 +231,7 @@ const inward = await api('POST', '/gate-passes/inward', {
   body: {
     branchId: b1, departmentId: d1, receiverId: managerUser.json.id, inwardType: 'non_returnable',
     documentType: 'Invoice', documentNo: 'INV-9999', carriedBy: 'Courier Guy',
-    gst: 18,
+    sourceParty: 'Vendor', gst: 18,
     items: [{ itemName: 'Spare Parts', quantity: 2, unit: 'box' }],
   },
 });
@@ -242,7 +242,7 @@ const badGst = await api('POST', '/gate-passes/inward', {
   token: timeOffice,
   body: {
     branchId: b1, departmentId: d1, receiverId: managerUser.json.id, inwardType: 'non_returnable',
-    carriedBy: 'Courier Guy', gst: 150,
+    carriedBy: 'Courier Guy', sourceParty: 'Vendor', gst: 150,
     items: [{ itemName: 'Widget', quantity: 1, unit: 'pcs' }],
   },
 });
@@ -261,7 +261,7 @@ const multiDoc = await api('POST', '/gate-passes/inward', {
       { type: 'Delivery Challan', number: 'DC-22' },
       { type: 'None', number: '' },
     ],
-    carriedBy: 'Courier Guy',
+    carriedBy: 'Courier Guy', sourceParty: 'Vendor',
     items: [{ itemName: 'Printer Toner', quantity: 1, unit: 'box' }],
   },
 });
@@ -284,7 +284,7 @@ const badDoc = await api('POST', '/gate-passes/inward', {
   body: {
     branchId: b1, departmentId: d1, receiverId: managerUser.json.id, inwardType: 'non_returnable',
     documents: [{ type: 'None', number: 'X-1' }],
-    carriedBy: 'Courier Guy',
+    carriedBy: 'Courier Guy', sourceParty: 'Vendor',
     items: [{ itemName: 'Widget', quantity: 1, unit: 'pcs' }],
   },
 });
@@ -302,6 +302,8 @@ check('admin adds a vendor', vendorAdd.status === 201 && vendorAdd.json?.name ==
 const vendorDup = await api('POST', '/vendors', { token: admin, body: { name: 'blue  DART' } });
 check('duplicate vendor spelling rejected', vendorDup.status === 400);
 
+const noVendor = await api('POST', '/gate-passes/inward', { token: timeOffice, body: inwardBase });
+check('inward without Received From rejected', noVendor.status === 400 && /Received From is required/.test(noVendor.json?.error || ''), JSON.stringify(noVendor.json));
 const unknownVendor = await api('POST', '/gate-passes/inward', { token: timeOffice, body: { ...inwardBase, sourceParty: 'Random Courier' } });
 check('inward from a vendor not on the list rejected', unknownVendor.status === 400, JSON.stringify(unknownVendor.json));
 const knownVendor = await api('POST', '/gate-passes/inward', { token: timeOffice, body: { ...inwardBase, sourceParty: 'blue dart' } });

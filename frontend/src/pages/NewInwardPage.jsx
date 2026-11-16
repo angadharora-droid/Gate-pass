@@ -70,14 +70,15 @@ export default function NewInwardPage() {
   const handleSubmit = async () => {
     setError('');
     if (!form.inwardType)   { setError('Select the inward type'); return; }
+    if (!form.sourceParty.trim()) { setError('Select who the items were received from — pick a vendor from the list'); return; }
+    if (!form.vendorId) {
+      setError(`"${form.sourceParty.trim()}" is not in the vendor list — pick a vendor from the suggestions, or ask an admin to add it under Admin → Vendors`);
+      return;
+    }
     if (!form.branchId)     { setError('Select the receiving branch'); return; }
     if (!form.departmentId) { setError('Select the receiving department'); return; }
     if (!form.receiverId)   { setError('Select who is receiving the items'); return; }
     if (!form.carriedBy.trim()) { setError('Enter who carried the items in'); return; }
-    if (form.sourceParty.trim() && !form.vendorId) {
-      setError(`"${form.sourceParty.trim()}" is not in the vendor list — pick a vendor from the suggestions, or ask an admin to add it under Admin → Vendors`);
-      return;
-    }
     // Catch half-filled rows the grid would otherwise drop silently
     const badRow = rows.findIndex(r => {
       const hasContent = [r.itemName, r.code, r.rate, r.serialNo, r.remarks].some(v => String(v ?? '').trim());
@@ -151,7 +152,7 @@ export default function NewInwardPage() {
             </select>
           </div>
           <div className="form-group">
-            <label className="form-label">Received From <span style={{ color: 'var(--text3)', fontWeight: 400 }}>(pick a vendor from the list)</span></label>
+            <label className="form-label">Received From * <span style={{ color: 'var(--text3)', fontWeight: 400 }}>(pick a vendor from the list)</span></label>
             <VendorPicker
               value={form.sourceParty}
               vendorId={form.vendorId}

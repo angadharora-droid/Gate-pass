@@ -408,17 +408,16 @@ router.post('/inward', requireRole('time_office', 'admin'), asyncHandler(async (
   if (receiver.role === 'time_office')
     return res.status(400).json({ error: 'The receiver must be a staff member taking custody, not gate security' });
 
-  // "Received From" must come from the admin-maintained vendor list — free
-  // text is rejected so the register only ever carries one spelling per party.
-  // The client sends the picked vendor's id plus its name; an exactly-typed
-  // known name (no id) resolves too.
-  let vendor = null;
+  // "Received From" is mandatory and must come from the admin-maintained
+  // vendor list — free text is rejected so the register only ever carries one
+  // spelling per party. The client sends the picked vendor's id plus its name;
+  // an exactly-typed known name (no id) resolves too.
   const typedParty = String(sourceParty || '').trim();
-  if (vendorId || typedParty) {
-    vendor = await findActiveVendor({ id: vendorId, name: typedParty });
-    if (!vendor)
-      return res.status(400).json({ error: `"${typedParty || vendorId}" is not in the vendor list — pick a vendor from the list, or ask an admin to add it` });
-  }
+  if (!vendorId && !typedParty)
+    return res.status(400).json({ error: 'Received From is required — pick a vendor from the list' });
+  const vendor = await findActiveVendor({ id: vendorId, name: typedParty });
+  if (!vendor)
+    return res.status(400).json({ error: `"${typedParty || vendorId}" is not in the vendor list — pick a vendor from the list, or ask an admin to add it` });
 
   if (!Array.isArray(items) || !items.length)
     return res.status(400).json({ error: 'Add at least one item' });
@@ -446,8 +445,8 @@ router.post('/inward', requireRole('time_office', 'admin'), asyncHandler(async (
     departmentId: dept.id,
     sourceBranch: null,
     destinationBranch: branch.id,
-    destinationPerson: vendor?.name || null,   // vendor / party the goods came from (list spelling)
-    vendorId: vendor?.id || null,
+    destinationPerson: vendor.name,   // vendor / party the goods came from (list spelling)
+    vendorId: vendor.id,
     returnable,
     purpose: docsLabel ? `${typeLabel} — ${docsLabel}` : typeLabel,
     createdAt: now,
